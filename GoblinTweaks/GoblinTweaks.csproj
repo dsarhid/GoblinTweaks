@@ -10,10 +10,25 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
+  <!-- Dalamud plugin manifest. Shown in the in-game plugin installer. -->
+  <PropertyGroup>
+    <Author>David Sarhid</Author>
+    <Name>GoblinTweaks</Name>
+    <Punchline>Quality-of-life crafting tweaks for FFXIV.</Punchline>
+    <Description>A collection of crafting quality-of-life tweaks, including a Crafting Materials window that cross-references every recipe against your bags, saddlebag, retainers and FC chest and shows what you can make right now.</Description>
+    <Tags>crafting;inventory;quality-of-life</Tags>
+    <RepoUrl>https://github.com/dsarhid/GoblinTweaks</RepoUrl>
+    <IconUrl>https://raw.githubusercontent.com/dsarhid/GoblinTweaks/main/GoblinTweaks/Assets/Icon.png</IconUrl>
+  </PropertyGroup>
+
   <ItemGroup>
     <EmbeddedResource Include="Localization\*.json" />
     <EmbeddedResource Include="Assets\Icon.png" />
     <!-- Icon shown by Dalamud for dev builds -->
     <None Include="Assets\Icon.png" Link="images\icon.png" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="KamiToolKit" Version="2.2.38" />
   </ItemGroup>
 </Project>

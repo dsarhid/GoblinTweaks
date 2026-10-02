@@ -128,7 +128,7 @@ public sealed class TweakManager : IDisposable
         Svc.RunOnFramework(() =>
         {
             foreach (var tweak in Tweaks.Where(tweak => tweak.State == TweakState.Enabled))
-                SafeDisable(tweak);
+                TryDisable(tweak);
         });
     }
 }

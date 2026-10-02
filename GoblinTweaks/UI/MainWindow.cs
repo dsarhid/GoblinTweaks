@@ -14,17 +14,20 @@ namespace GoblinTweaks.UI;
 public sealed class MainWindow : Window
 {
     private const string FilterEnabled = "__enabled";
+    private const string FilterDisabled = "__disabled";
 
     private readonly TweakManager _manager;
+    private readonly Action _openSettings;
     private readonly HashSet<string> _expanded = [];
     private readonly string _version;
     private string _search = string.Empty;
     private string? _filter;
 
-    public MainWindow(TweakManager manager)
+    public MainWindow(TweakManager manager, Action openSettings)
         : base("GoblinTweaks###GoblinTweaksMain", ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)
     {
         _manager = manager;
+        _openSettings = openSettings;
         _version = "v" + (Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "?");
 
         Size = new Vector2(680, 560);
@@ -76,10 +79,23 @@ public sealed class MainWindow : Window
         ImGui.EndGroup();
 
         var searchWidth = 230 * Scale;
-        ImGui.SameLine(rightEdge - searchWidth);
-        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (iconSize.Y - ImGui.GetFrameHeight()) / 2);
+        var buttonWidth = ImGui.GetFrameHeight();
+        var spacing = ImGui.GetStyle().ItemSpacing.X;
+        ImGui.SameLine(rightEdge - searchWidth - spacing - buttonWidth);
+        var rowY = ImGui.GetCursorPosY() + (iconSize.Y - ImGui.GetFrameHeight()) / 2;
+        ImGui.SetCursorPosY(rowY);
         ImGui.SetNextItemWidth(searchWidth);
         ImGui.InputTextWithHint("##search", Loc.Get("Window.Search"), ref _search, 128);
+
+        ImGui.SameLine();
+        ImGui.SetCursorPosY(rowY);
+        bool settingsClicked;
+        using (ImRaii.PushFont(UiBuilder.IconFont))
+            settingsClicked = ImGui.Button(FontAwesomeIcon.Cog.ToIconString(), new Vector2(buttonWidth, ImGui.GetFrameHeight()));
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(Loc.Get("Settings.Title"));
+        if (settingsClicked)
+            _openSettings();
 
         ImGui.Spacing();
     }
@@ -92,6 +108,10 @@ public sealed class MainWindow : Window
         ImGui.SameLine();
         if (Widgets.Chip(Loc.Get("Window.Filter.Enabled"), _filter == FilterEnabled))
             _filter = FilterEnabled;
+
+        ImGui.SameLine();
+        if (Widgets.Chip(Loc.Get("Window.Filter.Disabled"), _filter == FilterDisabled))
+            _filter = FilterDisabled;
 
         foreach (var category in _manager.Tweaks.Select(tweak => tweak.Category).Distinct().Order())
         {
@@ -145,13 +165,14 @@ public sealed class MainWindow : Window
     {
         null => true,
         FilterEnabled => tweak.State == TweakState.Enabled,
+        FilterDisabled => tweak.State != TweakState.Enabled,
         _ => tweak.Category.ToString() == _filter,
     };
 
+    // Searches names and descriptions in every language, whatever language is selected.
     private bool MatchesSearch(Tweak tweak)
         => string.IsNullOrWhiteSpace(_search)
-            || tweak.Name.Contains(_search, StringComparison.CurrentCultureIgnoreCase)
-            || tweak.Description.Contains(_search, StringComparison.CurrentCultureIgnoreCase);
+            || tweak.SearchTexts.Any(text => text.Contains(_search.Trim(), StringComparison.OrdinalIgnoreCase));
 
     private void DrawTweakCard(Tweak tweak)
     {
@@ -187,7 +208,8 @@ public sealed class MainWindow : Window
             if (tweak.State == TweakState.Error)
                 DrawError(tweak);
 
-            if (tweak.HasSettings)
+            // Options are only reachable while the tweak is enabled.
+            if (tweak.HasSettings && tweak.State == TweakState.Enabled)
                 DrawSettingsSection(tweak);
         });
     }

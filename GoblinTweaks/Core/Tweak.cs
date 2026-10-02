@@ -34,6 +34,10 @@ public abstract class Tweak
 
     public string Description => Loc.Get($"Tweaks.{Id}.Description", string.Empty);
 
+    /// <summary>Name and description in every language, so search works whatever language is selected.</summary>
+    public IEnumerable<string> SearchTexts
+        => Loc.GetInAllLanguages($"Tweaks.{Id}.Name").Concat(Loc.GetInAllLanguages($"Tweaks.{Id}.Description")).Append(Id);
+
     public virtual bool HasSettings => false;
 
     internal TweakManager Manager { get; set; } = null!;
