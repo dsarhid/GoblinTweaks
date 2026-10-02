@@ -13,7 +13,9 @@ internal sealed class Svc
     [PluginService] public static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
     [PluginService] public static IDataManager Data { get; private set; } = null!;
     [PluginService] public static ITextureProvider Textures { get; private set; } = null!;
-    [PluginService] public static IPluginLog Log { get; private set; } = null!;
+    [PluginService] public static IGameGui     GameGui     { get; private set; } = null!;
+    [PluginService] public static IPlayerState PlayerState { get; private set; } = null!;
+    [PluginService] public static IPluginLog   Log         { get; private set; } = null!;
 
     public static void Initialize(IDalamudPluginInterface pluginInterface) => pluginInterface.Create<Svc>();
 

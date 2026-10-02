@@ -9,6 +9,9 @@ public sealed class PluginConfig
     public HashSet<string> EnabledTweaks { get; set; } = [];
     public Dictionary<string, JsonObject> TweakSettings { get; set; } = [];
     public bool ShowWelcome { get; set; } = true;
+
+    /// <summary>Plugin language ("en" or "es"). Independent from the Dalamud language.</summary>
+    public string Language { get; set; } = "en";
 }
 
 /// <summary>

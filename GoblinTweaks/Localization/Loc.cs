@@ -4,36 +4,69 @@ using System.Text.Json;
 namespace GoblinTweaks.Localization;
 
 /// <summary>
-/// Minimal localization: one flat JSON file per language (embedded), following Dalamud's UI language.
-/// Missing keys fall back to English, then to the provided default or the key itself.
+/// Plugin localization. Every language file is loaded at startup (they are tiny), so texts in all
+/// languages are available at any time, e.g. for searching. Missing keys fall back to English.
 /// </summary>
 public static class Loc
 {
-    private static Dictionary<string, string> _fallback = [];
+    public const string DefaultLanguage = "en";
+
+    /// <summary>Languages offered in the settings window. Add a JSON file and an entry here to add one.</summary>
+    public static readonly IReadOnlyList<(string Code, string Name)> Languages =
+    [
+        ("en", "English"),
+        ("es", "Español"),
+    ];
+
+    private static readonly Dictionary<string, Dictionary<string, string>> Texts = [];
     private static Dictionary<string, string> _current = [];
+
+    public static string CurrentLanguage { get; private set; } = DefaultLanguage;
 
     public static event Action? LanguageChanged;
 
-    public static void Initialize()
+    public static void Initialize(string language)
     {
-        _fallback = Load("en");
-        SetLanguage(Svc.PluginInterface.UiLanguage);
-        Svc.PluginInterface.LanguageChanged += SetLanguage;
+        foreach (var (code, _) in Languages)
+            Texts[code] = Load(code);
+
+        SetLanguage(language);
     }
 
-    public static void Dispose() => Svc.PluginInterface.LanguageChanged -= SetLanguage;
+    public static void SetLanguage(string language)
+    {
+        if (!Texts.TryGetValue(language, out var texts))
+        {
+            language = DefaultLanguage;
+            texts = Texts.GetValueOrDefault(DefaultLanguage) ?? [];
+        }
+
+        CurrentLanguage = language;
+        _current = texts;
+        LanguageChanged?.Invoke();
+    }
 
     public static string Get(string key, string? defaultText = null)
-        => _current.TryGetValue(key, out var text) || _fallback.TryGetValue(key, out text)
-            ? text
-            : defaultText ?? key;
+    {
+        if (_current.TryGetValue(key, out var text))
+            return text;
+
+        if (Texts.TryGetValue(DefaultLanguage, out var fallback) && fallback.TryGetValue(key, out text))
+            return text;
+
+        return defaultText ?? key;
+    }
 
     public static string Format(string key, params object[] args) => string.Format(Get(key), args);
 
-    private static void SetLanguage(string languageCode)
+    /// <summary>The text of <paramref name="key"/> in every language that defines it.</summary>
+    public static IEnumerable<string> GetInAllLanguages(string key)
     {
-        _current = languageCode == "en" ? _fallback : Load(languageCode);
-        LanguageChanged?.Invoke();
+        foreach (var texts in Texts.Values)
+        {
+            if (texts.TryGetValue(key, out var text))
+                yield return text;
+        }
     }
 
     private static Dictionary<string, string> Load(string languageCode)

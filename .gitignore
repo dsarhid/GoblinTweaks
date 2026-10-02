@@ -4,3 +4,7 @@ obj/
 .idea/
 *.user
 .dalamud/
+
+# Local-only files
+CLAUDE.md
+GoblinTweaks/img/
