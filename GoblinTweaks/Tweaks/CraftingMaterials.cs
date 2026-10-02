@@ -1,9 +1,11 @@
 using System.Text;
 using Dalamud.Game;
+using Dalamud.Game.Gui.ContextMenu;
 using Dalamud.Interface;
 using Dalamud.Interface.Components;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Utility.Raii;
+using Dalamud.Interface.Windowing;
 using Dalamud.Bindings.ImGui;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using GoblinTweaks.Core;
@@ -152,9 +154,11 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         ("ja", "日本語"),
     ];
 
-    private CraftingMaterialsAddon? _addon;
-    private UniversalisService?     _universalis;
-    private bool                    _showSettings;
+    private CraftingMaterialsAddon?     _addon;
+    private UniversalisService?         _universalis;
+
+    private readonly WindowSystem       _settingsWindows = new("GoblinTweaks.CraftingSettings");
+    private CraftingSettingsWindow?     _settingsWindow;
 
     public UniversalisService Universalis => _universalis!;
     public uint WorldId => Svc.PlayerState.IsLoaded ? Svc.PlayerState.HomeWorld.RowId : 0u;
@@ -182,19 +186,55 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             Size         = new System.Numerics.Vector2(1180f, 740f),
             Tweak        = this,
         };
+
+        Svc.ContextMenu.OnMenuOpened += OnMenuOpened;
+
+        _settingsWindow = new CraftingSettingsWindow(this);
+        _settingsWindows.AddWindow(_settingsWindow);
+        Svc.PluginInterface.UiBuilder.Draw += _settingsWindows.Draw;
     }
 
     protected internal override void Disable()
     {
+        Svc.ContextMenu.OnMenuOpened -= OnMenuOpened;
+
+        Svc.PluginInterface.UiBuilder.Draw -= _settingsWindows.Draw;
+        _settingsWindows.RemoveAllWindows();
+        _settingsWindow = null;
+
         _addon?.Close();
         _addon = null;
         _universalis?.Dispose();
         _universalis = null;
     }
 
+    // Adds a "Crafting Materials" shortcut at the bottom of the inventory item right-click menu.
+    // (The main-menu "Logs" popup is not a Dalamud-extensible context menu, so it can't be reached
+    // through this API — only the right-click menus fire this event.)
+    private void OnMenuOpened(IMenuOpenedArgs args)
+    {
+        try
+        {
+            if (args.MenuType != ContextMenuType.Inventory) return;
+
+            args.AddMenuItem(new MenuItem
+            {
+                Name        = CraftLoc.Get("title"),
+                PrefixChar  = 'G',
+                PrefixColor = 539,
+                OnClicked   = _ => _addon?.Open(),
+                Priority    = int.MaxValue, // sort to the bottom of the menu
+            });
+        }
+        catch (Exception ex)
+        {
+            Svc.Log.Error(ex, "CraftingMaterials: OnMenuOpened failed");
+        }
+    }
+
     public override bool HasSettings => true;
 
-    // Any settings change (language or inventory sources) re-scans the open window.
+    // Any settings change re-scans the window with the new options.
     protected override void OnSettingsChanged() => _addon?.RequestRefresh();
 
     public override void DrawSettings()
@@ -206,13 +246,13 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             ImGui.SetTooltip(T("Open.Help"));
 
         ImGui.SameLine();
-        if (ImGuiComponents.IconButtonWithText(FontAwesomeIcon.Cog, T("Settings")))
-            _showSettings = !_showSettings;
+        if (ImGuiComponents.IconButtonWithText(FontAwesomeIcon.Cog, T("Settings")) && _settingsWindow is not null)
+            _settingsWindow.IsOpen = true;
+    }
 
-        if (!_showSettings)
-            return;
-
-        ImGui.Spacing();
+    /// <summary>Full tweak configuration, drawn in its own window (opened from the Settings button).</summary>
+    public void DrawConfigContents()
+    {
         DrawLanguagePicker();
 
         ImGui.Spacing();
@@ -234,6 +274,9 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         if (Widgets.SettingToggle(T("IncludeFCChest"), T("IncludeFCChest.Help"), ref fc))
         { Settings.IncludeFCChest = fc; SaveSettings(); }
     }
+
+    /// <summary>Settings window title (localized to the GoblinTweaks UI language).</summary>
+    public string SettingsTitle => $"{Name} — {T("Settings")}";
 
     private void DrawLanguagePicker()
     {
