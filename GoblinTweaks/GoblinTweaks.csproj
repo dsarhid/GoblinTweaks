@@ -1,0 +1,19 @@
+<!--
+  The Dalamud.NET.Sdk version is the Dalamud API level.
+  Change it ONLY when Dalamud releases a new API level (see docs/MAINTENANCE.md).
+-->
+<Project Sdk="Dalamud.NET.Sdk/15.0.0">
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Localization\*.json" />
+    <EmbeddedResource Include="Assets\Icon.png" />
+    <!-- Icon shown by Dalamud for dev builds -->
+    <None Include="Assets\Icon.png" Link="images\icon.png" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

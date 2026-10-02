@@ -1,0 +1,9 @@
+{
+  "Author": "David Sarhid",
+  "Name": "GoblinTweaks",
+  "Punchline": "Small quality of life tweaks, one toggle at a time.",
+  "Description": "A growing collection of small quality of life tweaks.\nOpen /goblintweaks to turn them on and configure them.",
+  "Tags": ["tweaks", "quality of life", "crafting", "ui"],
+  "RepoUrl": "https://github.com/dsarhid/GoblinTweaks",
+  "IconUrl": "https://raw.githubusercontent.com/dsarhid/GoblinTweaks/main/GoblinTweaks/Assets/Icon.png"
+}
