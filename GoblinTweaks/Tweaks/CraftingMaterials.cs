@@ -1,6 +1,11 @@
 using System.Text;
+using System.Text.Json;
 using Dalamud.Game;
 using Dalamud.Game.Gui.ContextMenu;
+using Dalamud.Game.Addon.Lifecycle;
+using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
+using Dalamud.Game.Inventory.InventoryEventArgTypes;
+using Dalamud.Plugin.Services;
 using Dalamud.Interface;
 using Dalamud.Interface.Components;
 using Dalamud.Interface.Utility;
@@ -25,6 +30,11 @@ public enum InventorySource { Player, Saddlebag, Retainer, FreeCompany }
 public sealed class InventorySnapshot
 {
     public string PlayerName = string.Empty;
+
+    /// <summary>True when live retainer data was available in memory during this scan (at least one retainer visited).</summary>
+    public bool HasRetainerData;
+    /// <summary>True when the FC chest container was accessible during this scan (chest opened this session).</summary>
+    public bool HasFCData;
 
     public readonly Dictionary<uint, int>                              Player          = new();
     public readonly Dictionary<uint, int>                              Saddlebag       = new();
@@ -156,11 +166,14 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
 
     private CraftingMaterialsAddon?     _addon;
     private UniversalisService?         _universalis;
+    private InventorySnapshot?          _cachedSnapshot;
 
     private readonly WindowSystem       _settingsWindows = new("GoblinTweaks.CraftingSettings");
     private CraftingSettingsWindow?     _settingsWindow;
 
-    public UniversalisService Universalis => _universalis!;
+    public UniversalisService      Universalis     => _universalis!;
+    /// <summary>Last known inventory snapshot, loaded from disk at startup and updated after each scan.</summary>
+    public InventorySnapshot?      CachedSnapshot  => _cachedSnapshot;
     public uint WorldId => Svc.PlayerState.IsLoaded ? Svc.PlayerState.HomeWorld.RowId : 0u;
 
     /// <summary>Language code for the window's own UI strings ("" = follow GoblinTweaks).</summary>
@@ -177,6 +190,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
 
     protected internal override void Enable()
     {
+        _cachedSnapshot = LoadSnapshot();
         _universalis = new UniversalisService();
         CraftLoc.Lang = WindowUiLang;
         _addon = new CraftingMaterialsAddon
@@ -188,6 +202,9 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         };
 
         Svc.ContextMenu.OnMenuOpened += OnMenuOpened;
+        Svc.GameInventory.InventoryChanged += OnInventoryChanged;
+        Svc.AddonLifecycle.RegisterListener(AddonEvent.PreFinalize,  "RetainerList",         OnRetainerUiClosed);
+        Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup,    "SynthesisSimpleResult", OnSynthesisResult);
 
         _settingsWindow = new CraftingSettingsWindow(this);
         _settingsWindows.AddWindow(_settingsWindow);
@@ -197,6 +214,9 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     protected internal override void Disable()
     {
         Svc.ContextMenu.OnMenuOpened -= OnMenuOpened;
+        Svc.GameInventory.InventoryChanged -= OnInventoryChanged;
+        Svc.AddonLifecycle.UnregisterListener(AddonEvent.PreFinalize,  "RetainerList",         OnRetainerUiClosed);
+        Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup,    "SynthesisSimpleResult", OnSynthesisResult);
 
         Svc.PluginInterface.UiBuilder.Draw -= _settingsWindows.Draw;
         _settingsWindows.RemoveAllWindows();
@@ -232,7 +252,136 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         }
     }
 
+    private void OnInventoryChanged(IReadOnlyCollection<InventoryEventArgs> events) =>
+        _addon?.NotifyInventoryChanged();
+
+    // Retainer inventory is cached when the RetainerList UI closes (after visiting the bell).
+    private void OnRetainerUiClosed(AddonEvent type, AddonArgs args) =>
+        _addon?.NotifyInventoryChanged();
+
+    // Synthesis result popup appears → immediately refresh to update craft check marks.
+    private void OnSynthesisResult(AddonEvent type, AddonArgs args) =>
+        _addon?.RequestRefresh();
+
     public override bool HasSettings => true;
+
+    // ── Snapshot persistence ──────────────────────────────────────────────────
+
+    private static readonly JsonSerializerOptions SnapshotJson = new() { WriteIndented = false };
+
+    private string SnapshotFilePath =>
+        Path.Combine(Svc.PluginInterface.GetPluginConfigDirectory(), "CraftingSnapshot.json");
+
+    public void SaveSnapshot(InventorySnapshot snap)
+    {
+        try
+        {
+            var path = SnapshotFilePath;
+            var tmp  = path + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(InventorySnapshotData.From(snap), SnapshotJson));
+            File.Move(tmp, path, true);
+            _cachedSnapshot = snap;
+        }
+        catch (Exception ex) { Svc.Log.Warning(ex, "CraftingMaterials: could not save snapshot"); }
+    }
+
+    private InventorySnapshot? LoadSnapshot()
+    {
+        try
+        {
+            var path = SnapshotFilePath;
+            if (!File.Exists(path)) return null;
+            var data = JsonSerializer.Deserialize<InventorySnapshotData>(File.ReadAllText(path), SnapshotJson);
+            return data?.ToSnapshot();
+        }
+        catch (Exception ex)
+        {
+            Svc.Log.Warning(ex, "CraftingMaterials: could not load snapshot");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Scans live inventories and merges persisted retainer/FC data when those sources
+    /// are not yet available in memory (not visited this session). Saves the result.
+    /// </summary>
+    public InventorySnapshot ScanAndMerge()
+    {
+        var live = ScanInventories();
+
+        if (_cachedSnapshot != null)
+        {
+            if (Settings.IncludeRetainers && !live.HasRetainerData && _cachedSnapshot.HasRetainerData)
+            {
+                foreach (var (k, v) in _cachedSnapshot.Retainer)
+                    live.Retainer[k] = v;
+                foreach (var (name, items) in _cachedSnapshot.RetainerDetails)
+                    live.RetainerDetails.Add((name, new Dictionary<uint, int>(items)));
+                live.HasRetainerData = true;
+            }
+
+            if (Settings.IncludeFCChest && !live.HasFCData && _cachedSnapshot.HasFCData)
+            {
+                foreach (var (k, v) in _cachedSnapshot.FCChest)
+                    live.FCChest[k] = v;
+                live.HasFCData = true;
+            }
+        }
+
+        SaveSnapshot(live);
+        return live;
+    }
+
+    // ── Snapshot DTO (for disk serialization) ─────────────────────────────────
+
+    private sealed class InventorySnapshotData
+    {
+        public string                 PlayerName      { get; set; } = string.Empty;
+        public bool                   HasRetainerData { get; set; }
+        public bool                   HasFCData       { get; set; }
+        public Dictionary<uint, int>  Player          { get; set; } = [];
+        public Dictionary<uint, int>  Saddlebag       { get; set; } = [];
+        public Dictionary<uint, int>  Retainer        { get; set; } = [];
+        public Dictionary<uint, int>  FCChest         { get; set; } = [];
+        public List<RetainerDetail>   RetainerDetails { get; set; } = [];
+
+        public sealed class RetainerDetail
+        {
+            public string                Name  { get; set; } = string.Empty;
+            public Dictionary<uint, int> Items { get; set; } = [];
+        }
+
+        public static InventorySnapshotData From(InventorySnapshot s) => new()
+        {
+            PlayerName      = s.PlayerName,
+            HasRetainerData = s.HasRetainerData,
+            HasFCData       = s.HasFCData,
+            Player          = new(s.Player),
+            Saddlebag       = new(s.Saddlebag),
+            Retainer        = new(s.Retainer),
+            FCChest         = new(s.FCChest),
+            RetainerDetails = s.RetainerDetails
+                .Select(r => new RetainerDetail { Name = r.Name, Items = new(r.Items) })
+                .ToList(),
+        };
+
+        public InventorySnapshot ToSnapshot()
+        {
+            var s = new InventorySnapshot
+            {
+                PlayerName      = PlayerName,
+                HasRetainerData = HasRetainerData,
+                HasFCData       = HasFCData,
+            };
+            foreach (var (k, v) in Player)    s.Player[k]    = v;
+            foreach (var (k, v) in Saddlebag) s.Saddlebag[k] = v;
+            foreach (var (k, v) in Retainer)  s.Retainer[k]  = v;
+            foreach (var (k, v) in FCChest)   s.FCChest[k]   = v;
+            foreach (var r in RetainerDetails)
+                s.RetainerDetails.Add((r.Name, new Dictionary<uint, int>(r.Items)));
+            return s;
+        }
+    }
 
     // Any settings change re-scans the window with the new options.
     protected override void OnSettingsChanged() => _addon?.RequestRefresh();
@@ -329,10 +478,10 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
                 InventoryType.PremiumSaddleBag1, InventoryType.PremiumSaddleBag2);
 
         if (Settings.IncludeRetainers)
-            ScanRetainers(snap.Retainer, snap.RetainerDetails, mgr);
+            snap.HasRetainerData = ScanRetainers(snap.Retainer, snap.RetainerDetails, mgr);
 
         if (Settings.IncludeFCChest)
-            ScanContainers(snap.FCChest, mgr,
+            snap.HasFCData = ScanContainers(snap.FCChest, mgr,
                 InventoryType.FreeCompanyPage1, InventoryType.FreeCompanyPage2,
                 InventoryType.FreeCompanyPage3, InventoryType.FreeCompanyPage4,
                 InventoryType.FreeCompanyPage5);
@@ -340,14 +489,17 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         return snap;
     }
 
-    private static unsafe void ScanContainers(
+    // Returns true if at least one container was non-null (data was accessible in memory).
+    private static unsafe bool ScanContainers(
         Dictionary<uint, int> target, InventoryManager* mgr, params InventoryType[] types)
     {
+        var anyLoaded = false;
         foreach (var type in types)
         {
             var container = mgr->GetInventoryContainer(type);
             if (container == null) continue;
 
+            anyLoaded = true;
             for (var i = 0; i < container->Size; i++)
             {
                 var slot = container->GetInventorySlot(i);
@@ -357,18 +509,20 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
                 target[id] = target.GetValueOrDefault(id) + (int)slot->Quantity;
             }
         }
+        return anyLoaded;
     }
 
     // Retainer inventories are stored client-side after visiting the retainer bell.
     // Only the currently active retainer window exposes real-time data; cached data
     // from previous visits is available in RetainerPage1-7 of each retainer's slot.
-    private static unsafe void ScanRetainers(
+    // Returns true if any retainer data was available (Available == true for at least one retainer).
+    private static unsafe bool ScanRetainers(
         Dictionary<uint, int> aggregate,
         List<(string Name, Dictionary<uint, int> Items)> details,
         InventoryManager* mgr)
     {
         var retMgr = RetainerManager.Instance();
-        if (retMgr == null) return;
+        if (retMgr == null) return false;
 
         var count = retMgr->GetRetainerCount();
         for (uint ri = 0; ri < count && ri < 10; ri++)
@@ -406,6 +560,8 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             if (retainerItems.Count > 0)
                 details.Add((retainerName, retainerItems));
         }
+
+        return details.Count > 0;
     }
 
     // ── Recipe analysis ───────────────────────────────────────────────────────

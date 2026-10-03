@@ -12,7 +12,9 @@ namespace GoblinTweaks.UI.Nodes;
 /// identifies the tree node so the addon can toggle it).
 /// </summary>
 internal readonly record struct IngredientRow(
-    IngredientCheck Check, string PrimaryLocation, int Depth, bool Craftable, bool Expanded, int NodeId);
+    IngredientCheck Check, string PrimaryLocation,
+    IReadOnlyList<(string Location, int Qty)> AllLocations,
+    int Depth, bool Craftable, bool Expanded, int NodeId);
 
 /// <summary>
 /// One row in the ingredient detail list: indent + expand caret + game icon + name
@@ -125,16 +127,37 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
         {
             statusColor = ColorMissing;
             locText     = string.IsNullOrEmpty(data.PrimaryLocation) ? CraftLoc.Get("loc.notfound") : data.PrimaryLocation;
+            TextTooltip = string.Empty;
+            ItemTooltip = ing.ItemId;
         }
         else if (ing.InPlayer >= ing.Required)
         {
             statusColor = ColorFulfilled;
             locText     = CraftLoc.Get("loc.mainbags");
+            TextTooltip = string.Empty;
+            ItemTooltip = ing.ItemId;
         }
         else
         {
+            // Yellow: item exists but some or all is in other inventories.
             statusColor = ColorElsewhere;
-            locText     = string.IsNullOrEmpty(data.PrimaryLocation) ? CraftLoc.Get("loc.otherinv") : data.PrimaryLocation;
+            var locs = data.AllLocations;
+
+            if (locs.Count > 1)
+            {
+                // Primary location + "+" marker to indicate the item is spread across multiple inventories.
+                var primary = data.PrimaryLocation;
+                locText     = (string.IsNullOrEmpty(primary) ? CraftLoc.Get("loc.otherinv") : primary) + " +";
+                // Tooltip lists every source and its quantity.
+                TextTooltip = string.Join("\n", locs.Select(l => $"{l.Location}: {l.Qty}"));
+                ItemTooltip = 0;
+            }
+            else
+            {
+                locText     = string.IsNullOrEmpty(data.PrimaryLocation) ? CraftLoc.Get("loc.otherinv") : data.PrimaryLocation;
+                TextTooltip = locs.Count == 1 ? $"{locs[0].Location}: {locs[0].Qty}" : null;
+                ItemTooltip = ing.ItemId;
+            }
         }
 
         _name.TextColor     = statusColor;
@@ -144,8 +167,5 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
 
         // Re-run layout since the indent depends on the row's data.
         Layout();
-
-        // Collision list is rebuilt by the addon after repopulation — see RecipeRowNode.
-        ItemTooltip = ing.ItemId;
     }
 }

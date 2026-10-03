@@ -15,6 +15,16 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.0.3", "2026-10-02",
+            "Crafting Materials now remembers retainer and FC chest data between sessions and auto-refreshes as your inventory changes.",
+            [
+                "New: Inventory snapshot is saved to disk — retainer and FC chest items are remembered across logins without needing to visit them again",
+                "New: Ingredient rows show a breakdown tooltip (hover) listing how many items you have in each inventory when they're spread across multiple sources",
+                "Fix: The ingredient list auto-updates when you move items around while the window is open (1.5 s debounce)",
+                "Fix: The selected recipe and its ingredient panel are preserved across all refresh types (manual, auto, and after synthesis)",
+                "Fix: Craft check mark updates immediately when a synthesis completes",
+            ]),
+
         new("1.0.2", "2026-10-02",
             "Added Server Info Bar timers for retainer ventures and squadron activities.",
             [
