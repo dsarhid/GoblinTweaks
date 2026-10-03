@@ -77,6 +77,15 @@ public static class Widgets
         return clicked;
     }
 
+    /// <summary>Clickable accent-colored text that acts as a footer button. Returns true when clicked.</summary>
+    public static bool FooterButton(string text)
+    {
+        ImGui.TextColored(Palette.Accent, text);
+        if (ImGui.IsItemHovered())
+            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+        return ImGui.IsItemClicked();
+    }
+
     /// <summary>Clickable text that opens a web page.</summary>
     public static void Link(string text, string url)
     {

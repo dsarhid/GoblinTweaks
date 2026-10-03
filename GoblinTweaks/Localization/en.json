@@ -15,6 +15,10 @@
   "Window.Retry": "Retry",
   "Window.Footer.Repository": "Source code",
   "Window.Footer.Issues": "Report a problem",
+  "Window.Footer.Changelog": "Changelog",
+  "Window.WhatsNew.Title": "What's New",
+  "Window.WhatsNew.SeeAll": "See full changelog",
+  "Window.WhatsNew.Dismiss": "Dismiss",
   "Category.Crafting": "Crafting",
   "Category.Gathering": "Gathering",
   "Category.Interface": "Interface",
@@ -64,5 +68,19 @@
   "CraftingMaterials.Source.Player": "Main bags",
   "CraftingMaterials.Source.Saddlebag": "Saddlebag",
   "CraftingMaterials.Source.Retainer": "Retainer",
-  "CraftingMaterials.Source.FreeCompany": "FC Chest"
+  "CraftingMaterials.Source.FreeCompany": "FC Chest",
+
+  "Tweaks.RetainerVentureTimer.Name": "Retainer Venture Timer",
+  "Tweaks.RetainerVentureTimer.Description": "Shows a countdown in the Server Info Bar for the next retainer returning from a venture. Hover to see all active ventures.",
+  "Tweaks.RetainerVentureTimer.DtrTitle": "Venture Timer",
+  "Tweaks.RetainerVentureTimer.Ready": "Ready!",
+  "Tweaks.RetainerVentureTimer.TooltipHeader": "Retainer ventures:",
+
+  "Tweaks.SquadronTimer.Name": "Squadron Mission & Training Timer",
+  "Tweaks.SquadronTimer.Description": "Shows a countdown in the Server Info Bar for the next squadron mission or training session to complete. Hover to see both timers.",
+  "Tweaks.SquadronTimer.DtrTitle": "Squadron Timer",
+  "Tweaks.SquadronTimer.Ready": "Ready!",
+  "Tweaks.SquadronTimer.Mission": "Mission",
+  "Tweaks.SquadronTimer.Training": "Training",
+  "Tweaks.SquadronTimer.TooltipHeader": "Squadron:"
 }

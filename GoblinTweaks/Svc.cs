@@ -17,6 +17,7 @@ internal sealed class Svc
     [PluginService] public static IPlayerState PlayerState { get; private set; } = null!;
     [PluginService] public static IContextMenu ContextMenu { get; private set; } = null!;
     [PluginService] public static IPluginLog   Log         { get; private set; } = null!;
+    [PluginService] public static IDtrBar      DtrBar      { get; private set; } = null!;
 
     public static void Initialize(IDalamudPluginInterface pluginInterface) => pluginInterface.Create<Svc>();
 

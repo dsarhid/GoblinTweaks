@@ -15,6 +15,10 @@
   "Window.Retry": "Reintentar",
   "Window.Footer.Repository": "Código fuente",
   "Window.Footer.Issues": "Informar un problema",
+  "Window.Footer.Changelog": "Cambios",
+  "Window.WhatsNew.Title": "Novedades",
+  "Window.WhatsNew.SeeAll": "Ver changelog completo",
+  "Window.WhatsNew.Dismiss": "Cerrar",
   "Category.Crafting": "Crafteo",
   "Category.Gathering": "Recolección",
   "Category.Interface": "Interfaz",
@@ -64,5 +68,19 @@
   "CraftingMaterials.Source.Player": "Bolsas principales",
   "CraftingMaterials.Source.Saddlebag": "Saddlebag",
   "CraftingMaterials.Source.Retainer": "Retainer",
-  "CraftingMaterials.Source.FreeCompany": "Baúl de FC"
+  "CraftingMaterials.Source.FreeCompany": "Baúl de FC",
+
+  "Tweaks.RetainerVentureTimer.Name": "Timer de encomiendas de retainer",
+  "Tweaks.RetainerVentureTimer.Description": "Muestra en la barra de información del servidor una cuenta regresiva para el próximo retainer que vuelva de una encomienda. Pasá el cursor para ver todas las encomiendas activas.",
+  "Tweaks.RetainerVentureTimer.DtrTitle": "Timer de Encomiendas",
+  "Tweaks.RetainerVentureTimer.Ready": "¡Listo!",
+  "Tweaks.RetainerVentureTimer.TooltipHeader": "Encomiendas de retainers:",
+
+  "Tweaks.SquadronTimer.Name": "Timer de misiones y entrenamiento de escuadrón",
+  "Tweaks.SquadronTimer.Description": "Muestra en la barra de información del servidor una cuenta regresiva para la próxima misión o sesión de entrenamiento de escuadrón. Pasá el cursor para ver ambos timers.",
+  "Tweaks.SquadronTimer.DtrTitle": "Timer de Escuadrón",
+  "Tweaks.SquadronTimer.Ready": "¡Listo!",
+  "Tweaks.SquadronTimer.Mission": "Misión",
+  "Tweaks.SquadronTimer.Training": "Entrenamiento",
+  "Tweaks.SquadronTimer.TooltipHeader": "Escuadrón:"
 }
