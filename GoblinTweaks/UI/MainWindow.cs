@@ -18,16 +18,18 @@ public sealed class MainWindow : Window
 
     private readonly TweakManager _manager;
     private readonly Action _openSettings;
+    private readonly Action _openChangelog;
     private readonly HashSet<string> _expanded = [];
     private readonly string _version;
     private string _search = string.Empty;
     private string? _filter;
 
-    public MainWindow(TweakManager manager, Action openSettings)
+    public MainWindow(TweakManager manager, Action openSettings, Action openChangelog)
         : base("GoblinTweaks###GoblinTweaksMain", ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)
     {
         _manager = manager;
         _openSettings = openSettings;
+        _openChangelog = openChangelog;
         _version = "v" + (Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "?");
 
         Size = new Vector2(680, 560);
@@ -55,6 +57,7 @@ public sealed class MainWindow : Window
                 if (_manager.Store.Data.ShowWelcome)
                     DrawWelcome();
 
+                DrawWhatsNew();
                 DrawTweakList();
             }
         }
@@ -122,6 +125,49 @@ public sealed class MainWindow : Window
         }
 
         ImGui.Spacing();
+    }
+
+    private void DrawWhatsNew()
+    {
+        var store = _manager.Store;
+        var latest = Changelog.Latest;
+
+        // Only show for existing users who haven't seen this version yet.
+        // New installs (null) skip the banner silently — they just installed it.
+        if (latest == null || store.Data.LastSeenVersion == null || store.Data.LastSeenVersion == latest.Version)
+            return;
+
+        DrawCard("whats-new", Palette.Accent, () =>
+        {
+            ImGui.TextColored(Palette.Accent, Loc.Get("Window.WhatsNew.Title"));
+            ImGui.SameLine();
+            ImGui.TextColored(Palette.Muted, $"v{latest.Version} — {latest.Date}");
+
+            ImGui.PushTextWrapPos(0);
+            ImGui.Text(latest.Summary);
+            ImGui.PopTextWrapPos();
+
+            ImGui.Spacing();
+            foreach (var change in latest.Changes)
+            {
+                ImGui.TextColored(Palette.Accent, "•");
+                ImGui.SameLine();
+                ImGui.PushTextWrapPos(0);
+                ImGui.TextUnformatted(change);
+                ImGui.PopTextWrapPos();
+            }
+
+            ImGui.Spacing();
+            if (ImGui.Button(Loc.Get("Window.WhatsNew.SeeAll")))
+                _openChangelog();
+
+            ImGui.SameLine();
+            if (ImGui.Button(Loc.Get("Window.WhatsNew.Dismiss")))
+            {
+                store.Data.LastSeenVersion = latest.Version;
+                store.Save();
+            }
+        });
     }
 
     private void DrawWelcome()
@@ -315,6 +361,12 @@ public sealed class MainWindow : Window
         ImGui.TextColored(Palette.Muted, "·");
         ImGui.SameLine();
         Widgets.Link(Loc.Get("Window.Footer.Repository"), PluginInfo.RepositoryUrl);
+
+        ImGui.SameLine();
+        ImGui.TextColored(Palette.Muted, "·");
+        ImGui.SameLine();
+        if (Widgets.FooterButton(Loc.Get("Window.Footer.Changelog")))
+            _openChangelog();
 
         var issues = Loc.Get("Window.Footer.Issues");
         ImGui.SameLine(rightEdge - ImGui.CalcTextSize(issues).X);

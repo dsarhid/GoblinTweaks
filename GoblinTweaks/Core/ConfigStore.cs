@@ -10,6 +10,12 @@ public sealed class PluginConfig
     public Dictionary<string, JsonObject> TweakSettings { get; set; } = [];
     public bool ShowWelcome { get; set; } = true;
 
+    /// <summary>
+    /// Last plugin version the user saw the "What's New" banner for.
+    /// Null on a fresh install (skip the banner — they just installed it).
+    /// </summary>
+    public string? LastSeenVersion { get; set; } = null;
+
     /// <summary>Plugin language ("en" or "es"). Independent from the Dalamud language.</summary>
     public string Language { get; set; } = "en";
 }

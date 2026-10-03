@@ -13,11 +13,12 @@ public sealed class Plugin(IDalamudPluginInterface dalamud) : IAsyncDalamudPlugi
     private const string Command      = "/goblintweaks";
     private const string ShortCommand = "/gtweaks";
 
-    private WindowSystem?   _windows;
-    private ConfigStore?    _config;
-    private TweakManager?   _tweaks;
-    private MainWindow?     _mainWindow;
-    private SettingsWindow? _settingsWindow;
+    private WindowSystem?    _windows;
+    private ConfigStore?     _config;
+    private TweakManager?    _tweaks;
+    private MainWindow?      _mainWindow;
+    private SettingsWindow?  _settingsWindow;
+    private ChangelogWindow? _changelogWindow;
 
     public async Task LoadAsync(CancellationToken cancellationToken)
     {
@@ -30,11 +31,15 @@ public sealed class Plugin(IDalamudPluginInterface dalamud) : IAsyncDalamudPlugi
 
         _tweaks = new TweakManager(_config);
 
-        _windows      = new WindowSystem("GoblinTweaks");
-        _settingsWindow = new SettingsWindow(_config);
-        _mainWindow     = new MainWindow(_tweaks, OpenSettings);
+        _windows         = new WindowSystem("GoblinTweaks");
+        _settingsWindow  = new SettingsWindow(_config);
+        _changelogWindow = new ChangelogWindow();
+        _mainWindow      = new MainWindow(_tweaks, OpenSettings, OpenChangelog);
         _windows.AddWindow(_mainWindow);
         _windows.AddWindow(_settingsWindow);
+        _windows.AddWindow(_changelogWindow);
+
+        HandleVersionChange(_config);
 
         Svc.Commands.AddHandler(Command,      new CommandInfo(OnCommand) { HelpMessage = Loc.Get("Plugin.Command.Help") });
         Svc.Commands.AddHandler(ShortCommand, new CommandInfo(OnCommand) { ShowInHelp  = false });
@@ -73,4 +78,20 @@ public sealed class Plugin(IDalamudPluginInterface dalamud) : IAsyncDalamudPlugi
 
     private void ToggleMainWindow() => _mainWindow?.Toggle();
     private void OpenSettings()     => _settingsWindow!.IsOpen = true;
+    private void OpenChangelog()    => _changelogWindow!.IsOpen = true;
+
+    private static void HandleVersionChange(ConfigStore config)
+    {
+        var currentVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? string.Empty;
+        var lastSeen       = config.Data.LastSeenVersion;
+
+        if (lastSeen == null)
+        {
+            // Fresh install — record the current version so the banner never appears for this install.
+            config.Data.LastSeenVersion = currentVersion;
+            config.Save();
+        }
+        // If lastSeen != currentVersion, the What's New banner will show in MainWindow
+        // and update LastSeenVersion when the user dismisses it.
+    }
 }
