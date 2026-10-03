@@ -13,7 +13,7 @@ namespace GoblinTweaks.UI.Nodes;
 /// </summary>
 internal readonly record struct IngredientRow(
     IngredientCheck Check, string PrimaryLocation,
-    IReadOnlyList<(string Location, int Qty)> AllLocations,
+    IReadOnlyList<(string Location, int Total, int Hq)> AllLocations,
     int Depth, bool Craftable, bool Expanded, int NodeId);
 
 /// <summary>
@@ -148,14 +148,14 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
                 // Primary location + "+" marker to indicate the item is spread across multiple inventories.
                 var primary = data.PrimaryLocation;
                 locText     = (string.IsNullOrEmpty(primary) ? CraftLoc.Get("loc.otherinv") : primary) + " +";
-                // Tooltip lists every source and its quantity.
-                TextTooltip = string.Join("\n", locs.Select(l => $"{l.Location}: {l.Qty}"));
+                // Tooltip lists every source with quantity and HQ breakdown.
+                TextTooltip = string.Join("\n", locs.Select(l => $"{l.Location}: {FormatQty(l.Total, l.Hq)}"));
                 ItemTooltip = 0;
             }
             else
             {
                 locText     = string.IsNullOrEmpty(data.PrimaryLocation) ? CraftLoc.Get("loc.otherinv") : data.PrimaryLocation;
-                TextTooltip = locs.Count == 1 ? $"{locs[0].Location}: {locs[0].Qty}" : null;
+                TextTooltip = locs.Count == 1 ? $"{locs[0].Location}: {FormatQty(locs[0].Total, locs[0].Hq)}" : null;
                 ItemTooltip = ing.ItemId;
             }
         }
@@ -168,4 +168,14 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
         // Re-run layout since the indent depends on the row's data.
         Layout();
     }
+
+    // "5"  →  all NQ
+    // "3 HQ"  →  all HQ
+    // "5 (2 HQ)"  →  mixed
+    private static string FormatQty(int total, int hq) => hq switch
+    {
+        0                  => $"{total}",
+        _ when hq == total => $"{total} HQ",
+        _                  => $"{total} ({hq} HQ)",
+    };
 }

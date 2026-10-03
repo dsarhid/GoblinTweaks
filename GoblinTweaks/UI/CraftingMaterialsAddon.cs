@@ -45,6 +45,9 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     private const float TopBarH    = 34f;
     private const float BottomBarH = 28f;
 
+    // Minimum scrollbar thumb height — prevents it from shrinking to near-invisible on large lists
+    private const float MinScrollThumbH = 16f;
+
     // ── Public init properties ─────────────────────────────────────────────────
     public CraftingMaterials? Tweak { get; init; }
 
@@ -61,7 +64,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     {
         public required IngredientCheck Check;
         public required string          PrimaryLocation;
-        public IReadOnlyList<(string Location, int Qty)> AllLocations = [];
+        public IReadOnlyList<(string Location, int Total, int Hq)> AllLocations = [];
         public int                      Depth;
         public bool                     Craftable;
         public bool                     Expanded;
@@ -80,11 +83,14 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
 
     // Auto-refresh when inventory changes while the window is open
     private DateTime _inventoryChangedAt = DateTime.MinValue;
+    // Count of filtered items with market data at last sort pass; used to detect new arrivals.
+    private int _marketDataReadyCount = -1;
     private uint     _pendingRestoreId;   // RecipeId to re-select after a refresh
     private const double InventoryDebounceMs = 1500.0;
 
     // Filter / sort state (driven by the top bar)
     private bool   _hideCrafted;
+    private bool   _hideNonLog;
     private string _sortMode       = SortName;
     private string _classFilter    = AllClasses;
     private bool   _sortDescending;
@@ -93,6 +99,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     private const string SortStatus  = "Craft status";
     private const string SortLevel   = "Item level";
     private const string SortMissing = "Fewest missing";
+    private const string SortMarket  = "Market price";
     private const string AllClasses  = "All classes";
 
     // ── Sidebar node refs ─────────────────────────────────────────────────────
@@ -104,6 +111,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
 
     // ── Filter bar + bottom bar node refs ──────────────────────────────────────
     private CheckboxNode?      _hideCraftedCheck;
+    private CheckboxNode?      _hideNonLogCheck;
     private StringDropDownNode? _sortDropdown;
     private CircleButtonNode?  _sortDirBtn;
     private StringDropDownNode? _classDropdown;
@@ -153,6 +161,10 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         _catListNode?.Update();
         _ingredientList?.Update();
 
+        if (_recipeList is not null)     EnforceScrollbarMinThumb(_recipeList.ScrollBarNode);
+        if (_catListNode is not null)    EnforceScrollbarMinThumb(_catListNode.ScrollBarNode);
+        if (_ingredientList is not null) EnforceScrollbarMinThumb(_ingredientList.ScrollBarNode);
+
         // The ListNode only rebuilds the addon's collision node list on scroll, so after
         // any repopulation (filter change, new selection) freshly recycled rows are absent
         // from it and lose hover + click. Rebuild it here for a couple frames after a change.
@@ -182,6 +194,14 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
 
         // Refresh market data display when Universalis responds
         PollMarketData();
+
+        // Re-sort when new market data arrives while the market-price sort is active
+        if (_sortMode == SortMarket && _marketDataReadyCount >= 0 && Tweak?.Universalis is { } uniPoll)
+        {
+            var readyNow = _filtered.Count(e => uniPoll.HasData(e.ItemId));
+            if (readyNow != _marketDataReadyCount)
+                _pendingFilter = true;
+        }
     }
 
     /// <summary>Queues a native collision-node-list rebuild for the next few frames.</summary>
@@ -215,6 +235,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         _detailCollision = null;
 
         _hideCraftedCheck = null;
+        _hideNonLogCheck  = null;
         _sortDropdown     = null;
         _sortDirBtn       = null;
         _classDropdown    = null;
@@ -237,19 +258,33 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
 
     // ── Native item context menu ────────────────────────────────────────────────
 
-    /// <summary>Opens the game's native inventory item menu. Returns false if not in bags.</summary>
+    /// <summary>
+    /// Opens the game's native inventory item menu for items in the player's bags or saddlebag.
+    /// For items not found in an accessible inventory, falls back to opening the crafting-log
+    /// recipe that produces the item (if one exists). Returns false if nothing could be done.
+    /// </summary>
     private bool OpenItemContextMenu(uint itemId)
     {
         if (itemId == 0) return false;
 
-        var (type, slot) = FindPlayerItemSlot(itemId);
-        if (slot < 0) return false; // the native inventory menu needs a real slot
+        var (type, slot) = FindAnyItemSlot(itemId);
+        if (slot >= 0)
+        {
+            var agent = AgentInventoryContext.Instance();
+            if (agent is null) return false;
+            agent->OpenForItemSlot(type, slot, 0, (uint)AddonId);
+            return true;
+        }
 
-        var agent = AgentInventoryContext.Instance();
-        if (agent is null) return false;
+        // Item not in any accessible slot — if the ingredient is itself craftable, open its recipe.
+        var recipeId = Tweak?.GetRecipeId(itemId) ?? 0u;
+        if (recipeId != 0 && _pendingOpenRecipeId == 0)
+        {
+            _pendingOpenRecipeId = recipeId;
+            return true;
+        }
 
-        agent->OpenForItemSlot(type, slot, 0, (uint)AddonId);
-        return true;
+        return false;
     }
 
     /// <summary>
@@ -266,7 +301,9 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             _pendingOpenRecipeId = entry.RecipeId;
     }
 
-    private static (InventoryType Type, int Slot) FindPlayerItemSlot(uint itemId)
+    // Searches player bags, crystals, and saddlebag — all containers safe to pass to
+    // AgentInventoryContext.OpenForItemSlot with a4=0.
+    private static unsafe (InventoryType Type, int Slot) FindAnyItemSlot(uint itemId)
     {
         var mgr = InventoryManager.Instance();
         if (mgr is null) return (InventoryType.Inventory1, -1);
@@ -276,6 +313,8 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             InventoryType.Inventory1, InventoryType.Inventory2,
             InventoryType.Inventory3, InventoryType.Inventory4,
             InventoryType.Crystals,
+            InventoryType.SaddleBag1,        InventoryType.SaddleBag2,
+            InventoryType.PremiumSaddleBag1, InventoryType.PremiumSaddleBag2,
         ];
 
         foreach (var type in containers)
@@ -353,11 +392,12 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         var near     = _entries.Count(e => e.Status == CraftStatus.NearComplete);
         var notReady = _entries.Count(e => e.Status == CraftStatus.NotReady);
 
-        if (_statusItems.Count >= 3)
+        if (_statusItems.Count >= 4)
         {
-            _statusItems[0].String = $"{CraftLoc.Get("status.ready")} ({ready})";
-            _statusItems[1].String = $"{CraftLoc.Get("status.almost")} ({near})";
-            _statusItems[2].String = $"{CraftLoc.Get("status.cant")} ({notReady})";
+            _statusItems[0].String = $"{CraftLoc.Get("status.all")} ({_entries.Count})";
+            _statusItems[1].String = $"{CraftLoc.Get("status.ready")} ({ready})";
+            _statusItems[2].String = $"{CraftLoc.Get("status.almost")} ({near})";
+            _statusItems[3].String = $"{CraftLoc.Get("status.cant")} ({notReady})";
         }
     }
 
@@ -384,12 +424,13 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
 
         _filtered = _selectedView switch
         {
+            "all"      => _entries.ToList(),
             "ready"    => _entries.Where(e => e.Status is CraftStatus.Ready or CraftStatus.ReadyElsewhere).ToList(),
             "near"     => _entries.Where(e => e.Status == CraftStatus.NearComplete).ToList(),
             "notReady" => _entries.Where(e => e.Status == CraftStatus.NotReady).ToList(),
             var v when v.StartsWith("cat:")
                        => _entries.Where(e => e.CategoryName == v[4..]).ToList(),
-            _          => _entries,
+            _          => _entries.ToList(),
         };
 
         // Search text filter
@@ -407,20 +448,38 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         if (_hideCrafted)
             _filtered = _filtered.Where(e => !e.IsCrafted).ToList();
 
+        if (_hideNonLog)
+            _filtered = _filtered.Where(e => e.IsLogRecipe).ToList();
+
         if (_classFilter != AllClasses)
             _filtered = _filtered.Where(e => e.CraftClass == _classFilter).ToList();
 
         // Sort (base ascending order, then reversed if the direction toggle is set)
-        var ordered = _sortMode switch
+        // Market price sort is handled separately to always put unknown prices at the bottom.
+        if (_sortMode == SortMarket)
         {
-            SortStatus  => _filtered.OrderBy(e => (int)e.Status).ThenBy(e => e.Name),
-            SortLevel   => _filtered.OrderBy(e => e.ItemLevel).ThenBy(e => e.Name),
-            SortMissing => _filtered.OrderBy(e => e.MissingCount).ThenBy(e => e.Name),
-            _           => _filtered.OrderBy(e => e.Name),
-        };
-        _filtered = ordered.ToList();
-        if (_sortDescending)
-            _filtered.Reverse();
+            _filtered = SortByMarket(_filtered);
+            // Trigger market data requests for all visible items.
+            var tw = Tweak;
+            if (tw is not null)
+                foreach (var e in _filtered)
+                    tw.Universalis.RequestIfNeeded(e.ItemId, tw.WorldId);
+            _marketDataReadyCount = _filtered.Count(e => tw?.Universalis.HasData(e.ItemId) == true);
+        }
+        else
+        {
+            var ordered = _sortMode switch
+            {
+                SortStatus  => _filtered.OrderBy(e => (int)e.Status).ThenBy(e => e.Name),
+                SortLevel   => _filtered.OrderBy(e => e.ItemLevel).ThenBy(e => e.Name),
+                SortMissing => _filtered.OrderBy(e => e.MissingCount).ThenBy(e => e.Name),
+                _           => _filtered.OrderBy(e => e.Name),
+            };
+            _filtered = ordered.ToList();
+            if (_sortDescending)
+                _filtered.Reverse();
+            _marketDataReadyCount = -1;
+        }
 
         if (_recipeList is not null)
             _recipeList.OptionsList = _filtered;
@@ -488,7 +547,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     private IngTreeNode MakeIngNode(IngredientCheck ing, int depth)
     {
         // Sort by quantity descending so the location with most items is shown first.
-        var locs = _snapshot.Locations(ing.ItemId).OrderByDescending(l => l.Qty).ToList();
+        var locs = _snapshot.Locations(ing.ItemId).OrderByDescending(l => l.Total).ToList();
         var node = new IngTreeNode
         {
             Check           = ing,
@@ -577,6 +636,42 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         _detailMarket.TextColor = data is { AveragePrice: > 0 } ? MarketColor : MutedGrey;
     }
 
+    // ── Market sort ───────────────────────────────────────────────────────────
+
+    // Sorts by market price (ascending or descending) keeping items with no price data last,
+    // regardless of direction.  Items with AveragePrice == 0 (fetched but no listings) are
+    // treated the same as unfetched items.
+    private List<CraftableEntry> SortByMarket(List<CraftableEntry> source)
+    {
+        var uni      = Tweak?.Universalis;
+        var priced   = source.Where(e => (uni?.Get(e.ItemId)?.AveragePrice ?? 0f) > 0f);
+        var unpriced = source.Where(e => (uni?.Get(e.ItemId)?.AveragePrice ?? 0f) <= 0f);
+
+        var sorted = _sortDescending
+            ? priced.OrderByDescending(e => uni!.Get(e.ItemId)!.AveragePrice).ThenBy(e => e.Name)
+            : priced.OrderBy(e => uni!.Get(e.ItemId)!.AveragePrice).ThenBy(e => e.Name);
+
+        return [.. sorted, .. unpriced];
+    }
+
+    // ── Scrollbar helpers ─────────────────────────────────────────────────────
+
+    // Clamps the scrollbar thumb to MinScrollThumbH after each Update().
+    // The ListNode recalculates thumb height and Y internally; this runs every frame
+    // to re-apply the visual minimum without changing the underlying scroll state.
+    private static void EnforceScrollbarMinThumb(ScrollBarNode scrollBar)
+    {
+        var thumb = scrollBar.ForegroundButtonNode;
+        if (thumb.Height >= MinScrollThumbH) return;
+
+        var trackH    = scrollBar.Height;
+        var scrollMax = (float)scrollBar.ScrollMaxPosition;
+
+        thumb.Height = MinScrollThumbH;
+        if (scrollMax > 0f)
+            thumb.Y = scrollBar.ScrollPosition / scrollMax * (trackH - MinScrollThumbH);
+    }
+
     // ── Layout ────────────────────────────────────────────────────────────────
 
     private void BuildLayout()
@@ -649,13 +744,23 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         _hideCraftedCheck.OnClick = isChecked => { _hideCrafted = isChecked; _pendingFilter = true; };
         _hideCraftedCheck.AttachNode(this);
 
-        _lblSort = MakeLabel(pos.X + 170f, cy + 3f, 40f, CraftLoc.Get("filter.sort"), SubtitleBrown, 12);
+        _hideNonLogCheck = new CheckboxNode
+        {
+            String    = CraftLoc.Get("filter.hidenonlog"),
+            IsChecked = _hideNonLog,
+            Position  = new Vector2(pos.X + 8f + 154f, cy),
+            Size      = new Vector2(150f, 22f),
+        };
+        _hideNonLogCheck.OnClick = isChecked => { _hideNonLog = isChecked; _pendingFilter = true; };
+        _hideNonLogCheck.AttachNode(this);
+
+        _lblSort = MakeLabel(pos.X + 326f, cy + 3f, 40f, CraftLoc.Get("filter.sort"), SubtitleBrown, 12);
         _sortDropdown = new StringDropDownNode
         {
-            Position         = new Vector2(pos.X + 212f, cy),
+            Position         = new Vector2(pos.X + 368f, cy),
             Size             = new Vector2(150f, 24f),
             MaxListOptions   = 6,
-            Options          = [SortName, SortStatus, SortLevel, SortMissing],
+            Options          = [SortName, SortStatus, SortLevel, SortMissing, SortMarket],
             SelectedOption   = _sortMode,
             GetLabelFunction = key => SortLabel(key),
         };
@@ -666,7 +771,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         _sortDirBtn = new CircleButtonNode
         {
             Icon        = _sortDescending ? CircleButtonIcon.ArrowDown : CircleButtonIcon.UpArrow,
-            Position    = new Vector2(pos.X + 366f, cy),
+            Position    = new Vector2(pos.X + 522f, cy),
             Size        = new Vector2(24f, 24f),
             TextTooltip = CraftLoc.Get("tip.sortdir"),
         };
@@ -679,10 +784,10 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         };
         _sortDirBtn.AttachNode(this);
 
-        _lblClass = MakeLabel(pos.X + 402f, cy + 3f, 46f, CraftLoc.Get("filter.class"), SubtitleBrown, 12);
+        _lblClass = MakeLabel(pos.X + 558f, cy + 3f, 46f, CraftLoc.Get("filter.class"), SubtitleBrown, 12);
         _classDropdown = new StringDropDownNode
         {
-            Position         = new Vector2(pos.X + 450f, cy),
+            Position         = new Vector2(pos.X + 606f, cy),
             Size             = new Vector2(170f, 24f),
             MaxListOptions   = 10,
             Options          = [AllClasses],
@@ -698,6 +803,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         SortStatus  => CraftLoc.Get("sort.status"),
         SortLevel   => CraftLoc.Get("sort.level"),
         SortMissing => CraftLoc.Get("sort.missing"),
+        SortMarket  => CraftLoc.Get("sort.market"),
         _           => CraftLoc.Get("sort.name"),
     };
 
@@ -709,6 +815,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         if (_lblSort is not null)          _lblSort.String         = CraftLoc.Get("filter.sort");
         if (_lblClass is not null)         _lblClass.String        = CraftLoc.Get("filter.class");
         if (_hideCraftedCheck is not null) _hideCraftedCheck.String = CraftLoc.Get("filter.hidecrafted");
+        if (_hideNonLogCheck  is not null) _hideNonLogCheck.String  = CraftLoc.Get("filter.hidenonlog");
         if (_searchInput is not null)      _searchInput.PlaceholderString = CraftLoc.Get("search");
         if (_refreshBtn is not null)       _refreshBtn.TextTooltip = CraftLoc.Get("tip.refresh");
         if (_sortDirBtn is not null)       _sortDirBtn.TextTooltip = CraftLoc.Get("tip.sortdir");
@@ -719,7 +826,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         // Force the sort dropdown to re-render its localized labels.
         if (_sortDropdown is not null)
         {
-            _sortDropdown.Options        = [SortName, SortStatus, SortLevel, SortMissing];
+            _sortDropdown.Options        = [SortName, SortStatus, SortLevel, SortMissing, SortMarket];
             _sortDropdown.SelectedOption = _sortMode;
         }
     }
@@ -843,6 +950,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         _hdrStatus = MakeTitle(c.X + 6f, y, SidebarW - 12f, CraftLoc.Get("hdr.status"));
         y += 26f;
 
+        AddStatusItem(c, ref y, "all",      CraftLoc.Get("status.all"));
         AddStatusItem(c, ref y, "ready",    CraftLoc.Get("status.ready"));
         AddStatusItem(c, ref y, "near",     CraftLoc.Get("status.almost"));
         AddStatusItem(c, ref y, "notReady", CraftLoc.Get("status.cant"));
@@ -1003,8 +1111,8 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         var capturedId = id;
         item.OnClick = _ =>
         {
-            var idxMap = new[] { "ready", "near", "notReady" };
-            for (var i = 0; i < _statusItems.Count && i < 3; i++)
+            var idxMap = new[] { "all", "ready", "near", "notReady" };
+            for (var i = 0; i < _statusItems.Count && i < 4; i++)
             {
                 _statusItems[i].IsSelected         = idxMap[i] == capturedId;
                 _statusItems[i].TextNode.TextColor = _statusItems[i].IsSelected ? CategoryGold : BodyGrey;

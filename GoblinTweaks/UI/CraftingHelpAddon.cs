@@ -46,19 +46,27 @@ internal unsafe class CraftingHelpAddon : NativeAddon
         ]),
         ("Icons", "help.nav.icons",
         [
-            new Line("help.icons.check.kw", Green,     "help.icons.check.tx"),
-            new Line("", White, "", 10f),
-            new Line("help.icons.hide.kw",  TitleGold, "help.icons.hide.tx"),
-            new Line("help.icons.sort.kw",  TitleGold, "help.icons.sort.tx", 40f),
-            new Line("help.icons.class.kw", TitleGold, "help.icons.class.tx"),
-            new Line("help.icons.refresh.kw", TitleGold, "help.icons.refresh.tx"),
+            // Status indicators
+            new Line("help.icons.check.kw",       Green,     "help.icons.check.tx"),
+            new Line("help.icons.dot.kw",          Grey,      "help.icons.dot.tx", 40f),
+            new Line("", White, "", 8f),
+            // Filters
+            new Line("help.icons.hide.kw",         TitleGold, "help.icons.hide.tx"),
+            new Line("help.icons.hidenonlog.kw",   TitleGold, "help.icons.hidenonlog.tx", 40f),
+            new Line("help.icons.allrecipes.kw",   TitleGold, "help.icons.allrecipes.tx", 40f),
+            new Line("", White, "", 8f),
+            // Sort & class
+            new Line("help.icons.sort.kw",         TitleGold, "help.icons.sort.tx", 56f),
+            new Line("help.icons.class.kw",        TitleGold, "help.icons.class.tx"),
+            new Line("help.icons.refresh.kw",      TitleGold, "help.icons.refresh.tx"),
         ]),
         ("Tips", "help.nav.tips",
         [
-            new Line("", White, "help.tips.t1", 40f),
+            new Line("", White, "help.tips.t1", 56f),
             new Line("", White, "help.tips.t2", 40f),
             new Line("", White, "help.tips.t3", 40f),
             new Line("", White, "help.tips.t4", 40f),
+            new Line("", White, "help.tips.t5", 56f),
         ]),
     ];
 

@@ -15,6 +15,17 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.0.4", "2026-10-03",
+            "Crafting Materials adds HQ tracking in tooltips, non-log recipe markers, market-price sorting, and an All Recipes view.",
+            [
+                "New: Ingredient hover tooltips show HQ quantities per location — e.g. \"Retainer: 5 (2 HQ)\"",
+                "New: Non-log recipes (master books and special non-housing) show a grey ● dot; new \"Hide non-log\" filter removes them",
+                "New: Market price sort via Universalis — loads in the background, unknown prices go last",
+                "New: \"All Recipes\" entry in the STATUS sidebar shows every recipe regardless of craft status",
+                "Fix: Right-clicking a yellow (saddlebag) ingredient opens the item menu; right-clicking a red craftable ingredient opens its recipe in the Crafting Log",
+                "Fix: Scrollbar thumb now enforces a minimum size and never shrinks to near-invisible on large lists",
+            ]),
+
         new("1.0.3", "2026-10-02",
             "Crafting Materials now remembers retainer and FC chest data between sessions and auto-refreshes as your inventory changes.",
             [
