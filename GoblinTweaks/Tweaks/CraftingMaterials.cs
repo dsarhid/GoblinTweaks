@@ -37,10 +37,14 @@ public sealed class InventorySnapshot
     public bool HasFCData;
 
     public readonly Dictionary<uint, int>                              Player          = new();
+    public readonly Dictionary<uint, int>                              PlayerHQ        = new();
     public readonly Dictionary<uint, int>                              Saddlebag       = new();
+    public readonly Dictionary<uint, int>                              SaddlebagHQ     = new();
     public readonly Dictionary<uint, int>                              Retainer        = new(); // aggregate
+    public readonly Dictionary<uint, int>                              RetainerHQ      = new(); // aggregate HQ
     public readonly Dictionary<uint, int>                              FCChest         = new();
-    public readonly List<(string Name, Dictionary<uint, int> Items)>  RetainerDetails = [];
+    public readonly Dictionary<uint, int>                              FCChestHQ       = new();
+    public readonly List<(string Name, Dictionary<uint, int> Items, Dictionary<uint, int> ItemsHQ)> RetainerDetails = [];
 
     public int Get(uint itemId, InventorySource src) => src switch
     {
@@ -66,32 +70,37 @@ public sealed class InventorySnapshot
         if (FCChest  .TryGetValue(itemId, out     q) && q > 0) yield return (InventorySource.FreeCompany, q);
     }
 
-    /// <summary>Returns human-readable location strings for tooltip display, including retainer names.</summary>
-    public IEnumerable<(string Location, int Qty)> Locations(uint itemId)
+    /// <summary>Returns human-readable location strings for tooltip display, including retainer names and HQ counts.</summary>
+    public IEnumerable<(string Location, int Total, int Hq)> Locations(uint itemId)
     {
-        var q = Player.GetValueOrDefault(itemId);
+        var q  = Player.GetValueOrDefault(itemId);
+        var hq = PlayerHQ.GetValueOrDefault(itemId);
         if (q > 0)
-            yield return (string.IsNullOrEmpty(PlayerName) ? CraftLoc.Get("loc.yourbags") : CraftLoc.Fmt("loc.bagsof", PlayerName), q);
+            yield return (string.IsNullOrEmpty(PlayerName) ? CraftLoc.Get("loc.yourbags") : CraftLoc.Fmt("loc.bagsof", PlayerName), q, hq);
 
-        q = Saddlebag.GetValueOrDefault(itemId);
-        if (q > 0) yield return (CraftLoc.Get("loc.saddlebag"), q);
+        q  = Saddlebag.GetValueOrDefault(itemId);
+        hq = SaddlebagHQ.GetValueOrDefault(itemId);
+        if (q > 0) yield return (CraftLoc.Get("loc.saddlebag"), q, hq);
 
         if (RetainerDetails.Count > 0)
         {
-            foreach (var (name, items) in RetainerDetails)
+            foreach (var (name, items, itemsHQ) in RetainerDetails)
             {
-                q = items.GetValueOrDefault(itemId);
-                if (q > 0) yield return (CraftLoc.Fmt("loc.bagsof", name), q);
+                q  = items.GetValueOrDefault(itemId);
+                hq = itemsHQ.GetValueOrDefault(itemId);
+                if (q > 0) yield return (CraftLoc.Fmt("loc.bagsof", name), q, hq);
             }
         }
         else
         {
-            q = Retainer.GetValueOrDefault(itemId);
-            if (q > 0) yield return (CraftLoc.Get("loc.retainers"), q);
+            q  = Retainer.GetValueOrDefault(itemId);
+            hq = RetainerHQ.GetValueOrDefault(itemId);
+            if (q > 0) yield return (CraftLoc.Get("loc.retainers"), q, hq);
         }
 
-        q = FCChest.GetValueOrDefault(itemId);
-        if (q > 0) yield return (CraftLoc.Get("loc.fcchest"), q);
+        q  = FCChest.GetValueOrDefault(itemId);
+        hq = FCChestHQ.GetValueOrDefault(itemId);
+        if (q > 0) yield return (CraftLoc.Get("loc.fcchest"), q, hq);
     }
 }
 
@@ -133,6 +142,12 @@ public sealed class CraftableEntry
     public CraftStatus           Status;
     public int                   MissingCount;
     public bool                  IsCrafted;
+    /// <summary>
+    /// True for basic recipes and special-category housing recipes — these count toward
+    /// the in-game crafting log. False for master recipes (SecretRecipeBook) and other
+    /// special-category recipes (seasonal, event, etc.).
+    /// </summary>
+    public bool                  IsLogRecipe;
     public int                   ItemLevel;
     public int                   CraftLevel;   // recipe class-job level (1-100)
     public List<IngredientCheck> Ingredients     = [];
@@ -313,17 +328,17 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         {
             if (Settings.IncludeRetainers && !live.HasRetainerData && _cachedSnapshot.HasRetainerData)
             {
-                foreach (var (k, v) in _cachedSnapshot.Retainer)
-                    live.Retainer[k] = v;
-                foreach (var (name, items) in _cachedSnapshot.RetainerDetails)
-                    live.RetainerDetails.Add((name, new Dictionary<uint, int>(items)));
+                foreach (var (k, v) in _cachedSnapshot.Retainer)   live.Retainer[k]   = v;
+                foreach (var (k, v) in _cachedSnapshot.RetainerHQ) live.RetainerHQ[k] = v;
+                foreach (var (name, items, hq) in _cachedSnapshot.RetainerDetails)
+                    live.RetainerDetails.Add((name, new Dictionary<uint, int>(items), new Dictionary<uint, int>(hq)));
                 live.HasRetainerData = true;
             }
 
             if (Settings.IncludeFCChest && !live.HasFCData && _cachedSnapshot.HasFCData)
             {
-                foreach (var (k, v) in _cachedSnapshot.FCChest)
-                    live.FCChest[k] = v;
+                foreach (var (k, v) in _cachedSnapshot.FCChest)   live.FCChest[k]   = v;
+                foreach (var (k, v) in _cachedSnapshot.FCChestHQ) live.FCChestHQ[k] = v;
                 live.HasFCData = true;
             }
         }
@@ -340,15 +355,20 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         public bool                   HasRetainerData { get; set; }
         public bool                   HasFCData       { get; set; }
         public Dictionary<uint, int>  Player          { get; set; } = [];
+        public Dictionary<uint, int>  PlayerHQ        { get; set; } = [];
         public Dictionary<uint, int>  Saddlebag       { get; set; } = [];
+        public Dictionary<uint, int>  SaddlebagHQ     { get; set; } = [];
         public Dictionary<uint, int>  Retainer        { get; set; } = [];
+        public Dictionary<uint, int>  RetainerHQ      { get; set; } = [];
         public Dictionary<uint, int>  FCChest         { get; set; } = [];
+        public Dictionary<uint, int>  FCChestHQ       { get; set; } = [];
         public List<RetainerDetail>   RetainerDetails { get; set; } = [];
 
         public sealed class RetainerDetail
         {
-            public string                Name  { get; set; } = string.Empty;
-            public Dictionary<uint, int> Items { get; set; } = [];
+            public string                Name    { get; set; } = string.Empty;
+            public Dictionary<uint, int> Items   { get; set; } = [];
+            public Dictionary<uint, int> ItemsHQ { get; set; } = [];
         }
 
         public static InventorySnapshotData From(InventorySnapshot s) => new()
@@ -357,11 +377,15 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             HasRetainerData = s.HasRetainerData,
             HasFCData       = s.HasFCData,
             Player          = new(s.Player),
+            PlayerHQ        = new(s.PlayerHQ),
             Saddlebag       = new(s.Saddlebag),
+            SaddlebagHQ     = new(s.SaddlebagHQ),
             Retainer        = new(s.Retainer),
+            RetainerHQ      = new(s.RetainerHQ),
             FCChest         = new(s.FCChest),
+            FCChestHQ       = new(s.FCChestHQ),
             RetainerDetails = s.RetainerDetails
-                .Select(r => new RetainerDetail { Name = r.Name, Items = new(r.Items) })
+                .Select(r => new RetainerDetail { Name = r.Name, Items = new(r.Items), ItemsHQ = new(r.ItemsHQ) })
                 .ToList(),
         };
 
@@ -373,12 +397,16 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
                 HasRetainerData = HasRetainerData,
                 HasFCData       = HasFCData,
             };
-            foreach (var (k, v) in Player)    s.Player[k]    = v;
-            foreach (var (k, v) in Saddlebag) s.Saddlebag[k] = v;
-            foreach (var (k, v) in Retainer)  s.Retainer[k]  = v;
-            foreach (var (k, v) in FCChest)   s.FCChest[k]   = v;
+            foreach (var (k, v) in Player)      s.Player[k]      = v;
+            foreach (var (k, v) in PlayerHQ)    s.PlayerHQ[k]    = v;
+            foreach (var (k, v) in Saddlebag)   s.Saddlebag[k]   = v;
+            foreach (var (k, v) in SaddlebagHQ) s.SaddlebagHQ[k] = v;
+            foreach (var (k, v) in Retainer)    s.Retainer[k]    = v;
+            foreach (var (k, v) in RetainerHQ)  s.RetainerHQ[k]  = v;
+            foreach (var (k, v) in FCChest)     s.FCChest[k]     = v;
+            foreach (var (k, v) in FCChestHQ)   s.FCChestHQ[k]   = v;
             foreach (var r in RetainerDetails)
-                s.RetainerDetails.Add((r.Name, new Dictionary<uint, int>(r.Items)));
+                s.RetainerDetails.Add((r.Name, new Dictionary<uint, int>(r.Items), new Dictionary<uint, int>(r.ItemsHQ)));
             return s;
         }
     }
@@ -467,21 +495,21 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
 
         snap.PlayerName = Svc.PlayerState.IsLoaded ? Svc.PlayerState.CharacterName : string.Empty;
 
-        ScanContainers(snap.Player, mgr,
+        ScanContainers(snap.Player, snap.PlayerHQ, mgr,
             InventoryType.Inventory1, InventoryType.Inventory2,
             InventoryType.Inventory3, InventoryType.Inventory4,
             InventoryType.Crystals);
 
         if (Settings.IncludeSaddlebag)
-            ScanContainers(snap.Saddlebag, mgr,
+            ScanContainers(snap.Saddlebag, snap.SaddlebagHQ, mgr,
                 InventoryType.SaddleBag1, InventoryType.SaddleBag2,
                 InventoryType.PremiumSaddleBag1, InventoryType.PremiumSaddleBag2);
 
         if (Settings.IncludeRetainers)
-            snap.HasRetainerData = ScanRetainers(snap.Retainer, snap.RetainerDetails, mgr);
+            snap.HasRetainerData = ScanRetainers(snap.Retainer, snap.RetainerHQ, snap.RetainerDetails, mgr);
 
         if (Settings.IncludeFCChest)
-            snap.HasFCData = ScanContainers(snap.FCChest, mgr,
+            snap.HasFCData = ScanContainers(snap.FCChest, snap.FCChestHQ, mgr,
                 InventoryType.FreeCompanyPage1, InventoryType.FreeCompanyPage2,
                 InventoryType.FreeCompanyPage3, InventoryType.FreeCompanyPage4,
                 InventoryType.FreeCompanyPage5);
@@ -491,7 +519,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
 
     // Returns true if at least one container was non-null (data was accessible in memory).
     private static unsafe bool ScanContainers(
-        Dictionary<uint, int> target, InventoryManager* mgr, params InventoryType[] types)
+        Dictionary<uint, int> target, Dictionary<uint, int>? hqTarget, InventoryManager* mgr, params InventoryType[] types)
     {
         var anyLoaded = false;
         foreach (var type in types)
@@ -507,6 +535,9 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
 
                 var id = slot->ItemId;
                 target[id] = target.GetValueOrDefault(id) + (int)slot->Quantity;
+
+                if (hqTarget is not null && (slot->Flags & InventoryItem.ItemFlags.HighQuality) != 0)
+                    hqTarget[id] = hqTarget.GetValueOrDefault(id) + (int)slot->Quantity;
             }
         }
         return anyLoaded;
@@ -517,8 +548,8 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     // from previous visits is available in RetainerPage1-7 of each retainer's slot.
     // Returns true if any retainer data was available (Available == true for at least one retainer).
     private static unsafe bool ScanRetainers(
-        Dictionary<uint, int> aggregate,
-        List<(string Name, Dictionary<uint, int> Items)> details,
+        Dictionary<uint, int> aggregate, Dictionary<uint, int> aggregateHQ,
+        List<(string Name, Dictionary<uint, int> Items, Dictionary<uint, int> ItemsHQ)> details,
         InventoryManager* mgr)
     {
         var retMgr = RetainerManager.Instance();
@@ -531,13 +562,14 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             if (retainer == null || !retainer->Available) continue;
 
             // Name is a Span<byte> with a null terminator — decode as UTF-8.
-            var nameSpan    = retainer->Name;
-            var nullIdx     = nameSpan.IndexOf((byte)0);
+            var nameSpan     = retainer->Name;
+            var nullIdx      = nameSpan.IndexOf((byte)0);
             var retainerName = Encoding.UTF8.GetString(nullIdx >= 0 ? nameSpan[..nullIdx] : nameSpan);
             if (string.IsNullOrWhiteSpace(retainerName))
                 retainerName = $"Retainer {ri + 1}";
 
-            var retainerItems = new Dictionary<uint, int>();
+            var retainerItems   = new Dictionary<uint, int>();
+            var retainerItemsHQ = new Dictionary<uint, int>();
 
             for (var page = 0; page < 7; page++)
             {
@@ -554,11 +586,17 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
                     var id = slot->ItemId;
                     retainerItems[id] = retainerItems.GetValueOrDefault(id) + (int)slot->Quantity;
                     aggregate[id]     = aggregate    .GetValueOrDefault(id) + (int)slot->Quantity;
+
+                    if ((slot->Flags & InventoryItem.ItemFlags.HighQuality) != 0)
+                    {
+                        retainerItemsHQ[id] = retainerItemsHQ.GetValueOrDefault(id) + (int)slot->Quantity;
+                        aggregateHQ[id]     = aggregateHQ    .GetValueOrDefault(id) + (int)slot->Quantity;
+                    }
                 }
             }
 
             if (retainerItems.Count > 0)
-                details.Add((retainerName, retainerItems));
+                details.Add((retainerName, retainerItems, retainerItemsHQ));
         }
 
         return details.Count > 0;
@@ -626,6 +664,12 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
                 ? resultItem.ItemUICategory.Value.Name.ExtractText()
                 : string.Empty;
 
+            // Counts for the in-game crafting log: basic recipes (IsSecondary=false) and
+            // special-category housing recipes (FilterGroup 14). Master recipes and other
+            // special-category recipes (seasonal/event) are not tracked by the log.
+            var isLogRecipe = recipe.SecretRecipeBook.RowId == 0
+                && (!recipe.IsSecondary || resultItem.FilterGroup == 14);
+
             results.Add(new CraftableEntry
             {
                 RecipeId     = recipe.RowId,
@@ -638,6 +682,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
                 Status       = status,
                 MissingCount = missingCount,
                 IsCrafted    = QuestManager.IsRecipeComplete(recipe.RowId),
+                IsLogRecipe  = isLogRecipe,
                 ItemLevel    = (int)resultItem.LevelItem.RowId,
                 CraftLevel   = recipe.RecipeLevelTable.IsValid ? recipe.RecipeLevelTable.Value.ClassJobLevel : 0,
                 Ingredients  = checks,
@@ -669,6 +714,9 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
 
     /// <summary>Whether an item can itself be crafted (has a recipe producing it).</summary>
     public bool IsCraftable(uint itemId) => RecipeByResult().ContainsKey(itemId);
+
+    /// <summary>Returns the recipe RowId that produces <paramref name="itemId"/>, or 0 if none.</summary>
+    public uint GetRecipeId(uint itemId) => RecipeByResult().GetValueOrDefault(itemId);
 
     /// <summary>Ingredient availability for the recipe that produces <paramref name="itemId"/> (empty if none).</summary>
     public List<IngredientCheck> SubIngredients(uint itemId, InventorySnapshot snap)
