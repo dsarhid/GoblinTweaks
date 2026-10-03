@@ -61,6 +61,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     {
         public required IngredientCheck Check;
         public required string          PrimaryLocation;
+        public IReadOnlyList<(string Location, int Qty)> AllLocations = [];
         public int                      Depth;
         public bool                     Craftable;
         public bool                     Expanded;
@@ -76,6 +77,11 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     private int    _collisionRebuildFrames;
     private uint   _pendingOpenRecipeId; // deferred crafting-log open (0 = none)
     private string _selectedView   = "ready";
+
+    // Auto-refresh when inventory changes while the window is open
+    private DateTime _inventoryChangedAt = DateTime.MinValue;
+    private uint     _pendingRestoreId;   // RecipeId to re-select after a refresh
+    private const double InventoryDebounceMs = 1500.0;
 
     // Filter / sort state (driven by the top bar)
     private bool   _hideCrafted;
@@ -165,6 +171,15 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             AgentRecipeNote.Instance()->OpenRecipeByRecipeId(recipeId);
         }
 
+        // Debounced auto-refresh when inventory changes (e.g. moving items, visiting retainers)
+        if (_inventoryChangedAt != DateTime.MinValue &&
+            (DateTime.UtcNow - _inventoryChangedAt).TotalMilliseconds >= InventoryDebounceMs)
+        {
+            _inventoryChangedAt = DateTime.MinValue;
+            _pendingRestoreId   = _selectedEntry?.RecipeId ?? 0;
+            _pendingRefresh     = true;
+        }
+
         // Refresh market data display when Universalis responds
         PollMarketData();
     }
@@ -172,8 +187,15 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     /// <summary>Queues a native collision-node-list rebuild for the next few frames.</summary>
     private void RequestCollisionRebuild() => _collisionRebuildFrames = 3;
 
-    /// <summary>Re-scans inventories and re-analyses recipes next frame (e.g. after a settings change).</summary>
-    public void RequestRefresh() => _pendingRefresh = true;
+    /// <summary>Re-scans inventories and re-analyses recipes next frame, preserving the current selection.</summary>
+    public void RequestRefresh()
+    {
+        _pendingRestoreId = _selectedEntry?.RecipeId ?? 0;
+        _pendingRefresh   = true;
+    }
+
+    /// <summary>Schedules a debounced re-scan triggered by an inventory-change event.</summary>
+    public void NotifyInventoryChanged() => _inventoryChangedAt = DateTime.UtcNow;
 
     protected override void OnFinalize(AtkUnitBase* addon)
     {
@@ -289,7 +311,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
 
         try
         {
-            _snapshot = Tweak.ScanInventories();
+            _snapshot = Tweak.ScanAndMerge();
             _entries  = Tweak.Analyze(_snapshot);
         }
         catch (Exception ex)
@@ -403,6 +425,15 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         if (_recipeList is not null)
             _recipeList.OptionsList = _filtered;
 
+        // Restore the previously selected recipe after an inventory-triggered refresh
+        if (_pendingRestoreId != 0)
+        {
+            var toRestore = _filtered.FirstOrDefault(e => e.RecipeId == _pendingRestoreId);
+            _pendingRestoreId = 0;
+            if (toRestore is not null)
+                ShowDetailPanel(toRestore);
+        }
+
         UpdateBottomBar();
         RequestCollisionRebuild();
     }
@@ -456,11 +487,13 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
 
     private IngTreeNode MakeIngNode(IngredientCheck ing, int depth)
     {
-        var locs = _snapshot.Locations(ing.ItemId).ToList();
+        // Sort by quantity descending so the location with most items is shown first.
+        var locs = _snapshot.Locations(ing.ItemId).OrderByDescending(l => l.Qty).ToList();
         var node = new IngTreeNode
         {
             Check           = ing,
             PrimaryLocation = locs.Count > 0 ? locs[0].Location : string.Empty,
+            AllLocations    = locs,
             Depth           = depth,
             Craftable       = depth < MaxIngDepth && (Tweak?.IsCraftable(ing.ItemId) ?? false),
             Id              = ++_ingIdSeq,
@@ -491,7 +524,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
 
         void Add(IngTreeNode n)
         {
-            rows.Add(new IngredientRow(n.Check, n.PrimaryLocation, n.Depth, n.Craftable, n.Expanded, n.Id));
+            rows.Add(new IngredientRow(n.Check, n.PrimaryLocation, n.AllLocations, n.Depth, n.Craftable, n.Expanded, n.Id));
             if (n.Expanded && n.Children is not null)
                 foreach (var child in n.Children)
                     Add(child);
@@ -797,7 +830,11 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             Size        = new Vector2(btnSz, btnSz),
             TextTooltip = CraftLoc.Get("tip.refresh"),
         };
-        _refreshBtn.OnClick = () => _pendingRefresh = true;
+        _refreshBtn.OnClick = () =>
+        {
+            _pendingRestoreId = _selectedEntry?.RecipeId ?? 0;
+            _pendingRefresh   = true;
+        };
         _refreshBtn.AttachNode(this);
 
         y += SearchBarH + gap + 2f;
