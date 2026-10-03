@@ -11,18 +11,17 @@ on:
   pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       DALAMUD_HOME: ${{ github.workspace }}/.dalamud
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # actions/checkout@v5
 
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # actions/setup-dotnet@v5
         with:
           global-json-file: global.json
 
@@ -43,7 +42,7 @@ jobs:
           cp "$zip" dist/latest.zip
           cp "$(dirname "$zip")/GoblinTweaks.json" dist/GoblinTweaks.json
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # actions/upload-artifact@v5
         with:
           name: GoblinTweaks
           path: dist/*
@@ -52,27 +51,32 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # actions/checkout@v5
         with:
           ref: main
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # actions/download-artifact@v5
         with:
           name: GoblinTweaks
           path: artifact
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # softprops/action-gh-release@v2
         with:
           name: GoblinTweaks ${{ github.ref_name }}
           generate_release_notes: true
           files: artifact/latest.zip
 
       - name: Update repo.json
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
-          python3 scripts/update-repo-json.py artifact/GoblinTweaks.json "${{ github.repository }}" "${{ github.ref_name }}"
+          python3 scripts/update-repo-json.py artifact/GoblinTweaks.json "$REPO" "$TAG"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add repo.json
-          git commit -m "repo.json: ${{ github.ref_name }}" || echo "No changes"
+          git commit -m "repo.json: $TAG" || echo "No changes"
           git push origin main
