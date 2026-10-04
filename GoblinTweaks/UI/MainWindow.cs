@@ -45,6 +45,8 @@ public sealed class MainWindow : Window
 
     public override void Draw()
     {
+        _manager.UpdateMemoryUsage();
+
         DrawHeader();
         DrawFilters();
         ImGui.Separator();
@@ -244,6 +246,15 @@ public sealed class MainWindow : Window
             ImGui.SameLine();
             Widgets.Badge(Loc.Get($"Category.{tweak.Category}", tweak.Category.ToString()), Palette.AccentDim, Palette.Accent);
 
+            if (tweak.MemoryBytes >= 0)
+            {
+                ImGui.SameLine();
+                ImGui.AlignTextToFramePadding();
+                ImGui.TextColored(Palette.Muted, FormatMemory(tweak.MemoryBytes));
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(Loc.Get("Window.Memory.Tooltip"));
+            }
+
             if (!string.IsNullOrEmpty(tweak.Description))
             {
                 ImGui.PushTextWrapPos(0);
@@ -259,6 +270,13 @@ public sealed class MainWindow : Window
                 DrawSettingsSection(tweak);
         });
     }
+
+    private static string FormatMemory(long bytes) => bytes switch
+    {
+        < 1024 => $"~{bytes} B",
+        < 1024 * 1024 => $"~{bytes / 1024.0:0.#} KB",
+        _ => $"~{bytes / (1024.0 * 1024.0):0.##} MB",
+    };
 
     private void DrawError(Tweak tweak)
     {

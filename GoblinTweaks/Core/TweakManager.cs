@@ -5,6 +5,11 @@ namespace GoblinTweaks.Core;
 /// <summary>Discovers tweaks, applies the saved enabled state and isolates their failures.</summary>
 public sealed class TweakManager : IDisposable
 {
+    private static readonly TimeSpan MemoryUpdateInterval = TimeSpan.FromSeconds(5);
+
+    private DateTime _nextMemoryUpdate = DateTime.MinValue;
+    private int _measuringMemory;
+
     public TweakManager(ConfigStore store)
     {
         Store = store;
@@ -64,6 +69,35 @@ public sealed class TweakManager : IDisposable
         var changed = enabled ? Store.Data.EnabledTweaks.Add(tweak.Id) : Store.Data.EnabledTweaks.Remove(tweak.Id);
         if (changed)
             Store.Save();
+    }
+
+    /// <summary>
+    /// Refreshes <see cref="Tweak.MemoryBytes"/> in the background, at most once per
+    /// <see cref="MemoryUpdateInterval"/>. Called by the UI while it is visible, so nothing is measured otherwise.
+    /// </summary>
+    public void UpdateMemoryUsage()
+    {
+        if (DateTime.UtcNow < _nextMemoryUpdate || Interlocked.Exchange(ref _measuringMemory, 1) == 1)
+            return;
+
+        _nextMemoryUpdate = DateTime.UtcNow + MemoryUpdateInterval;
+        Task.Run(() =>
+        {
+            try
+            {
+                foreach (var tweak in Tweaks)
+                    tweak.MemoryBytes = MemoryEstimator.Estimate(tweak);
+            }
+            catch (Exception ex)
+            {
+                // Tweaks keep changing on the game thread while they are measured; the next pass retries.
+                Svc.Log.Debug(ex, "Could not measure tweak memory");
+            }
+            finally
+            {
+                Volatile.Write(ref _measuringMemory, 0);
+            }
+        });
     }
 
     internal void ReportFailure(Tweak tweak, Exception exception)

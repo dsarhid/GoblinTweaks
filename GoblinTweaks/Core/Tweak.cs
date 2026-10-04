@@ -30,6 +30,9 @@ public abstract class Tweak
     /// <summary>Last error message when <see cref="State"/> is <see cref="TweakState.Error"/>.</summary>
     public string? ErrorMessage { get; internal set; }
 
+    /// <summary>Approximate managed memory held by this tweak, in bytes. Negative until first measured.</summary>
+    public long MemoryBytes { get; internal set; } = -1;
+
     public string Name => Loc.Get($"Tweaks.{Id}.Name", Id);
 
     public string Description => Loc.Get($"Tweaks.{Id}.Description", string.Empty);
