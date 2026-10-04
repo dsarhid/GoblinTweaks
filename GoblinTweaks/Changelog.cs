@@ -15,6 +15,16 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.0.5", "2026-10-04",
+            "New GoblinSniper market deal finder and Weapon pose per job tweaks, plus a memory estimate on every tweak card.",
+            [
+                "New: GoblinSniper — scans Universalis for listings far below the item's normal price and lists them in a native window with search, sorting and world/data-age filters",
+                "New: GoblinSniper shows the number of deals in the Server Info Bar; click it to open the window",
+                "New: GoblinSniper settings — discount, minimum price, scan interval, maximum data age, 14 item types, specific items and item name language",
+                "New: Weapon pose per job — remembers the /cpose chosen with the weapon drawn for each job and restores it after switching",
+                "New: Each tweak card shows the approximate memory the tweak is using",
+            ]),
+
         new("1.0.4", "2026-10-03",
             "Crafting Materials adds HQ tracking in tooltips, non-log recipe markers, market-price sorting, and an All Recipes view.",
             [
