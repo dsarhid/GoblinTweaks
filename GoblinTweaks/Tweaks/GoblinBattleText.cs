@@ -334,6 +334,14 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
 
     private Hook<BattleLog.Delegates.AddToScreenLogWithScreenLogKind>? _hook;
     private Hook<ActionEffectHandler.Delegates.Receive>? _actionHook;
+    private Hook<StatusManager.Delegates.ProcessHotDot>? _tickHook;
+
+    // The tick the game is working out right now, while it does: the status it is of and who put it there,
+    // when the game says so. It does for what ticks from the ground (Doton, Salted Earth...), which is on no
+    // list of statuses of the enemy; for the rest it sends one sum with no status and no source.
+    private (uint StatusId, uint SourceId)? _tickSource;
+
+    private const uint NoEntity = 0xE0000000;
     private readonly Dictionary<uint, bool> _playerActions = [];
     private OverlayController? _overlay;
     private BattleTextAddon? _addon;
@@ -529,6 +537,14 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
             _actionHook.Enable();
         }
 
+        // Without this one, a tick is only told apart by the statuses of whoever it is on.
+        var tickAddress = StatusManager.Addresses.ProcessHotDot.Value;
+        if (tickAddress != 0)
+        {
+            _tickHook = Svc.GameInterop.HookFromAddress<StatusManager.Delegates.ProcessHotDot>((nint)tickAddress, OnTick);
+            _tickHook.Enable();
+        }
+
         Svc.Commands.AddHandler(Command, new CommandInfo((_, _) => _addon?.Toggle()) { HelpMessage = T("Command.Help") });
         Svc.Framework.Update += OnUpdate;
     }
@@ -542,6 +558,9 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
         _hook = null;
         _actionHook?.Dispose();
         _actionHook = null;
+        _tickHook?.Dispose();
+        _tickHook = null;
+        _tickSource = null;
 
         _addon?.Close();
         _addon = null;
@@ -850,7 +869,26 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
         // On someone else, a tick is not yours when none of what ticks is; and when others have theirs there
         // too, your share is taken as one part per status, which is exact only if they are all as strong.
         var estimated = false;
-        if ((tick || healTick) && to != player)
+        var ticking   = tick || healTick ? _tickSource : null;
+
+        if (ticking is { SourceId: not (0 or NoEntity) } told)
+        {
+            // The game says whose tick it is: no guessing, and no sharing it out.
+            var manager = GameObjectManager.Instance();
+            var yours   = told.SourceId == player->EntityId
+                          || IsMyPet(player, manager == null ? null : manager->Objects.GetObjectByEntityId(told.SourceId));
+            if (to != player && !yours)
+            {
+                if (healTick) return false;
+
+                var dealt = Event(BattleTextEvent.DamageDealt);
+                return dealt.Enabled && Area(dealt.Area).Enabled;
+            }
+
+            var named = told.StatusId != 0 ? LookupStatus(told.StatusId) : default;
+            over = (named.Name ?? over.Name, named.Name is null ? over.IconId : named.IconId, 1, 1);
+        }
+        else if ((tick || healTick) && to != player)
         {
             // Healing that is not yours is left to the game. Damage over time that is not yours is not shown at
             // all, here or by the game, as long as this tweak is the one showing the damage you deal.
@@ -988,6 +1026,23 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
             HitSource.Heal  => highlight.ColorHeal,
             _               => highlight.Color,
         };
+    }
+
+    /// <summary>
+    /// The game working out one tick of damage or healing over time: the text it makes for it is made in here,
+    /// so what it says of the tick is kept at hand meanwhile. Runs inside the game's own code: it must never throw.
+    /// </summary>
+    private void OnTick(StatusManager* statuses, BattleChara* target, uint statusId, int tickMode, uint value, uint sourceEntityId, int damageType)
+    {
+        _tickSource = (statusId, sourceEntityId);
+        try
+        {
+            _tickHook!.Original(statuses, target, statusId, tickMode, value, sourceEntityId, damageType);
+        }
+        finally
+        {
+            _tickSource = null;
+        }
     }
 
     // ── Actions with no fly text ────────────────────────────────────────────────
