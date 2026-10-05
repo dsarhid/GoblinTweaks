@@ -15,6 +15,14 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.0.10", "2026-10-05",
+            "Goblin Battle Text: ground damage like Doton shows its name and only when it is yours.",
+            [
+                "Fix: Goblin Battle Text damage from the ground, like Doton, showed as a bare number with (DoT) — it now shows the name and icon of its effect",
+                "Fix: Goblin Battle Text showed the ground damage of other players as yours — only yours shows now, even next to someone of your job",
+                "Change: Goblin Battle Text healing over time is told apart by who gave it, as the game reports it, instead of by the effects on whoever is healed",
+            ]),
+
         new("1.0.9", "2026-10-05",
             "Goblin Battle Text: positional alerts, names on damage and healing over time, only your own debuffs, and critical hits kept apart.",
             [
