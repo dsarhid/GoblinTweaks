@@ -3,7 +3,7 @@
     "Author": "David Sarhid",
     "Name": "GoblinTweaks",
     "InternalName": "GoblinTweaks",
-    "AssemblyVersion": "1.0.9.0",
+    "AssemblyVersion": "1.0.10.0",
     "Description": "A growing collection of small quality of life tweaks.\nOpen /goblintweaks to turn them on and configure them.",
     "ApplicableVersion": "any",
     "RepoUrl": "https://github.com/dsarhid/GoblinTweaks",
@@ -21,11 +21,11 @@
     "IconUrl": "https://raw.githubusercontent.com/dsarhid/GoblinTweaks/main/GoblinTweaks/Assets/Icon.png",
     "Punchline": "Small quality of life tweaks, one toggle at a time.",
     "AcceptsFeedback": true,
-    "DownloadLinkInstall": "https://github.com/dsarhid/GoblinTweaks/releases/download/v1.0.9/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/dsarhid/GoblinTweaks/releases/download/v1.0.9/latest.zip",
-    "DownloadLinkTesting": "https://github.com/dsarhid/GoblinTweaks/releases/download/v1.0.9/latest.zip",
+    "DownloadLinkInstall": "https://github.com/dsarhid/GoblinTweaks/releases/download/v1.0.10/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/dsarhid/GoblinTweaks/releases/download/v1.0.10/latest.zip",
+    "DownloadLinkTesting": "https://github.com/dsarhid/GoblinTweaks/releases/download/v1.0.10/latest.zip",
     "IsHide": false,
     "IsTestingExclusive": false,
-    "LastUpdate": 1791176395
+    "LastUpdate": 1791177474
   }
 ]
