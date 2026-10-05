@@ -15,6 +15,24 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.0.8", "2026-10-04",
+            "Goblin Battle Text: settings redone in 5 tabs, areas you drag on screen, colors per kind of hit, and text for Bloodbath heals and dashes.",
+            [
+                "New: Goblin Battle Text areas can be dragged on screen by a box with their name while the settings window is open",
+                "New: Goblin Battle Text Action with no damage event — dashes and other actions the game shows no text for appear with their icon and name",
+                "New: Goblin Battle Text critical, direct and critical direct hits have one color for damage dealt and one for damage taken; critical hits have a third one for healing",
+                "New: Goblin Battle Text position has a number box with + and - next to its slider, and alignment has buttons for 0, 50 and 100",
+                "New: Goblin Battle Text can copy the look of an area to another one, from the cog next to the areas",
+                "New: Goblin Battle Text Messages at once is available for every area, 1 to 15",
+                "New: Goblin Battle Text sample text follows the tab on screen — Highlights and Cooldowns show only their messages and play at once what you change",
+                "Change: Goblin Battle Text settings go from 8 tabs to 5 — the three areas share one tab with the game's own switch, colors are in General, and everything about the cooldown alert is in Cooldowns",
+                "Change: Goblin Battle Text animations are chosen by kind (Gentle, Impacts, Size, Rotation, Movement, Light) and then by animation",
+                "Change: Goblin Battle Text cooldown actions are icon buttons with a search box, lit when announced",
+                "Change: Goblin Battle Text order of each message is a row of parts, and only lists the parts used by the events sent to the area",
+                "Change: Goblin Battle Text Restore button has to be held down, and duration is shown in seconds",
+                "Fix: Goblin Battle Text did not show what effects like Bloodbath heal you for, which the game kept showing as its own text",
+            ]),
+
         new("1.0.7", "2026-10-04",
             "Goblin Battle Text: highlights for critical and direct hits with 35 animations, per-area message order, and no more crossing text.",
             [
