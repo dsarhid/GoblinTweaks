@@ -58,7 +58,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
     public enum BattleTextPart { Icon, Type, Name, Number }
 
     /// <summary>The tabs of the settings window, in the order they are shown; each one can be put back to its defaults.</summary>
-    internal enum BattleTextTab { General, Outgoing, Incoming, Center, Events, Cooldowns, Highlights, Colors }
+    internal enum BattleTextTab { General, Areas, Events, Highlights, Cooldowns }
 
     /// <summary>What a highlighted message does when it appears.</summary>
     /// <remarks>New ones go at the end: the saved settings store the position in this list.</remarks>
@@ -68,6 +68,9 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
         Stomp, Stretch, Zoom, Explode, Heartbeat, Spin, Rattle, Drop, Launch, Dash, Recoil, Ignite, Ember, Frost,
         Venom, Blood, Radiance, Shadow, Strobe, Shockwave, Crush, Tornado, Meteor, Earthquake, Fury,
     }
+
+    /// <summary>The kinds of animation, to choose one without going through all of them.</summary>
+    internal enum BattleTextAnimationGroup { Gentle, Impacts, Size, Rotation, Movement, Light }
 
     /// <summary>The messages that can be given a look of their own: the special kinds of hit, and the cooldown alert.</summary>
     public enum BattleTextHighlight { Critical, DirectHit, CriticalDirectHit, CooldownReady }
@@ -85,7 +88,13 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
         DebuffOnMe,
         DebuffOnEnemy,
         Cooldown,
+
+        /// <summary>An action of yours that deals no damage and heals nothing, like a dash: the game shows no text for it.</summary>
+        ActionUsed,
     }
+
+    /// <summary>Whose hit a critical or direct one is: each can have its own color.</summary>
+    private enum HitSource { Dealt, Taken, Heal }
 
     public sealed class AreaOptions
     {
@@ -150,6 +159,12 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
 
         /// <summary>For hits: color of the damage you deal. For the cooldown alert: color of the "ready now!" text.</summary>
         public Vector4 Color { get; set; } = new(1f, 1f, 1f, 1f);
+
+        /// <summary>For hits: color of the damage you take.</summary>
+        public Vector4 ColorTaken { get; set; } = DefaultColors.IncomingDamage;
+
+        /// <summary>For critical hits: color of healing, the only other thing that can be critical.</summary>
+        public Vector4 ColorHeal { get; set; } = DefaultColors.Heal;
     }
 
     public sealed class ColorOptions
@@ -164,6 +179,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
         public Vector4 Debuff { get; set; } = DefaultColors.Debuff;
         public Vector4 DebuffEnd { get; set; } = DefaultColors.DebuffEnd;
         public Vector4 Cooldown { get; set; } = DefaultColors.Cooldown;
+        public Vector4 Action { get; set; } = DefaultColors.Action;
     }
 
     public static class DefaultColors
@@ -182,6 +198,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
         public static readonly Vector4 DebuffEnd         = new(0.50f, 0.62f, 0.68f, 1f);
         public static readonly Vector4 Cooldown          = new(1f, 0.30f, 0.25f, 1f);
         public static readonly Vector4 CooldownText      = new(1f, 1f, 1f, 1f);
+        public static readonly Vector4 Action            = new(0.80f, 0.86f, 1f, 1f);
     }
 
     public sealed class Options
@@ -240,6 +257,10 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
 
     private static readonly BattleTextPart[] DefaultCooldownOrder = [BattleTextPart.Icon, BattleTextPart.Name, BattleTextPart.Number];
 
+    /// <summary>How far from the centre of the screen an area can be placed, in pixels.</summary>
+    internal const int OffsetLimitX = 900;
+    internal const int OffsetLimitY = 600;
+
     private const string Command = "/gbt";
     private const byte ActionKindAction = 1;
     private const uint AutoAttackCategory = 1;      // ActionCategory row of auto-attacks
@@ -250,6 +271,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
 
     private static readonly TimeSpan SaveDelay       = TimeSpan.FromMilliseconds(600);
     private static readonly TimeSpan PreviewInterval = TimeSpan.FromMilliseconds(900);
+    private static readonly TimeSpan PreviewSoon     = TimeSpan.FromMilliseconds(150);
     private static readonly TimeSpan CooldownPoll    = TimeSpan.FromMilliseconds(200);
 
     private readonly List<(BattleTextArea Area, BattleTextMessage Message)> _pending = [];
@@ -264,19 +286,109 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
 
     private readonly BattleTextAreaNode?[] _areas = new BattleTextAreaNode?[3];
 
+    // While the settings window is open each area has a handle to drag it by, and where each one was last put.
+    private readonly BattleTextHandleNode?[] _handles = new BattleTextHandleNode?[3];
+    private readonly Vector2?[] _handlePlaced = new Vector2?[3];
+    private BattleTextArea? _movedArea;
+
     private Hook<BattleLog.Delegates.AddToScreenLogWithScreenLogKind>? _hook;
+    private Hook<ActionEffectHandler.Delegates.Receive>? _actionHook;
+    private readonly Dictionary<uint, bool> _playerActions = [];
     private OverlayController? _overlay;
     private BattleTextAddon? _addon;
     private Exception? _failure;
     private DateTime? _saveAt;
     private DateTime _nextPreview = DateTime.MinValue;
     private int _previewStep;
+    private BattleTextHighlight? _previewHighlight;
 
     /// <summary>Options of this tweak, for the native settings window. Call <see cref="Changed"/> after editing them.</summary>
     internal Options Config => Settings;
 
     /// <summary>While true, sample messages are shown so the areas can be positioned.</summary>
     internal bool Preview { get; set; }
+
+    /// <summary>Called when the user finishes dragging an area by its handle, so the window shows its new position.</summary>
+    internal Action<BattleTextArea>? AreaMoved { get; set; }
+
+    internal static BattleTextAnimationGroup GroupOf(BattleTextAnimation animation) => animation switch
+    {
+        BattleTextAnimation.Slam or BattleTextAnimation.Quake or BattleTextAnimation.Earthquake or BattleTextAnimation.Stomp
+            or BattleTextAnimation.Crush or BattleTextAnimation.Shockwave or BattleTextAnimation.Meteor or BattleTextAnimation.Fury
+            => BattleTextAnimationGroup.Impacts,
+        BattleTextAnimation.Bounce or BattleTextAnimation.Zoom or BattleTextAnimation.Stretch or BattleTextAnimation.Explode
+            or BattleTextAnimation.Heartbeat
+            => BattleTextAnimationGroup.Size,
+        BattleTextAnimation.Swing or BattleTextAnimation.Rattle or BattleTextAnimation.Spin or BattleTextAnimation.Tornado
+            => BattleTextAnimationGroup.Rotation,
+        BattleTextAnimation.Drop or BattleTextAnimation.Launch or BattleTextAnimation.Dash or BattleTextAnimation.Recoil
+            => BattleTextAnimationGroup.Movement,
+        BattleTextAnimation.Blaze or BattleTextAnimation.Thunder or BattleTextAnimation.Ignite or BattleTextAnimation.Ember
+            or BattleTextAnimation.Frost or BattleTextAnimation.Venom or BattleTextAnimation.Blood or BattleTextAnimation.Radiance
+            or BattleTextAnimation.Shadow or BattleTextAnimation.Strobe
+            => BattleTextAnimationGroup.Light,
+        _ => BattleTextAnimationGroup.Gentle,
+    };
+
+    /// <summary>The animations of one kind, after "None", which every kind offers.</summary>
+    internal static List<BattleTextAnimation> AnimationsOf(BattleTextAnimationGroup group)
+        => [BattleTextAnimation.None, .. Enum.GetValues<BattleTextAnimation>().Where(animation => animation != BattleTextAnimation.None && GroupOf(animation) == group)];
+
+    /// <summary>
+    /// Gives one area the look of another: everything but where it is, its path and its alignment,
+    /// which belong to the side of the character each area is on.
+    /// </summary>
+    internal void CopyAreaLook(BattleTextArea from, BattleTextArea to)
+    {
+        var (source, target) = (Area(from), Area(to));
+        if (ReferenceEquals(source, target)) return;
+
+        target.Height         = source.Height;
+        target.FontSize       = source.FontSize;
+        target.DurationTenths = source.DurationTenths;
+        target.MinAmount      = source.MinAmount;
+        target.MaxMessages    = source.MaxMessages;
+        Refill(target.Order, source.Order);
+        Refill(target.Hidden, source.Hidden);
+        Changed();
+    }
+
+    /// <summary>The tab of the settings window on screen: the sample messages are the ones that tab is about.</summary>
+    internal BattleTextTab PreviewTab { get; set; }
+
+    /// <summary>
+    /// The look of a highlighted message was edited: a sample of it is shown as soon as the user
+    /// stops changing it, instead of when its turn comes.
+    /// </summary>
+    internal void PreviewHighlightSoon(BattleTextHighlight kind)
+    {
+        _previewHighlight = kind;
+        _nextPreview      = DateTime.UtcNow + PreviewSoon;
+    }
+
+    /// <summary>
+    /// Whether a part can show in the messages of an area, given the events sent to it: only damage
+    /// has a type, effects and MP have no action name, and MP has no icon either.
+    /// </summary>
+    internal bool PartApplies(BattleTextArea area, BattleTextPart part)
+    {
+        foreach (var type in Enum.GetValues<BattleTextEvent>())
+        {
+            // Cooldown alerts have an order of their own.
+            if (type == BattleTextEvent.Cooldown || Event(type).Area != area) continue;
+
+            var applies = type switch
+            {
+                BattleTextEvent.DamageDealt or BattleTextEvent.DamageTaken => true,
+                BattleTextEvent.HealDealt or BattleTextEvent.HealTaken     => part != BattleTextPart.Type,
+                BattleTextEvent.Mp                                         => part == BattleTextPart.Number,
+                _                                                          => part is BattleTextPart.Icon or BattleTextPart.Number,
+            };
+            if (applies) return true;
+        }
+
+        return false;
+    }
 
     /// <summary>Localized text of this tweak, for the native window.</summary>
     internal string Text(string key) => T(key);
@@ -303,6 +415,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
         BattleTextEvent.DamageDealt or BattleTextEvent.HealDealt => new() { Area = BattleTextArea.Outgoing, Motion = BattleTextMotion.Up },
         BattleTextEvent.DamageTaken or BattleTextEvent.HealTaken or BattleTextEvent.Mp => new() { Area = BattleTextArea.Incoming, Motion = BattleTextMotion.Up },
         BattleTextEvent.Cooldown => new() { Area = BattleTextArea.Center, Motion = BattleTextMotion.Down, Enabled = false },
+        BattleTextEvent.ActionUsed => new() { Area = BattleTextArea.Outgoing, Motion = BattleTextMotion.Up },
         _ => new() { Area = BattleTextArea.Center, Motion = BattleTextMotion.Down },
     };
 
@@ -338,18 +451,34 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
             var node = new BattleTextAreaNode { Options = Settings, Area = Area(area), Format = Format };
             _areas[(int)area] = node;
             _overlay.AddNode(node);
+
+            var moved  = area;
+            var handle = new BattleTextHandleNode { Label = T($"AreaName.{area}") };
+            handle.OnMoveComplete = _ => _movedArea = moved;
+            _handles[(int)area]      = handle;
+            _handlePlaced[(int)area] = null;
+            _overlay.AddNode(handle);
         }
 
         _addon = new BattleTextAddon
         {
             InternalName = "GtkBattleText",
             Title        = T("Title"),
-            Size         = new Vector2(780f, 720f),
+            Size         = new Vector2(780f, 640f),
             Tweak        = this,
         };
 
         _hook = Svc.GameInterop.HookFromAddress<BattleLog.Delegates.AddToScreenLogWithScreenLogKind>((nint)address, OnScreenLog);
         _hook.Enable();
+
+        // Actions that deal no damage make no fly text: they are read from the effects of each action instead.
+        // Without the function, only that kind of event is missing.
+        var actionAddress = ActionEffectHandler.Addresses.Receive.Value;
+        if (actionAddress != 0)
+        {
+            _actionHook = Svc.GameInterop.HookFromAddress<ActionEffectHandler.Delegates.Receive>((nint)actionAddress, OnActionEffect);
+            _actionHook.Enable();
+        }
 
         Svc.Commands.AddHandler(Command, new CommandInfo((_, _) => _addon?.Toggle()) { HelpMessage = T("Command.Help") });
         Svc.Framework.Update += OnUpdate;
@@ -362,15 +491,25 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
 
         _hook?.Dispose();
         _hook = null;
+        _actionHook?.Dispose();
+        _actionHook = null;
 
         _addon?.Close();
         _addon = null;
         Preview = false;
 
-        // Disposing the controller frees the area nodes it owns.
+        // A handle stops listening to the mouse before it goes.
+        foreach (var handle in _handles)
+            handle?.Shown = false;
+
+        // Disposing the controller frees the nodes it owns.
         _overlay?.Dispose();
         _overlay = null;
         Array.Clear(_areas);
+        Array.Clear(_handles);
+        Array.Clear(_handlePlaced);
+        _movedArea = null;
+        AreaMoved  = null;
 
         _pending.Clear();
         FlushSettings();
@@ -413,32 +552,42 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
     /// Puts the settings of one tab back to their defaults. The objects the window and the areas hold
     /// are kept and refilled, so both see the change without being rebuilt.
     /// </summary>
-    internal void ResetTab(BattleTextTab tab)
+    /// <param name="area">The area on screen in the Areas tab, the only one that tab puts back.</param>
+    internal void ResetTab(BattleTextTab tab, BattleTextArea area)
     {
         var defaults = new Options();
+        var colors   = Settings.Colors;
         switch (tab)
         {
             case BattleTextTab.General:
-                Settings.MergeHits       = defaults.MergeHits;
-                Settings.Abbreviate      = defaults.Abbreviate;
-                Settings.IncludePets     = defaults.IncludePets;
-                Settings.ShowFading      = defaults.ShowFading;
-                Settings.Font            = defaults.Font;
+                Settings.MergeHits   = defaults.MergeHits;
+                Settings.Abbreviate  = defaults.Abbreviate;
+                Settings.IncludePets = defaults.IncludePets;
+                Settings.Font        = defaults.Font;
+
+                colors.OutgoingDamage = DefaultColors.OutgoingDamage;
+                colors.IncomingDamage = DefaultColors.IncomingDamage;
+                colors.Heal           = DefaultColors.Heal;
+                colors.Miss           = DefaultColors.Miss;
+                colors.Mp             = DefaultColors.Mp;
+                colors.Buff           = DefaultColors.Buff;
+                colors.Debuff         = DefaultColors.Debuff;
+                colors.BuffEnd        = DefaultColors.BuffEnd;
+                colors.DebuffEnd      = DefaultColors.DebuffEnd;
+                colors.Action         = DefaultColors.Action;
                 break;
 
-            case BattleTextTab.Outgoing:
-                Copy(defaults.Outgoing, Settings.Outgoing);
-                break;
-
-            case BattleTextTab.Incoming:
-                Copy(defaults.Incoming, Settings.Incoming);
-                break;
-
-            case BattleTextTab.Center:
-                Copy(defaults.Center, Settings.Center);
+            case BattleTextTab.Areas:
+                Copy(area switch
+                {
+                    BattleTextArea.Outgoing => defaults.Outgoing,
+                    BattleTextArea.Incoming => defaults.Incoming,
+                    _                       => defaults.Center,
+                }, Area(area));
                 break;
 
             case BattleTextTab.Events:
+                Settings.ShowFading = defaults.ShowFading;
                 foreach (var type in Enum.GetValues<BattleTextEvent>())
                 {
                     if (type != BattleTextEvent.Cooldown)
@@ -446,43 +595,38 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
                 }
                 break;
 
+            case BattleTextTab.Highlights:
+                foreach (var kind in Enum.GetValues<BattleTextHighlight>())
+                {
+                    if (kind != BattleTextHighlight.CooldownReady)
+                        Copy(DefaultHighlight(kind), Highlight(kind));
+                }
+                break;
+
             case BattleTextTab.Cooldowns:
                 Copy(DefaultEvent(BattleTextEvent.Cooldown), Event(BattleTextEvent.Cooldown));
+                Copy(DefaultHighlight(BattleTextHighlight.CooldownReady), Settings.CooldownReady);
+                colors.Cooldown = DefaultColors.Cooldown;
                 Refill(Settings.CooldownOrder, defaults.CooldownOrder);
                 Refill(Settings.CooldownHidden, defaults.CooldownHidden);
                 Settings.CooldownsOff.Clear();
                 _watchedFor = default; // rebuild the list of announced cooldowns
                 break;
-
-            case BattleTextTab.Highlights:
-                foreach (var kind in Enum.GetValues<BattleTextHighlight>())
-                {
-                    var (from, to) = (DefaultHighlight(kind), Highlight(kind));
-                    to.Enabled   = from.Enabled;
-                    to.Font      = from.Font;
-                    to.FontSize  = from.FontSize;
-                    to.Animation = from.Animation;
-                    to.Intensity = from.Intensity;
-                    to.Color     = from.Color;
-                }
-                break;
-
-            case BattleTextTab.Colors:
-                var colors = Settings.Colors;
-                colors.OutgoingDamage    = DefaultColors.OutgoingDamage;
-                colors.IncomingDamage    = DefaultColors.IncomingDamage;
-                colors.Heal              = DefaultColors.Heal;
-                colors.Miss              = DefaultColors.Miss;
-                colors.Mp                = DefaultColors.Mp;
-                colors.Buff              = DefaultColors.Buff;
-                colors.Debuff            = DefaultColors.Debuff;
-                colors.BuffEnd           = DefaultColors.BuffEnd;
-                colors.DebuffEnd         = DefaultColors.DebuffEnd;
-                colors.Cooldown          = DefaultColors.Cooldown;
-                break;
         }
 
         Changed();
+    }
+
+    private static void Copy(HighlightOptions from, HighlightOptions to)
+    {
+        to.Enabled   = from.Enabled;
+        to.Font      = from.Font;
+        to.FontSize  = from.FontSize;
+        to.Animation = from.Animation;
+        to.Intensity  = from.Intensity;
+        to.Color      = from.Color;
+        to.ColorTaken = from.ColorTaken;
+        to.ColorHeal  = from.ColorHeal;
     }
 
     private static void Copy(AreaOptions from, AreaOptions to)
@@ -572,7 +716,10 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
         var player = (GameObject*)Control.GetLocalPlayer();
         var from   = (GameObject*)source;
         var to     = (GameObject*)target;
-        if (player == null || from == null || to == null) return false;
+        if (player == null || to == null) return false;
+
+        // What happens to you may come without a source; what happens to others is only yours if it has one.
+        if (from == null && to != player) return false;
 
         bool damage = false, heal = false, crit = false, directHit = false, autoAttack = false;
         string? label = null;
@@ -614,7 +761,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
             case FlyTextKind.DamageCritDh:
                 damage = crit = directHit = true;
                 break;
-            case FlyTextKind.Healing:
+            // HP drain is what an attack heals you for under an effect like Bloodbath: the game draws it as healing.
+            case FlyTextKind.Healing or FlyTextKind.HpDrain:
                 heal = true;
                 break;
             case FlyTextKind.HealingCrit:
@@ -654,7 +802,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
         var action = actionKind == ActionKindAction ? LookupAction(actionId) : default;
 
         // What a monster, a boss or any other NPC does to you shows no action icon; what another player does (PvP) does.
-        var fromNpc = !outgoing && !mine && from->ObjectKind != ObjectKind.Pc;
+        var fromNpc = !outgoing && !mine && from != null && from->ObjectKind != ObjectKind.Pc;
 
         var suffix =(ScreenLogOption)option switch
         {
@@ -683,15 +831,15 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
                        : 0,
         };
 
-        MarkHit(message, crit, directHit, recolor: damage && outgoing);
+        MarkHit(message, crit, directHit, heal ? HitSource.Heal : outgoing ? HitSource.Dealt : HitSource.Taken);
         return Queue(type, message);
     }
 
     /// <summary>
-    /// Marks a critical and/or direct hit and gives it the look chosen for that kind of hit.
-    /// The color of the highlight is only for the damage you deal: damage taken and healing keep theirs.
+    /// Marks a critical and/or direct hit and gives it the look chosen for that kind of hit, with the
+    /// color chosen for whose hit it is: damage you deal, damage you take, or healing.
     /// </summary>
-    private void MarkHit(BattleTextMessage message, bool crit, bool directHit, bool recolor)
+    private void MarkHit(BattleTextMessage message, bool crit, bool directHit, HitSource source)
     {
         if (!crit && !directHit) return;
 
@@ -703,9 +851,79 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
                                 : BattleTextHighlight.DirectHit);
         if (!highlight.Enabled) return;
 
-        message.Look = new BattleTextLook(highlight.Font, highlight.FontSize, highlight.Animation, highlight.Intensity);
-        if (recolor)
-            message.Color = highlight.Color;
+        message.Look  = new BattleTextLook(highlight.Font, highlight.FontSize, highlight.Animation, highlight.Intensity);
+        message.Color = source switch
+        {
+            HitSource.Taken => highlight.ColorTaken,
+            HitSource.Heal  => highlight.ColorHeal,
+            _               => highlight.Color,
+        };
+    }
+
+    // ── Actions with no fly text ────────────────────────────────────────────────
+
+    // Kinds of effect of an action that the game shows as fly text, or that come with one: misses, damage and
+    // healing in their variants (1 to 7), and the statuses it applies (14 on the target, 15 on the source).
+    private const byte FirstTextEffect   = 1;
+    private const byte LastTextEffect    = 7;
+    private const byte StatusOnTarget    = 14;
+    private const byte StatusOnSource    = 15;
+
+    /// <summary>Runs on the game thread, inside the game's own code: it must never throw.</summary>
+    private void OnActionEffect(uint casterEntityId, Character* caster, Vector3* targetPos, ActionEffectHandler.Header* header,
+        ActionEffectHandler.TargetEffects* effects, GameObjectId* targetEntityIds)
+    {
+        try
+        {
+            CaptureAction(casterEntityId, header, effects);
+        }
+        catch (Exception ex)
+        {
+            // Reported from OnUpdate: disabling the tweak here would free the hook that is running.
+            _failure ??= ex;
+        }
+
+        _actionHook!.Original(casterEntityId, caster, targetPos, header, effects, targetEntityIds);
+    }
+
+    /// <summary>Announces an action of yours that nothing else announces: it deals no damage, heals nothing and applies no status.</summary>
+    private void CaptureAction(uint casterEntityId, ActionEffectHandler.Header* header, ActionEffectHandler.TargetEffects* effects)
+    {
+        if (header == null || header->ActionType != ActionKindAction) return;
+        if (!Event(BattleTextEvent.ActionUsed).Enabled) return;
+
+        var player = (GameObject*)Control.GetLocalPlayer();
+        if (player == null || player->EntityId != casterEntityId) return;
+
+        if (effects != null)
+        {
+            for (var target = 0; target < header->NumTargets; target++)
+            {
+                foreach (ref readonly var effect in effects[target].Effects)
+                {
+                    if (effect.Type is >= FirstTextEffect and <= LastTextEffect or StatusOnTarget or StatusOnSource)
+                        return;
+                }
+            }
+        }
+
+        var actionId = header->SpellId;
+        if (!_playerActions.TryGetValue(actionId, out var isPlayerAction))
+        {
+            // Only the actions of a job: not mounting, teleporting, using an item...
+            isPlayerAction = Svc.Data.GetExcelSheet<LuminaAction>().TryGetRow(actionId, out var row) && row.IsPlayerAction;
+            _playerActions[actionId] = isPlayerAction;
+        }
+
+        var action = LookupAction(actionId);
+        if (!isPlayerAction || action.Name is null) return;
+
+        Queue(BattleTextEvent.ActionUsed, new BattleTextMessage
+        {
+            Label  = action.Name,
+            IconId = action.IconId,
+            Color  = Settings.Colors.Action,
+        });
     }
 
     /// <summary>A buff or debuff that starts or ends, on you or put by you on someone else.</summary>
@@ -748,7 +966,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
     }
 
     private bool IsMyPet(GameObject* player, GameObject* other)
-        => Settings.IncludePets && other->ObjectKind == ObjectKind.BattleNpc && other->OwnerId == player->EntityId;
+        => Settings.IncludePets && other != null && other->ObjectKind == ObjectKind.BattleNpc && other->OwnerId == player->EntityId;
 
     /// <summary>Sends a message to the area chosen for its event. Returns false when the event or the area is turned off.</summary>
     private bool Queue(BattleTextEvent type, BattleTextMessage message)
@@ -937,14 +1155,52 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
                 if (!options.Enabled)
                     node.Clear();
 
+                PlaceHandle(area, options, anchor);
                 node.Position = anchor + new Vector2(options.OffsetX, options.OffsetY);
                 SetLanes(node, area, options);
+            }
+
+            // Told once the area has taken its position from the handle, above.
+            if (_movedArea is { } movedArea)
+            {
+                _movedArea = null;
+                AreaMoved?.Invoke(movedArea);
             }
         }
         catch (Exception ex)
         {
             ReportFailure(ex);
         }
+    }
+
+    /// <summary>
+    /// Shows the handle of an area while the settings window is open, centred on the area point. A handle
+    /// that is not where it was last put has been dragged: the area then takes its position from it.
+    /// </summary>
+    private void PlaceHandle(BattleTextArea area, AreaOptions options, Vector2 anchor)
+    {
+        var index = (int)area;
+        if (_handles[index] is not { } handle) return;
+
+        if (handle.Shown != Preview)
+        {
+            handle.Shown = Preview;
+            _handlePlaced[index] = null;
+        }
+
+        if (!Preview) return;
+
+        var half = handle.Size / 2f;
+        if (_handlePlaced[index] is { } placed && handle.Position != placed)
+        {
+            var point = handle.Position + half - anchor;
+            options.OffsetX = Math.Clamp((int)MathF.Round(point.X), -OffsetLimitX, OffsetLimitX);
+            options.OffsetY = Math.Clamp((int)MathF.Round(point.Y), -OffsetLimitY, OffsetLimitY);
+            Changed();
+        }
+
+        handle.Position = anchor + new Vector2(options.OffsetX, options.OffsetY) - half;
+        _handlePlaced[index] = handle.Position;
     }
 
     /// <summary>
@@ -980,7 +1236,10 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
         return device == null ? Vector2.Zero : new Vector2(device->Width / 2f, device->Height / 2f);
     }
 
-    /// <summary>Sample messages, one kind of event after another, while the settings window is open.</summary>
+    /// <summary>
+    /// Sample messages while the settings window is open: one kind of event after another, or only
+    /// the highlighted ones in the tabs that set their look.
+    /// </summary>
     private void AddPreview()
     {
         _nextPreview = DateTime.UtcNow + PreviewInterval;
@@ -1000,18 +1259,23 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
                 Prefix     = outgoing ? string.Empty : "-",
                 Color      = outgoing ? colors.OutgoingDamage : colors.IncomingDamage,
             };
-            MarkHit(message, crit, directHit, recolor: outgoing);
+            MarkHit(message, crit, directHit, outgoing ? HitSource.Dealt : HitSource.Taken);
             return message;
         }
 
-        BattleTextMessage Heal() => new()
+        BattleTextMessage Heal(bool crit = false)
         {
-            Amount     = 8_420,
-            ActionName = action.Name,
-            IconId     = action.IconId,
-            Prefix     = "+",
-            Color      = colors.Heal,
-        };
+            var message = new BattleTextMessage
+            {
+                Amount     = crit ? 17_300 : 8_420,
+                ActionName = action.Name,
+                IconId     = action.IconId,
+                Prefix     = "+",
+                Color      = colors.Heal,
+            };
+            MarkHit(message, crit, directHit: false, HitSource.Heal);
+            return message;
+        }
 
         BattleTextMessage Effect(bool buff, bool fading) => new()
         {
@@ -1020,6 +1284,30 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
             Color  = EffectColor(buff, fading),
             IconIsStatus = true,
         };
+
+        var edited = _previewHighlight;
+        _previewHighlight = null;
+
+        if (PreviewTab == BattleTextTab.Cooldowns)
+        {
+            Queue(BattleTextEvent.Cooldown, CooldownMessage(action));
+            return;
+        }
+
+        if (PreviewTab == BattleTextTab.Highlights)
+        {
+            // The kind being edited, or else the three kinds of hit in turn.
+            var kind = edited is { } hit && hit != BattleTextHighlight.CooldownReady
+                ? hit
+                : (BattleTextHighlight)(_previewStep++ % 3);
+            // Dealt and taken, and healing when critical, so the color of each is seen.
+            var (crit, directHit) = (kind != BattleTextHighlight.DirectHit, kind != BattleTextHighlight.Critical);
+            Queue(BattleTextEvent.DamageDealt, Hit(outgoing: true, crit, auto: false, directHit));
+            Queue(BattleTextEvent.DamageTaken, Hit(outgoing: false, crit, auto: false, directHit));
+            if (kind == BattleTextHighlight.Critical)
+                Queue(BattleTextEvent.HealTaken, Heal(crit: true));
+            return;
+        }
 
         switch (_previewStep++ % 6)
         {
@@ -1031,6 +1319,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
             case 1:
                 Queue(BattleTextEvent.DamageDealt, Hit(outgoing: true, crit: false, auto: true));
                 Queue(BattleTextEvent.HealTaken, Heal());
+                Queue(BattleTextEvent.ActionUsed, new BattleTextMessage { Label = action.Name, IconId = action.IconId, Color = colors.Action });
                 break;
             case 2:
                 Queue(BattleTextEvent.DamageDealt, Hit(outgoing: true, crit: true, auto: false));
