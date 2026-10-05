@@ -25,8 +25,7 @@ using LuminaStatus = Lumina.Excel.Sheets.Status;
 namespace GoblinTweaks.Tweaks;
 
 /// <summary>
-/// Scrolling battle text in the style of the World of Warcraft addon MikScrollingBattleText:
-/// the damage and healing you deal and receive scroll in configurable areas around your
+/// Scrolling battle text: the damage and healing you deal and receive scroll in configurable areas around your
 /// character, instead of floating over whoever was hit. A third area under the character
 /// announces effects that start or end and actions that come off cooldown.
 /// </summary>
@@ -73,7 +72,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
     internal enum BattleTextAnimationGroup { Gentle, Impacts, Size, Rotation, Movement, Light }
 
     /// <summary>The messages that can be given a look of their own: the special kinds of hit, and the cooldown alert.</summary>
-    public enum BattleTextHighlight { Critical, DirectHit, CriticalDirectHit, CooldownReady }
+    public enum BattleTextHighlight { Critical, DirectHit, CriticalDirectHit, CooldownReady, PositionalHit, PositionalMiss }
 
     /// <summary>The kinds of event; each one is sent to the area the user chooses.</summary>
     public enum BattleTextEvent
@@ -91,7 +90,13 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
 
         /// <summary>An action of yours that deals no damage and heals nothing, like a dash: the game shows no text for it.</summary>
         ActionUsed,
+
+        /// <summary>An action of yours that hits harder from the rear or the flank: whether you hit it from there.</summary>
+        Positional,
     }
+
+    /// <summary>What a status does every few seconds, if anything.</summary>
+    private enum OverTime : byte { None, Damage, Healing }
 
     /// <summary>Whose hit a critical or direct one is: each can have its own color.</summary>
     private enum HitSource { Dealt, Taken, Heal }
@@ -199,12 +204,20 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
         public static readonly Vector4 Cooldown          = new(1f, 0.30f, 0.25f, 1f);
         public static readonly Vector4 CooldownText      = new(1f, 1f, 1f, 1f);
         public static readonly Vector4 Action            = new(0.80f, 0.86f, 1f, 1f);
+        public static readonly Vector4 PositionalHit     = new(0.55f, 1f, 0.60f, 1f);
+        public static readonly Vector4 PositionalMiss    = new(1f, 0.35f, 0.30f, 1f);
     }
 
     public sealed class Options
     {
         /// <summary>Merge the hits of one action on several targets into a single message.</summary>
         public bool MergeHits { get; set; } = true;
+
+        /// <summary>The same for healing: one action that heals several targets shows a single total.</summary>
+        public bool MergeHeals { get; set; } = true;
+
+        /// <summary>Healing you give says who it heals. With <see cref="MergeHeals"/>, only where there is one target: the ticks.</summary>
+        public bool ShowHealTargets { get; set; }
 
         public bool Abbreviate { get; set; }
 
@@ -213,6 +226,11 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
 
         /// <summary>Also announce when a buff or debuff ends, not only when it starts.</summary>
         public bool ShowFading { get; set; } = true;
+
+        /// <summary>
+        /// Say whether a positional was hit in the message of the damage of its action, instead of in an alert of its own.
+        /// </summary>
+        public bool PositionalInline { get; set; }
 
         public BattleTextFont Font { get; set; } = BattleTextFont.Jupiter;
 
@@ -239,6 +257,12 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
 
         [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)]
         public HighlightOptions CooldownReady { get; set; } = DefaultHighlight(BattleTextHighlight.CooldownReady);
+
+        [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)]
+        public HighlightOptions PositionalHit { get; set; } = DefaultHighlight(BattleTextHighlight.PositionalHit);
+
+        [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)]
+        public HighlightOptions PositionalMiss { get; set; } = DefaultHighlight(BattleTextHighlight.PositionalMiss);
 
         [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)]
         public ColorOptions Colors { get; set; } = new();
@@ -268,6 +292,13 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
     private const int  DamageTypeCount = 3;
     private const int  GlobalCooldownGroup = 57;
     private const int  MinCooldown100ms = 50;       // shorter recasts are not worth an alert
+    private const byte BeneficialStatus  = 1;       // StatusCategory of buffs
+    private const byte DetrimentalStatus = 2;       // StatusCategory of debuffs
+    private const int  MaxTrackedDebuffs = 512;
+
+    private static readonly TimeSpan ConfirmWindow = TimeSpan.FromMilliseconds(400);
+    private static readonly TimeSpan DebuffWatch   = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan DebuffGrace   = TimeSpan.FromSeconds(1);   // for a new debuff to show in the list
 
     private static readonly TimeSpan SaveDelay       = TimeSpan.FromMilliseconds(600);
     private static readonly TimeSpan PreviewInterval = TimeSpan.FromMilliseconds(900);
@@ -277,6 +308,16 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
     private readonly List<(BattleTextArea Area, BattleTextMessage Message)> _pending = [];
     private readonly Dictionary<uint, (string Name, uint IconId)> _actions = [];
     private readonly Dictionary<uint, (string Name, uint IconId)> _statuses = [];
+    private readonly Dictionary<uint, OverTime> _overTime = [];
+    private readonly HashSet<uint> _overTimeSeen = [];
+
+    // Debuffs of yours on enemies, as (enemy, status): each enemy's list of statuses says who put each one,
+    // so they are watched there until they go. "Seen" is false until the list shows the debuff.
+    // And the ones that arrived before that list could say whose they were.
+    private readonly Dictionary<ulong, (bool Seen, DateTime Since)> _myDebuffs = [];
+    private readonly List<ulong> _debuffKeys = [];
+    private readonly List<(uint Target, uint StatusId, DateTime Until)> _unconfirmed = [];
+    private DateTime _nextDebuffWatch = DateTime.MinValue;
 
     // Cooldown alerts: the announced actions of the current job, and the ones cooling down right now.
     private readonly List<uint> _watched = [];
@@ -300,7 +341,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
     private DateTime? _saveAt;
     private DateTime _nextPreview = DateTime.MinValue;
     private int _previewStep;
-    private BattleTextHighlight? _previewHighlight;
+    private BattleTextHighlight _previewHighlight;
 
     /// <summary>Options of this tweak, for the native settings window. Call <see cref="Changed"/> after editing them.</summary>
     internal Options Config => Settings;
@@ -357,13 +398,14 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
     internal BattleTextTab PreviewTab { get; set; }
 
     /// <summary>
-    /// The look of a highlighted message was edited: a sample of it is shown as soon as the user
-    /// stops changing it, instead of when its turn comes.
+    /// The look of a highlighted message was chosen or edited in the window: a sample of it is shown as
+    /// soon as the user stops changing it, and it is the kind the Highlights tab keeps showing.
     /// </summary>
     internal void PreviewHighlightSoon(BattleTextHighlight kind)
     {
-        _previewHighlight = kind;
-        _nextPreview      = DateTime.UtcNow + PreviewSoon;
+        if (kind != BattleTextHighlight.CooldownReady)
+            _previewHighlight = kind;
+        _nextPreview = DateTime.UtcNow + PreviewSoon;
     }
 
     /// <summary>
@@ -374,8 +416,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
     {
         foreach (var type in Enum.GetValues<BattleTextEvent>())
         {
-            // Cooldown alerts have an order of their own.
-            if (type == BattleTextEvent.Cooldown || Event(type).Area != area) continue;
+            // Cooldown and positional alerts have an order of their own.
+            if (type is BattleTextEvent.Cooldown or BattleTextEvent.Positional || Event(type).Area != area) continue;
 
             var applies = type switch
             {
@@ -398,6 +440,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
         BattleTextHighlight.Critical          => new() { FontSize = 31, Animation = BattleTextAnimation.Pop,   Color = DefaultColors.OutgoingCrit },
         BattleTextHighlight.DirectHit         => new() { FontSize = 25, Animation = BattleTextAnimation.None,  Color = DefaultColors.OutgoingDirectHit },
         BattleTextHighlight.CriticalDirectHit => new() { FontSize = 34, Animation = BattleTextAnimation.Slam,  Color = DefaultColors.OutgoingCritDirectHit },
+        BattleTextHighlight.PositionalHit     => new() { FontSize = 25, Animation = BattleTextAnimation.Pop,   Color = DefaultColors.PositionalHit },
+        BattleTextHighlight.PositionalMiss    => new() { FontSize = 30, Animation = BattleTextAnimation.Shake, Color = DefaultColors.PositionalMiss },
         _                                     => new() { FontSize = 25, Animation = BattleTextAnimation.Pulse, Color = DefaultColors.CooldownText },
     };
 
@@ -406,6 +450,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
         BattleTextHighlight.Critical          => Settings.Critical,
         BattleTextHighlight.DirectHit         => Settings.DirectHit,
         BattleTextHighlight.CriticalDirectHit => Settings.CriticalDirectHit,
+        BattleTextHighlight.PositionalHit     => Settings.PositionalHit,
+        BattleTextHighlight.PositionalMiss    => Settings.PositionalMiss,
         _                                     => Settings.CooldownReady,
     };
 
@@ -443,6 +489,9 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
         _pending.Clear();
         _watchedFor = default;
         _coolingDown.Clear();
+        _myDebuffs.Clear();
+        _unconfirmed.Clear();
+        _positionalVerdicts.Clear();
         Repair();
 
         _overlay = new OverlayController();
@@ -561,6 +610,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
         {
             case BattleTextTab.General:
                 Settings.MergeHits   = defaults.MergeHits;
+                Settings.MergeHeals  = defaults.MergeHeals;
+                Settings.ShowHealTargets = defaults.ShowHealTargets;
                 Settings.Abbreviate  = defaults.Abbreviate;
                 Settings.IncludePets = defaults.IncludePets;
                 Settings.Font        = defaults.Font;
@@ -588,6 +639,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
 
             case BattleTextTab.Events:
                 Settings.ShowFading = defaults.ShowFading;
+                Settings.PositionalInline = defaults.PositionalInline;
                 foreach (var type in Enum.GetValues<BattleTextEvent>())
                 {
                     if (type != BattleTextEvent.Cooldown)
@@ -781,10 +833,42 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
                 return false;
         }
 
-        // The tick of a damage over time shares its kind with auto-attacks, and comes with whoever suffers it as its own source.
-        var tick    = autoAttack && option == (byte)ScreenLogOption.None && actionKind == 0;
-        var ownTick = tick && from == to && to->ObjectKind == ObjectKind.BattleNpc;
-        var mine    = from == player || ownTick || IsMyPet(player, from);
+        // The tick of a damage over time shares its kind with auto-attacks. What tells them apart is its source:
+        // a tick comes with whoever suffers it as its own source, an auto-attack with whoever attacks.
+        var tick    = autoAttack && option == (byte)ScreenLogOption.None && actionKind == 0 && from == to;
+        var ownTick = tick && to->ObjectKind == ObjectKind.BattleNpc;
+
+        // The tick of a healing over time comes the same way: no action, and whoever is healed as its own source.
+        // On you it is healing you receive, whoever gave it. On someone else, your pet included, it is yours only
+        // when they have a healing over time that you, or a pet of yours, put on them: their list of statuses says so.
+        var healTick = heal && actionKind == 0 && from == to;
+
+        // A tick comes with no action: the statuses behind it are looked for on whoever has them.
+        var over = tick || healTick ? FindOverTime(player, to, heal ? OverTime.Healing : OverTime.Damage, mineOnly: to != player) : default;
+
+        // The game sends one tick per target with the sum of everyone's: there is no telling yours apart.
+        // On someone else, a tick is not yours when none of what ticks is; and when others have theirs there
+        // too, your share is taken as one part per status, which is exact only if they are all as strong.
+        var estimated = false;
+        if ((tick || healTick) && to != player)
+        {
+            // Healing that is not yours is left to the game. Damage over time that is not yours is not shown at
+            // all, here or by the game, as long as this tweak is the one showing the damage you deal.
+            if (over.Mine == 0 && healTick) return false;
+            if (over.Mine == 0 && over.Total > 0)
+            {
+                var dealt = Event(BattleTextEvent.DamageDealt);
+                return dealt.Enabled && Area(dealt.Area).Enabled;
+            }
+
+            if (over.Mine > 0 && over.Total > over.Mine)
+            {
+                amount    = (int)((long)amount * over.Mine / over.Total);
+                estimated = true;
+            }
+        }
+
+        var mine    = from == player || ownTick || healTick || IsMyPet(player, from);
 
         bool outgoing;
         if (to == player) outgoing = false;
@@ -800,6 +884,31 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
         if (label is null && amount < area.MinAmount) return true;
 
         var action = actionKind == ActionKindAction ? LookupAction(actionId) : default;
+
+        // Who a heal of yours is for, at the end of the message: after the action name when the area shows it,
+        // else after the amount. Merged heals have several targets and say none.
+        var healed = Settings.ShowHealTargets && heal && outgoing && (healTick || !Settings.MergeHeals) ? to->NameString : null;
+        if (string.IsNullOrEmpty(healed)) healed = null;
+        var healedAfterName = healed is not null && !area.Hidden.Contains(BattleTextPart.Name);
+
+        // The verdict on the positional of this action, if it was left for this message: after the action name
+        // when the area shows it, in the color of the verdict; else after the amount.
+        string? verdict = null;
+        HighlightOptions? verdictLook = null;
+        if (damage && outgoing && actionKind == ActionKindAction && _positionalVerdicts.Remove(actionId, out var waiting)
+            && DateTime.UtcNow - waiting.At < VerdictWindow)
+        {
+            verdict     = T($"Positional.{(waiting.Hit ? "Hit" : "Miss")}.{waiting.Side}");
+            verdictLook = waiting.Hit ? Settings.PositionalHit : Settings.PositionalMiss;
+        }
+
+        var verdictAfterName = verdict is not null && action.Name is not null && !area.Hidden.Contains(BattleTextPart.Name);
+
+        // An auto-attack says who makes it when it is not you: your chocobo or pet, or the enemy hitting you.
+        // The game gives them as auto-attacks, or as a hit of an action of that kind, which has no icon here.
+        var auto     = (autoAttack && !tick) || (actionKind == ActionKindAction && action.Name is not null && action.IconId == 0);
+        var attacker = auto && from != null && from != player ? from->NameString : null;
+        if (string.IsNullOrEmpty(attacker)) attacker = null;
 
         // What a monster, a boss or any other NPC does to you shows no action icon; what another player does (PvP) does.
         var fromNpc = !outgoing && !mine && from != null && from->ObjectKind != ObjectKind.Pc;
@@ -817,21 +926,42 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
         {
             Amount     = amount,
             Label      = label,
-            ActionName = action.Name,
-            IconId     = autoAttack || fromNpc ? 0 : action.IconId,
+            ActionName = healedAfterName      ? $"{action.Name ?? over.Name} ({healed})".TrimStart()
+                       : verdictAfterName     ? $"{action.Name} {verdict}"
+                       : attacker is null     ? action.Name ?? over.Name
+                       : action.Name is null  ? attacker
+                       : $"{action.Name} {attacker}",
+            IconId     = over.IconId != 0 ? over.IconId : autoAttack || fromNpc ? 0 : action.IconId,
+            IconIsStatus = over.IconId != 0,
             TypeIconId = damage && damageType is >= 1 and <= DamageTypeCount ? DamageTypeIconBase + (uint)damageType : 0,
-            Prefix     = heal ? "+" : damage && !outgoing ? "-" : string.Empty,
-            Suffix     = suffix,
+            Prefix     = (estimated ? "~" : string.Empty) + (heal ? "+" : damage && !outgoing ? "-" : string.Empty),
+
+            // With no status to show for it, a tick at least says what it is.
+            Suffix     = (over.Name is not null ? suffix
+                       : tick                  ? suffix + T("Suffix.Dot")
+                       : healTick              ? suffix + T("Suffix.Hot")
+                       : suffix)
+                       + (healed is not null && !healedAfterName ? $" ({healed})" : string.Empty)
+                       + (verdict is not null && !verdictAfterName ? $" {verdict}" : string.Empty),
+            NameColor  = verdictAfterName && verdictLook is { Enabled: true } ? verdictLook.Color : null,
             Color      = label is not null ? colors.Miss
                        : heal              ? colors.Heal
                        : !outgoing         ? colors.IncomingDamage
                        : colors.OutgoingDamage,
-            MergeKey   = Settings.MergeHits && label is null && actionId != 0
-                       ? ((ulong)actionId << 2) | (heal ? 2u : 0u) | 1u
+
+            // A critical hit is never merged: it shows apart, with its own look, and the total of the others
+            // does not pass for one. Direct hits merge among themselves, so a total has one look.
+            MergeKey   = (heal ? Settings.MergeHeals : Settings.MergeHits) && label is null && actionId != 0 && attacker is null && !crit && verdict is null
+                       ? ((ulong)actionId << 3) | (directHit ? 4u : 0u) | (heal ? 2u : 0u) | 1u
                        : 0,
         };
 
         MarkHit(message, crit, directHit, heal ? HitSource.Heal : outgoing ? HitSource.Dealt : HitSource.Taken);
+
+        // A hit that is neither critical nor direct takes the look of the verdict; one that is keeps its own.
+        if (message.Look is null && verdictLook is { Enabled: true })
+            message.Look = new BattleTextLook(verdictLook.Font, verdictLook.FontSize, verdictLook.Animation, verdictLook.Intensity);
+
         return Queue(type, message);
     }
 
@@ -875,7 +1005,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
     {
         try
         {
-            CaptureAction(casterEntityId, header, effects);
+            CaptureAction(casterEntityId, header, effects, targetEntityIds);
         }
         catch (Exception ex)
         {
@@ -886,14 +1016,156 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
         _actionHook!.Original(casterEntityId, caster, targetPos, header, effects, targetEntityIds);
     }
 
+    // Kinds of effect of an action that are damage: plain, blocked and parried.
+    private const byte DamageEffect  = 3;
+    private const byte BlockedEffect = 5;
+    private const byte ParriedEffect = 6;
+
+    private const uint TrueNorthStatus     = 1250;  // on you: your actions hit their positional from anywhere
+    private const uint DirectionlessStatus = 3808;  // on an enemy: it has no sides for now
+
+    private readonly Dictionary<(uint ActionId, int Level), Positionals.Info?> _positionals = [];
+    private readonly Dictionary<uint, bool> _sideless = [];
+
+    // Verdicts waiting for the damage of their action, to be said in its message: the damage shows a moment
+    // after the action is resolved, which is when the verdict is known.
+    private readonly Dictionary<uint, (bool Hit, Positionals.Side Side, DateTime At)> _positionalVerdicts = [];
+
+    private static readonly TimeSpan VerdictWindow = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// What the game's description of an action says about its positional, at the level you are (synced or not):
+    /// the same text, with the same numbers, as its tooltip. In English whatever the language of the game.
+    /// </summary>
+    private Positionals.Info? PositionalOf(uint actionId)
+    {
+        var key = (actionId, (int)Svc.PlayerState.EffectiveLevel);
+        if (_positionals.TryGetValue(key, out var info)) return info;
+
+        if (Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.ActionTransient>(Dalamud.Game.ClientLanguage.English).TryGetRow(actionId, out var text)
+            && Svc.Data.GetExcelSheet<LuminaAction>().TryGetRow(actionId, out var action))
+        {
+            string description;
+            try
+            {
+                description = Svc.SeStringEvaluator.Evaluate(text.Description, default, Dalamud.Game.ClientLanguage.English).ExtractText();
+            }
+            catch (Exception)
+            {
+                // Without its numbers the description still says which side: where you stood will decide.
+                description = text.Description.ExtractText();
+            }
+
+            info = Positionals.Read(description, hasCombo: action.ActionCombo.RowId != 0);
+        }
+
+        return _positionals[key] = info;
+    }
+
+    /// <summary>
+    /// Says whether an action of yours that has a positional hit it: see <see cref="Positionals"/> for how.
+    /// </summary>
+    private void CapturePositional(GameObject* player, ActionEffectHandler.Header* header, ActionEffectHandler.TargetEffects* effects, GameObjectId* targetEntityIds)
+    {
+        if (effects == null || !Event(BattleTextEvent.Positional).Enabled) return;
+        if (PositionalOf(header->ActionId) is not { } positional) return;
+
+        // An action with a positional has one target: the first hit that did damage is the one to read.
+        // One that did no damage (it missed, the target was invulnerable) says nothing of where you stood.
+        for (var target = 0; target < header->NumTargets; target++)
+        {
+            foreach (ref readonly var effect in effects[target].Effects)
+            {
+                if (effect.Type is not (DamageEffect or BlockedEffect or ParriedEffect)) continue;
+
+                var manager = GameObjectManager.Instance();
+                var enemy   = targetEntityIds == null || manager == null ? null : manager->Objects.GetObjectByEntityId(targetEntityIds[target].ObjectId);
+                var stance  = StanceOn(player, enemy, positional.Side);
+
+                if (Positionals.Judge(effect.Param2, Positionals.FromShare(positional, effect.Param2), stance) is not { } hit)
+                    return;
+
+                // In the message of its damage, when asked to and this tweak is the one showing that damage;
+                // else in an alert of its own.
+                var dealt = Event(BattleTextEvent.DamageDealt);
+                if (Settings.PositionalInline && dealt.Enabled && Area(dealt.Area).Enabled)
+                    _positionalVerdicts[header->ActionId] = (hit, positional.Side, DateTime.UtcNow);
+                else
+                    Queue(BattleTextEvent.Positional, PositionalMessage(LookupAction(header->ActionId), positional.Side, hit));
+                return;
+            }
+        }
+    }
+
+    /// <summary>Where you stand around an enemy, for an action that wants one side of it.</summary>
+    private Positionals.Stance StanceOn(GameObject* player, GameObject* enemy, Positionals.Side side)
+    {
+        if (HasStatus(player, TrueNorthStatus)) return Positionals.Stance.Right;
+        if (enemy == null) return Positionals.Stance.Unknown;
+        if (HasStatus(enemy, DirectionlessStatus)) return Positionals.Stance.Right;
+
+        // Some enemies have no sides at all: the game says which.
+        if (enemy->ObjectKind == ObjectKind.BattleNpc)
+        {
+            if (!_sideless.TryGetValue(enemy->BaseId, out var sideless))
+            {
+                sideless = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.BNpcBase>().TryGetRow(enemy->BaseId, out var row) && row.IsOmnidirectional;
+                _sideless[enemy->BaseId] = sideless;
+            }
+
+            if (sideless) return Positionals.Stance.Right;
+        }
+
+        // On the ground: height does not count. An object faces (sin, cos) of its rotation.
+        var toPlayer = new Vector2(player->Position.X - enemy->Position.X, player->Position.Z - enemy->Position.Z);
+        if (toPlayer.LengthSquared() < 0.0001f) return Positionals.Stance.Unknown;
+
+        var facing  = new Vector2(MathF.Sin(enemy->Rotation), MathF.Cos(enemy->Rotation));
+        var cosine  = Math.Clamp(Vector2.Dot(facing, Vector2.Normalize(toPlayer)), -1f, 1f);
+        var degrees = MathF.Acos(cosine) * 180f / MathF.PI;
+
+        return Positionals.StanceAt(side, degrees);
+    }
+
+    private static bool HasStatus(GameObject* who, uint statusId)
+    {
+        var statuses = ((BattleChara*)who)->GetStatusManager();
+        if (statuses == null) return false;
+
+        foreach (ref readonly var status in statuses->Status)
+        {
+            if (status.StatusId == statusId) return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>"Icon, NAME Rear!" or "Icon, NAME Rear missed", with the look chosen for each.</summary>
+    private BattleTextMessage PositionalMessage((string? Name, uint IconId) action, Positionals.Side side, bool hit)
+    {
+        var highlight = hit ? Settings.PositionalHit : Settings.PositionalMiss;
+        return new BattleTextMessage
+        {
+            ActionName = action.Name,
+            Order      = DefaultCooldownOrder,
+            Hidden     = [],
+            Label      = T($"Positional.{(hit ? "Hit" : "Miss")}.{side}"),
+            IconId     = action.IconId,
+            Color      = highlight.Enabled ? highlight.Color : hit ? DefaultColors.PositionalHit : DefaultColors.PositionalMiss,
+            Look       = highlight.Enabled ? new BattleTextLook(highlight.Font, highlight.FontSize, highlight.Animation, highlight.Intensity) : null,
+        };
+    }
+
     /// <summary>Announces an action of yours that nothing else announces: it deals no damage, heals nothing and applies no status.</summary>
-    private void CaptureAction(uint casterEntityId, ActionEffectHandler.Header* header, ActionEffectHandler.TargetEffects* effects)
+    private void CaptureAction(uint casterEntityId, ActionEffectHandler.Header* header, ActionEffectHandler.TargetEffects* effects, GameObjectId* targetEntityIds)
     {
         if (header == null || header->ActionType != ActionKindAction) return;
-        if (!Event(BattleTextEvent.ActionUsed).Enabled) return;
 
         var player = (GameObject*)Control.GetLocalPlayer();
         if (player == null || player->EntityId != casterEntityId) return;
+
+        CapturePositional(player, header, effects, targetEntityIds);
+        if (!Event(BattleTextEvent.ActionUsed).Enabled) return;
 
         if (effects != null)
         {
@@ -907,7 +1179,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
             }
         }
 
-        var actionId = header->SpellId;
+        var actionId = header->ActionId;
         if (!_playerActions.TryGetValue(actionId, out var isPlayerAction))
         {
             // Only the actions of a job: not mounting, teleporting, using an item...
@@ -938,12 +1210,22 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
         }
         else
         {
-            // A debuff ending on an enemy comes with the enemy as its own source; the game only shows yours.
-            var mine = from == player || IsMyPet(player, from)
-                       || (!buff && from == to && to->ObjectKind == ObjectKind.BattleNpc);
-            if (!mine) return false;
-
             type = buff ? BattleTextEvent.BuffOnOthers : BattleTextEvent.DebuffOnEnemy;
+
+            // A debuff on an enemy can come with the enemy as its own source, whoever put it there:
+            // then the enemy's list of statuses says whether it is yours.
+            var direct = from == player || IsMyPet(player, from);
+            if (!direct && (buff || from != to || to->ObjectKind != ObjectKind.BattleNpc)) return false;
+
+            if (!buff)
+            {
+                // The end of a debuff does not say whose it was, and a job mate may have the same one on the
+                // same enemy: the end of yours is announced by WatchDebuffs, which knows. Not shown by the game either.
+                if (fading) return true;
+
+                if (direct) TrackDebuff(to, statusId, seen: false);
+                else if (!ConfirmDebuff(player, to, statusId)) return true;
+            }
         }
 
         var status = LookupStatus(statusId);
@@ -956,6 +1238,195 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
             Color  = EffectColor(buff, fading),
             IconIsStatus = true,
         });
+    }
+
+    private static ulong DebuffKey(uint targetEntityId, uint statusId) => ((ulong)targetEntityId << 32) | statusId;
+
+    private void TrackDebuff(GameObject* target, uint statusId, bool seen)
+    {
+        if (_myDebuffs.Count >= MaxTrackedDebuffs)
+            _myDebuffs.Clear();
+        _myDebuffs[DebuffKey(target->EntityId, statusId)] = (seen, DateTime.UtcNow);
+    }
+
+    /// <summary>Whether someone has a status that you put on them: each status in their list names its source.</summary>
+    private static bool HasMyStatus(GameObject* player, GameObject* target, uint statusId)
+    {
+        var statuses = ((BattleChara*)target)->GetStatusManager();
+        return statuses != null && statuses->GetStatusIndex(statusId, player->EntityId) >= 0;
+    }
+
+    /// <summary>
+    /// Whether a debuff that starts on an enemy, with no word on who put it there, is yours.
+    /// One that starts before the enemy's list has it is looked at again for a moment, in <see cref="ConfirmDebuffs"/>.
+    /// </summary>
+    private bool ConfirmDebuff(GameObject* player, GameObject* target, uint statusId)
+    {
+        if (!HasMyStatus(player, target, statusId))
+        {
+            _unconfirmed.Add((target->EntityId, statusId, DateTime.UtcNow + ConfirmWindow));
+            return false;
+        }
+
+        TrackDebuff(target, statusId, seen: true);
+        return true;
+    }
+
+    /// <summary>
+    /// Announces the end of your debuffs: the moment one of them is no longer in its enemy's list as yours.
+    /// The same debuff from someone else stays in the list under their name, and is none of this.
+    /// </summary>
+    private void WatchDebuffs()
+    {
+        if (_myDebuffs.Count == 0 || DateTime.UtcNow < _nextDebuffWatch) return;
+        _nextDebuffWatch = DateTime.UtcNow + DebuffWatch;
+
+        var player  = (GameObject*)Control.GetLocalPlayer();
+        var manager = GameObjectManager.Instance();
+        if (player == null || manager == null)
+        {
+            _myDebuffs.Clear();
+            return;
+        }
+
+        _debuffKeys.Clear();
+        _debuffKeys.AddRange(_myDebuffs.Keys);
+        foreach (var key in _debuffKeys)
+        {
+            var (seen, since) = _myDebuffs[key];
+            var statusId = (uint)key;
+            var target   = manager->Objects.GetObjectByEntityId((uint)(key >> 32));
+
+            // An enemy that is gone or dead takes its debuffs with it: nothing ended.
+            if (target == null || target->IsDead())
+            {
+                _myDebuffs.Remove(key);
+                continue;
+            }
+
+            if (HasMyStatus(player, target, statusId))
+            {
+                if (!seen) _myDebuffs[key] = (true, since);
+                continue;
+            }
+
+            // Not in the list yet, or put by your pet, which the list names instead of you.
+            if (!seen)
+            {
+                if (DateTime.UtcNow - since > DebuffGrace) _myDebuffs.Remove(key);
+                continue;
+            }
+
+            _myDebuffs.Remove(key);
+            if (!Settings.ShowFading) continue;
+
+            var status = LookupStatus(statusId);
+            if (status.Name is null) continue;
+
+            Queue(BattleTextEvent.DebuffOnEnemy, new BattleTextMessage
+            {
+                Label  = "- " + status.Name,
+                IconId = status.IconId,
+                Color  = EffectColor(buff: false, fading: true),
+                IconIsStatus = true,
+            });
+        }
+    }
+
+    /// <summary>Shows the debuffs that started a moment ago and turned out to be yours.</summary>
+    private void ConfirmDebuffs()
+    {
+        if (_unconfirmed.Count == 0) return;
+
+        var player  = (GameObject*)Control.GetLocalPlayer();
+        var manager = GameObjectManager.Instance();
+        for (var i = _unconfirmed.Count - 1; i >= 0; i--)
+        {
+            var (targetId, statusId, until) = _unconfirmed[i];
+            var target = player == null || manager == null ? null : manager->Objects.GetObjectByEntityId(targetId);
+            var mine   = target != null && target->ObjectKind == ObjectKind.BattleNpc && HasMyStatus(player, target, statusId);
+
+            if (!mine && target != null && DateTime.UtcNow < until) continue;
+
+            _unconfirmed.RemoveAt(i);
+            if (!mine) continue;
+
+            TrackDebuff(target, statusId, seen: true);
+            var status = LookupStatus(statusId);
+            if (status.Name is null) continue;
+
+            Queue(BattleTextEvent.DebuffOnEnemy, new BattleTextMessage
+            {
+                Label  = "+ " + status.Name,
+                IconId = status.IconId,
+                Color  = EffectColor(buff: false, fading: false),
+                IconIsStatus = true,
+            });
+        }
+    }
+
+    /// <summary>
+    /// Whether a status deals damage or heals over time. The game has no column for it, but its own
+    /// description of every such status says so in the same words; the English text is read whatever
+    /// the language of the game, which carries all of them.
+    /// </summary>
+    private OverTime OverTimeOf(uint statusId)
+    {
+        if (_overTime.TryGetValue(statusId, out var kind)) return kind;
+
+        kind = OverTime.None;
+        if (Svc.Data.GetExcelSheet<LuminaStatus>(Dalamud.Game.ClientLanguage.English).TryGetRow(statusId, out var row))
+        {
+            var description = row.Description.ExtractText();
+            if (row.StatusCategory == DetrimentalStatus && description.Contains("damage over time", StringComparison.OrdinalIgnoreCase))
+                kind = OverTime.Damage;
+            else if (row.StatusCategory == BeneficialStatus && description.Contains("HP over time", StringComparison.OrdinalIgnoreCase))
+                kind = OverTime.Healing;
+        }
+
+        return _overTime[statusId] = kind;
+    }
+
+    /// <summary>
+    /// The statuses behind a tick: the damage or healing over time its target has. One tick is the sum of
+    /// all of them, so with several they are all named, with the icon of the first.
+    /// </summary>
+    /// <param name="mineOnly">Name only the ones put by you or by a pet of yours, on whoever it is: the pet itself too.</param>
+    /// <returns>Besides the names and the icon, how many of those statuses are yours and how many there are in all.</returns>
+    private (string? Name, uint IconId, int Mine, int Total) FindOverTime(GameObject* player, GameObject* target, OverTime kind, bool mineOnly)
+    {
+        var statuses = ((BattleChara*)target)->GetStatusManager();
+        if (statuses == null) return default;
+
+        string? names = null;
+        uint iconId = 0;
+        int mine = 0, total = 0;
+        _overTimeSeen.Clear();
+        foreach (ref readonly var status in statuses->Status)
+        {
+            uint id = status.StatusId;
+            if (id == 0 || OverTimeOf(id) != kind) continue;
+
+            var sourceId = status.SourceObject.ObjectId;
+            var isMine   = sourceId == player->EntityId;
+            if (!isMine)
+            {
+                var manager = GameObjectManager.Instance();
+                isMine = IsMyPet(player, manager == null ? null : manager->Objects.GetObjectByEntityId(sourceId));
+            }
+
+            total++;
+            if (isMine) mine++;
+            if ((mineOnly && !isMine) || !_overTimeSeen.Add(id)) continue;
+
+            var found = LookupStatus(id);
+            if (found.Name is null) continue;
+
+            names = names is null ? found.Name : $"{names} + {found.Name}";
+            if (iconId == 0) iconId = found.IconId;
+        }
+
+        return (names, iconId, mine, total);
     }
 
     /// <summary>An effect that starts and one that ends have their own colors, besides the + and - before the name.</summary>
@@ -1138,6 +1609,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
             if (_overlay is null) return;
 
             PollCooldowns();
+            ConfirmDebuffs();
+            WatchDebuffs();
 
             if (Preview && DateTime.UtcNow >= _nextPreview)
                 AddPreview();
@@ -1285,9 +1758,6 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
             IconIsStatus = true,
         };
 
-        var edited = _previewHighlight;
-        _previewHighlight = null;
-
         if (PreviewTab == BattleTextTab.Cooldowns)
         {
             Queue(BattleTextEvent.Cooldown, CooldownMessage(action));
@@ -1296,10 +1766,16 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Options>
 
         if (PreviewTab == BattleTextTab.Highlights)
         {
-            // The kind being edited, or else the three kinds of hit in turn.
-            var kind = edited is { } hit && hit != BattleTextHighlight.CooldownReady
-                ? hit
-                : (BattleTextHighlight)(_previewStep++ % 3);
+            // The kind the window is showing.
+            var kind = _previewHighlight;
+            if (kind is BattleTextHighlight.PositionalHit or BattleTextHighlight.PositionalMiss)
+            {
+                // One side and the other in turn.
+                var side = _previewStep++ % 2 == 0 ? Positionals.Side.Rear : Positionals.Side.Flank;
+                Queue(BattleTextEvent.Positional, PositionalMessage(action, side, kind == BattleTextHighlight.PositionalHit));
+                return;
+            }
+
             // Dealt and taken, and healing when critical, so the color of each is seen.
             var (crit, directHit) = (kind != BattleTextHighlight.DirectHit, kind != BattleTextHighlight.Critical);
             Queue(BattleTextEvent.DamageDealt, Hit(outgoing: true, crit, auto: false, directHit));

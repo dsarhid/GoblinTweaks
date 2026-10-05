@@ -247,15 +247,9 @@ internal sealed class BattleTextAreaNode : OverlayNode
             if (slot.Elapsed > MergeWindow) break;
             if (slot.Message.MergeKey != message.MergeKey) continue;
 
+            // Messages with the same key look the same: critical hits have no key, and are never merged.
             slot.Message.Amount += message.Amount;
             slot.Message.Hits   += message.Hits;
-            if (message.Crit && !slot.Message.Crit)
-            {
-                slot.Message.Crit  = true;
-                slot.Message.Mark  = message.Mark;
-                slot.Message.Look  = message.Look;
-                slot.Message.Color = message.Color;
-            }
 
             Show(slot);
             return true;

@@ -15,6 +15,21 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.0.9", "2026-10-05",
+            "Goblin Battle Text: positional alerts, names on damage and healing over time, only your own debuffs, and critical hits kept apart.",
+            [
+                "New: Goblin Battle Text positional alerts — actions that hit harder from the rear or the flank say whether you hit them from there, as an alert of their own or in the damage message",
+                "New: Goblin Battle Text Highlights has a look for a positional that was hit and one for a positional that was missed, and shows one kind of highlight at a time",
+                "New: Goblin Battle Text ticks of damage and healing over time show the name and icon of their effect, like Higanbana or Regen",
+                "New: Goblin Battle Text auto-attacks say who makes them when it is not you: your chocobo, your pet or the enemy",
+                "New: Goblin Battle Text Merge healing on several targets, apart from the option for damage",
+                "New: Goblin Battle Text Show who my healing is for — the healing you give ends with the name of its target",
+                "Change: Goblin Battle Text critical hits are never merged — they show apart with their own look, and direct hits merge only among themselves",
+                "Change: Goblin Battle Text damage over time shared with other players shows your share as an estimate, with ~ before it, and is not shown when none of it is yours",
+                "Change: Goblin Battle Text healing over time on you always shows as received, and the one you or your pet give shows as given",
+                "Fix: Goblin Battle Text showed the debuffs other players put on enemies — only yours show now, even next to the same debuff from someone of your job",
+            ]),
+
         new("1.0.8", "2026-10-04",
             "Goblin Battle Text: settings redone in 5 tabs, areas you drag on screen, colors per kind of hit, and text for Bloodbath heals and dashes.",
             [
