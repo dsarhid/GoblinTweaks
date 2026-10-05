@@ -15,11 +15,18 @@ public sealed class UniversalisData
 /// <summary>One retainer listing currently on the market board.</summary>
 public sealed record MarketListing(long Price, int Quantity, string? World, string? Retainer, bool Hq, DateTime Reviewed);
 
-/// <summary>
-/// Current listings (cheapest first) of one item and what it normally sells for.
-/// The averages are 0 when Universalis has no sales to go by.
-/// </summary>
-public sealed record MarketSnapshot(uint ItemId, List<MarketListing> Listings, long AverageNq, long AverageHq);
+/// <summary>What Universalis knows about the sales of one item, as seen from the home world.</summary>
+/// <param name="AverageNq">Normal sale price, 0 when there are no sales to go by.</param>
+/// <param name="WorldSalesPerDay">Units sold per day on the home world (NQ + HQ).</param>
+/// <param name="DataCenterSalesPerDay">Units sold per day on the whole data center (NQ + HQ).</param>
+/// <param name="LastSale">Most recent sale in the scanned area, <see cref="DateTime.MinValue"/> if unknown.</param>
+public sealed record MarketSales(long AverageNq, long AverageHq, double WorldSalesPerDay, double DataCenterSalesPerDay, DateTime LastSale)
+{
+    public static readonly MarketSales None = new(0, 0, 0, 0, DateTime.MinValue);
+}
+
+/// <summary>Current listings (cheapest first) of one item and how it has been selling.</summary>
+public sealed record MarketSnapshot(uint ItemId, List<MarketListing> Listings, MarketSales Sales);
 
 public sealed class UniversalisService : IDisposable
 {
@@ -37,30 +44,43 @@ public sealed class UniversalisService : IDisposable
 
     /// <summary>
     /// Fetches listings and normal sale prices for up to <see cref="MarketBatchSize"/> items.
-    /// <paramref name="scope"/> is a world or data center name. Throws on network or parse errors.
+    /// <paramref name="scope"/> is the world or data center whose listings are wanted; sales figures are
+    /// always asked for <paramref name="homeWorld"/>, which also returns its data center and region.
+    /// Throws on network or parse errors.
     /// </summary>
     /// <remarks>
     /// Sale history is deliberately not requested: Universalis needs about a second per item for it and
     /// answers 504 beyond a handful of items. Listings without history and the pre-computed averages of
     /// the "aggregated" endpoint each come back in a second or two for a full batch.
     /// </remarks>
-    public static async Task<List<MarketSnapshot>> GetMarketAsync(string scope, IReadOnlyCollection<uint> itemIds, bool wholeDataCenter, CancellationToken token)
+    public static async Task<List<MarketSnapshot>> GetMarketAsync(string scope, string homeWorld, IReadOnlyCollection<uint> itemIds, bool wholeDataCenter, CancellationToken token)
     {
-        var path = $"{Uri.EscapeDataString(scope)}/{string.Join(',', itemIds)}";
-        var listingsTask = GetJsonAsync($"https://universalis.app/api/v2/{path}?listings=5&entries=0", token);
-        var averagesTask = GetJsonAsync($"https://universalis.app/api/v2/aggregated/{path}", token);
+        var ids = string.Join(',', itemIds);
+        var listingsTask = GetJsonAsync($"https://universalis.app/api/v2/{Uri.EscapeDataString(scope)}/{ids}?listings=5&entries=0", token);
+        var averagesTask = GetJsonAsync($"https://universalis.app/api/v2/aggregated/{Uri.EscapeDataString(homeWorld)}/{ids}", token);
 
         using var listings = await listingsTask.ConfigureAwait(false);
         using var averages = await averagesTask.ConfigureAwait(false);
 
         // Prefer the price of the area being scanned, then wider areas when it has no recent sales.
         string[] areas = wholeDataCenter ? ["dc", "region", "world"] : ["world", "dc", "region"];
-        var normalPrices = new Dictionary<uint, (long Nq, long Hq)>();
+        var sales = new Dictionary<uint, MarketSales>();
         if (averages.RootElement.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Array)
         {
             foreach (var entry in results.EnumerateArray())
-                if (entry.TryGetProperty("itemId", out var id) && id.TryGetUInt32(out var itemId))
-                    normalPrices[itemId] = (NormalPrice(entry, "nq", areas), NormalPrice(entry, "hq", areas));
+            {
+                if (!entry.TryGetProperty("itemId", out var id) || !id.TryGetUInt32(out var itemId))
+                    continue;
+
+                var lastNq = LastSale(entry, "nq", areas);
+                var lastHq = LastSale(entry, "hq", areas);
+                sales[itemId] = new MarketSales(
+                    NormalPrice(entry, "nq", areas),
+                    NormalPrice(entry, "hq", areas),
+                    SalesPerDay(entry, "nq", "world") + SalesPerDay(entry, "hq", "world"),
+                    SalesPerDay(entry, "nq", "dc") + SalesPerDay(entry, "hq", "dc"),
+                    lastNq > lastHq ? lastNq : lastHq);
+            }
         }
 
         var result = new List<MarketSnapshot>();
@@ -70,10 +90,10 @@ public sealed class UniversalisService : IDisposable
         if (root.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Object)
         {
             foreach (var item in items.EnumerateObject())
-                if (ParseSnapshot(item.Value, normalPrices) is { } snapshot)
+                if (ParseSnapshot(item.Value, sales) is { } snapshot)
                     result.Add(snapshot);
         }
-        else if (ParseSnapshot(root, normalPrices) is { } snapshot)
+        else if (ParseSnapshot(root, sales) is { } snapshot)
         {
             result.Add(snapshot);
         }
@@ -128,7 +148,30 @@ public sealed class UniversalisService : IDisposable
         return 0;
     }
 
-    private static MarketSnapshot? ParseSnapshot(JsonElement item, Dictionary<uint, (long Nq, long Hq)> normalPrices)
+    /// <summary>Average units sold per day over the last days, 0 when nothing sold.</summary>
+    private static double SalesPerDay(JsonElement entry, string quality, string area)
+        => entry.TryGetProperty(quality, out var data) && data.ValueKind == JsonValueKind.Object
+            && data.TryGetProperty("dailySaleVelocity", out var byArea) && byArea.ValueKind == JsonValueKind.Object
+            && byArea.TryGetProperty(area, out var value) && value.TryGetProperty("quantity", out var quantity)
+            && quantity.TryGetDouble(out var perDay) && perDay > 0
+                ? perDay
+                : 0;
+
+    /// <summary>When the item last sold in the first of <paramref name="areas"/> that has a sale on record.</summary>
+    private static DateTime LastSale(JsonElement entry, string quality, string[] areas)
+    {
+        if (!entry.TryGetProperty(quality, out var data) || data.ValueKind != JsonValueKind.Object
+            || !data.TryGetProperty("recentPurchase", out var byArea) || byArea.ValueKind != JsonValueKind.Object)
+            return DateTime.MinValue;
+
+        foreach (var area in areas)
+            if (byArea.TryGetProperty(area, out var value) && value.TryGetProperty("timestamp", out var timestamp) && timestamp.TryGetInt64(out var milliseconds))
+                return DateTimeOffset.FromUnixTimeMilliseconds(milliseconds).UtcDateTime;
+
+        return DateTime.MinValue;
+    }
+
+    private static MarketSnapshot? ParseSnapshot(JsonElement item, Dictionary<uint, MarketSales> sales)
     {
         if (item.ValueKind != JsonValueKind.Object || !item.TryGetProperty("itemID", out var id) || !id.TryGetUInt32(out var itemId))
             return null;
@@ -154,8 +197,7 @@ public sealed class UniversalisService : IDisposable
         }
 
         listings.Sort((a, b) => a.Price.CompareTo(b.Price));
-        var (nq, hq2) = normalPrices.GetValueOrDefault(itemId);
-        return new MarketSnapshot(itemId, listings, nq, hq2);
+        return new MarketSnapshot(itemId, listings, sales.GetValueOrDefault(itemId) ?? MarketSales.None);
     }
 
     private static string? GetString(JsonElement element, string name)

@@ -32,6 +32,7 @@ internal unsafe class GoblinSniperAddon : NativeAddon
     private const string SortLevel    = "Level";
     private const string SortName     = "Name";
     private const string SortType     = "Type";
+    private const string SortResale   = "Resale";
     private const string SortWorld    = "World";
     private const string SortUpdated  = "Updated";
 
@@ -40,7 +41,7 @@ internal unsafe class GoblinSniperAddon : NativeAddon
     private static readonly List<string> AgeOptions = [AnyAge, "1", "3", "6", "12"]; // hours
 
     /// <summary>Help topics, in order; each has a "Help.{topic}.Title" and "Help.{topic}.Text".</summary>
-    private static readonly string[] HelpTopics = ["About", "Columns", "Sorting", "Data", "Scanning", "Items"];
+    private static readonly string[] HelpTopics = ["About", "Columns", "Resale", "Sorting", "Data", "Scanning", "Items"];
 
     private TextInputNode? _searchInput;
     private StringDropDownNode? _sortDropdown;
@@ -76,7 +77,8 @@ internal unsafe class GoblinSniperAddon : NativeAddon
         base.OnSetup(addon, atkValues);
 
         SniperRowNode.SubText    = TypeLabel;
-        SniperRowNode.NextFormat = Tweak.Text("Row.Next");
+        SniperRowNode.NextFormat   = Tweak.Text("Row.Next");
+        SniperRowNode.PerDayFormat = Tweak.Text("Row.PerDay");
 
         var c  = ContentStartPosition;
         var cs = ContentSize;
@@ -198,8 +200,8 @@ internal unsafe class GoblinSniperAddon : NativeAddon
             GetLabelFunction = key => Tweak.Text($"Sort.{key}"),
             Position         = new Vector2(pos.X + 284f, cy + 1f),
             Size             = new Vector2(184f, 24f),
-            MaxListOptions   = 9,
-            Options          = [SortDiscount, SortProfit, SortPrice, SortAverage, SortLevel, SortName, SortType, SortWorld, SortUpdated],
+            MaxListOptions   = 10,
+            Options          = [SortDiscount, SortProfit, SortResale, SortPrice, SortAverage, SortLevel, SortName, SortType, SortWorld, SortUpdated],
             SelectedOption   = _sortMode,
         };
         _sortDropdown.OnOptionSelected = mode => { _sortMode = mode; FilterChanged(); };
@@ -271,6 +273,7 @@ internal unsafe class GoblinSniperAddon : NativeAddon
         HeaderLabel(pos, columns.AverageX, SniperColumns.PriceW, "Column.Average", AlignmentType.Right);
         HeaderLabel(pos, columns.PriceX, SniperColumns.PriceW, "Column.Price", AlignmentType.Right);
         HeaderLabel(pos, columns.DiscountX, SniperColumns.DiscountW, "Column.Discount", AlignmentType.Right);
+        HeaderLabel(pos, columns.ResaleX, SniperColumns.ResaleW, "Column.Resale", AlignmentType.Right);
         HeaderLabel(pos, columns.WorldX, SniperColumns.WorldW, "Column.World", AlignmentType.Left);
         HeaderLabel(pos, columns.AgeX, SniperColumns.AgeW, "Column.Age", AlignmentType.Right);
 
@@ -422,6 +425,7 @@ internal unsafe class GoblinSniperAddon : NativeAddon
         deals = _sortMode switch
         {
             SortProfit  => deals.OrderByDescending(deal => deal.Profit),
+            SortResale  => deals.OrderByDescending(deal => deal.SalesPerDay).ThenByDescending(deal => deal.Discount),
             SortPrice   => deals.OrderBy(deal => deal.Price),
             SortAverage => deals.OrderByDescending(deal => deal.AveragePrice),
             SortLevel   => deals.OrderByDescending(deal => deal.ItemLevel).ThenBy(deal => deal.Name),

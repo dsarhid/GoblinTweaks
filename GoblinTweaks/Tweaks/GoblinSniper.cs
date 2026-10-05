@@ -21,10 +21,20 @@ namespace GoblinTweaks.Tweaks;
 /// <summary>A listing priced far below what the item normally sells for.</summary>
 /// <param name="AveragePrice">Average sale price of the last days, the "normal" price of the item.</param>
 /// <param name="NextPrice">Cheapest listing of another seller, 0 if there is none.</param>
+/// <param name="SalesPerDay">Units of the item sold per day on the home world, where it would be resold.</param>
 public sealed record SniperDeal(
     uint ItemId, string Name, uint IconId, int ItemLevel, string? Category,
-    long AveragePrice, long Price, long NextPrice, int Quantity, string World, bool Hq, DateTime Reviewed)
+    long AveragePrice, long Price, long NextPrice, int Quantity, string World, bool Hq, DateTime Reviewed, double SalesPerDay)
 {
+    /// <summary>Days given to the resale when estimating <see cref="ResaleChance"/>.</summary>
+    public const int ResaleDays = 7;
+
+    /// <summary>
+    /// Chance, in percent, that at least one unit sells on the home world within <see cref="ResaleDays"/> days,
+    /// taking sales as random and independent (Poisson) at the rate of <see cref="SalesPerDay"/>.
+    /// </summary>
+    public int ResaleChance => (int)Math.Round(100 * (1 - Math.Exp(-SalesPerDay * ResaleDays)));
+
     public int Discount => (int)Math.Round(100 - Price * 100.0 / AveragePrice);
 
     public long Profit => AveragePrice - Price;
@@ -82,6 +92,9 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         /// <summary>Listings whose data was uploaded longer ago than this are ignored.</summary>
         public int MaxAgeHours { get; set; } = 24;
 
+        /// <summary>Items nobody bought for more than this many days are ignored: they would just sit on the market.</summary>
+        public int MaxDaysWithoutSale { get; set; } = 60;
+
         /// <summary>Keys of <see cref="Categories"/> to watch.</summary>
         public HashSet<string> Categories { get; set; } = ["Mounts", "Minions"];
 
@@ -133,7 +146,7 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
     private static readonly TimeSpan RescanDelay = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan RetryDelay = TimeSpan.FromMinutes(2);
 
-    private sealed record ScanRequest(string Scope, string HomeWorld, bool WholeDataCenter, int Discount, int MinAveragePrice, TimeSpan MaxAge, HashSet<string> Categories, HashSet<uint> Items, ClientLanguage Language);
+    private sealed record ScanRequest(string Scope, string HomeWorld, int WorldsInDataCenter, bool WholeDataCenter, int Discount, int MinAveragePrice, TimeSpan MaxAge, TimeSpan MaxTimeWithoutSale, HashSet<string> Categories, HashSet<uint> Items, ClientLanguage Language);
 
     private sealed class Catalog(ClientLanguage language, Dictionary<uint, SniperItem> items)
     {
@@ -207,7 +220,7 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         {
             InternalName = "GtkGoblinSniper",
             Title        = Name,
-            Size         = new System.Numerics.Vector2(920f, 620f),
+            Size         = new System.Numerics.Vector2(990f, 620f),
             Tweak        = this,
         };
 
@@ -322,8 +335,10 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
 
         _nextScan = DateTime.UtcNow.AddMinutes(Math.Clamp(Settings.ScanMinutes, 5, 120));
 
-        var request = new ScanRequest(scope, homeWorld, Settings.WholeDataCenter, Math.Clamp(Settings.DiscountPercent, 1, 99), Settings.MinAveragePrice,
+        var worlds  = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.World>().Count(other => other.IsPublic && other.DataCenter.RowId == world.DataCenter.RowId);
+        var request = new ScanRequest(scope, homeWorld, Math.Max(1, worlds), Settings.WholeDataCenter, Math.Clamp(Settings.DiscountPercent, 1, 99), Settings.MinAveragePrice,
             TimeSpan.FromHours(Math.Clamp(Settings.MaxAgeHours, 1, 72)),
+            TimeSpan.FromDays(Math.Clamp(Settings.MaxDaysWithoutSale, 1, 365)),
             [.. Settings.Categories], [.. Settings.Items], DataLanguage);
 
         _scanQueued = false;
@@ -354,7 +369,7 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
                 _status = _status with { Done = done, Total = ids.Length };
 
                 var found = deals.Count;
-                foreach (var snapshot in await UniversalisService.GetMarketAsync(request.Scope, batch, request.WholeDataCenter, token).ConfigureAwait(false))
+                foreach (var snapshot in await UniversalisService.GetMarketAsync(request.Scope, request.HomeWorld, batch, request.WholeDataCenter, token).ConfigureAwait(false))
                 {
                     if (catalog.Items.TryGetValue(snapshot.ItemId, out var item) && Evaluate(item, snapshot, request) is { } deal)
                         deals.Add(deal);
@@ -412,9 +427,17 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         if (cheapest.Reviewed != DateTime.MinValue && DateTime.UtcNow - cheapest.Reviewed > request.MaxAge) return null;
 
         // Normal price of the same quality, or of the other one when that quality never sold.
-        var average = cheapest.Hq ? market.AverageHq : market.AverageNq;
-        if (average <= 0) average = cheapest.Hq ? market.AverageNq : market.AverageHq;
+        var sales   = market.Sales;
+        var average = cheapest.Hq ? sales.AverageHq : sales.AverageNq;
+        if (average <= 0) average = cheapest.Hq ? sales.AverageNq : sales.AverageHq;
         if (average <= 0 || average < request.MinAveragePrice) return null;
+
+        // Universalis does not say how long a listing has been up, so "stuck on the market" is
+        // judged by the item itself: no sale at all in the scanned area for too long.
+        if (sales.LastSale != DateTime.MinValue && DateTime.UtcNow - sales.LastSale > request.MaxTimeWithoutSale) return null;
+
+        // Resale happens on the home world. Without sales there, assume an even share of the data center's.
+        var salesPerDay = sales.WorldSalesPerDay > 0 ? sales.WorldSalesPerDay : sales.DataCenterSalesPerDay / request.WorldsInDataCenter;
 
         var keep = 100 - request.Discount;
         if (cheapest.Price * 100 > average * keep) return null;
@@ -425,7 +448,7 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
 
         return new SniperDeal(item.Id, item.Name, item.IconId, item.ItemLevel, item.Category,
             average, cheapest.Price, competitor?.Price ?? 0, cheapest.Quantity,
-            cheapest.World ?? request.HomeWorld, cheapest.Hq, cheapest.Reviewed);
+            cheapest.World ?? request.HomeWorld, cheapest.Hq, cheapest.Reviewed, salesPerDay);
     }
 
     /// <summary>Indexes every item that can be sold on the market board. Runs on a background thread.</summary>
@@ -551,6 +574,14 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         if (ImGui.IsItemDeactivatedAfterEdit())
             SaveSettings();
         DrawHelp(T("MaxAge.Help"));
+
+        var maxDays = Settings.MaxDaysWithoutSale;
+        ImGui.SetNextItemWidth(220 * scale);
+        if (ImGui.SliderInt(T("MaxDays"), ref maxDays, 7, 180))
+            Settings.MaxDaysWithoutSale = maxDays;
+        if (ImGui.IsItemDeactivatedAfterEdit())
+            SaveSettings();
+        DrawHelp(T("MaxDays.Help"));
 
         ImGui.Spacing();
         ImGui.Separator();

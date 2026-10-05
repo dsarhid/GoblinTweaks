@@ -19,6 +19,7 @@ internal sealed class Svc
     [PluginService] public static IPluginLog     Log           { get; private set; } = null!;
     [PluginService] public static IDtrBar        DtrBar        { get; private set; } = null!;
     [PluginService] public static IGameInventory GameInventory { get; private set; } = null!;
+    [PluginService] public static IGameInteropProvider GameInterop { get; private set; } = null!;
 
     public static void Initialize(IDalamudPluginInterface pluginInterface) => pluginInterface.Create<Svc>();
 
