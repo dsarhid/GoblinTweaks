@@ -15,6 +15,26 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.0.7", "2026-10-04",
+            "Goblin Battle Text: highlights for critical and direct hits with 35 animations, per-area message order, and no more crossing text.",
+            [
+                "New: Goblin Battle Text Highlights tab — critical hits, direct hits, critical direct hits and the cooldown alert each get their own font, size, color, animation and intensity",
+                "New: Goblin Battle Text has 35 animations for highlighted messages, from Pop to Meteor and Fury",
+                "New: Goblin Battle Text shows critical direct hits with !!, apart from critical hits (!)",
+                "New: Goblin Battle Text order of each message is set per area (Outgoing, Incoming, Center)",
+                "New: Goblin Battle Text buffs and debuffs have one color when they start and another when they end",
+                "New: Goblin Battle Text has a button to restore the defaults of the tab on screen",
+                "New: Goblin Battle Text Center area can limit how many messages show at once (1 to 10)",
+                "New: Goblin Battle Text adds the Trump Gothic Italic font",
+                "Change: Goblin Battle Text no longer crosses text — events scrolling up and down in one area each take half of it, and static ones pile up outside the path",
+                "Change: Goblin Battle Text Center area is static by default",
+                "Change: Goblin Battle Text removed the Hide the game's own text and Follow my character options — the game's text is always hidden and the areas stay around the center of the screen",
+                "Change: Goblin Battle Text no longer shows an action icon on auto-attacks or on what NPCs do to you; other players' actions (PvP) keep theirs",
+                "Fix: Goblin Battle Text buff and debuff icons were squashed",
+                "Fix: Goblin Battle Text drop-down lists showed an internal name while closed",
+                "Fix: Goblin Battle Text help topic title no longer overflows the list of topics",
+            ]),
+
         new("1.0.6", "2026-10-04",
             "New Goblin Battle Text: your damage, healing, buffs and cooldowns scroll around your character. GoblinSniper adds a resale column.",
             [
