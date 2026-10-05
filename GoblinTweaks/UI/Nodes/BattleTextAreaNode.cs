@@ -9,6 +9,9 @@ using KamiToolKit.UiOverlay;
 
 namespace GoblinTweaks.UI.Nodes;
 
+/// <summary>The look of a highlighted message (a special hit, a cooldown alert) in place of that of its area.</summary>
+internal sealed record BattleTextLook(GoblinBattleText.BattleTextFont Font, int FontSize, GoblinBattleText.BattleTextAnimation Animation, int Intensity);
+
 /// <summary>One combat event waiting to be, or being, scrolled in a <see cref="BattleTextAreaNode"/>.</summary>
 internal sealed class BattleTextMessage
 {
@@ -19,6 +22,12 @@ internal sealed class BattleTextMessage
 
     public bool Crit { get; set; }
 
+    /// <summary>Written after the amount: "!" for a critical hit, "!!" for a critical direct hit.</summary>
+    public string Mark { get; set; } = string.Empty;
+
+    /// <summary>Font, size and animation of its own, null to use those of the area.</summary>
+    public BattleTextLook? Look { get; set; }
+
     /// <summary>Text shown instead of an amount (miss, dodge, cooldown ready...).</summary>
     public string? Label { get; init; }
 
@@ -26,6 +35,9 @@ internal sealed class BattleTextMessage
 
     /// <summary>Icon of the action, 0 for none.</summary>
     public uint IconId { get; init; }
+
+    /// <summary>The icon is a status icon, which is taller than wide (3:4), not a square action icon.</summary>
+    public bool IconIsStatus { get; init; }
 
     /// <summary>Icon of the damage type (physical, magical...), 0 for none.</summary>
     public uint TypeIconId { get; init; }
@@ -61,17 +73,20 @@ internal sealed class BattleTextMessage
 /// </summary>
 internal sealed class BattleTextAreaNode : OverlayNode
 {
-    private const int   MaxMessages = 15;
+    /// <summary>Messages an area can show at once; each area may be set to fewer.</summary>
+    public const int MaxMessages = 15;
+
     private const float FadeStart   = 0.8f;   // fraction of the scroll after which the text fades out
     private const float MergeWindow = 0.35f;  // seconds during which hits of the same action are merged
-    private const float PopTime     = 0.18f;  // seconds a critical hit takes to shrink to its size
-    private const float PopScale    = 0.6f;
-    private const float CritScale   = 1.35f;
+    private const float LaneGap     = 4f;
     private const float CurveWidth  = 60f;
     private const float PartGap     = 4f;
     private const float MaxDelta    = 0.1f;
 
     private static readonly Vector4 Outline = new(0.05f, 0.05f, 0.05f, 1f);
+
+    /// <summary>One of the game's fonts and the style it is drawn in.</summary>
+    private readonly record struct Typeface(FontType Type, bool Italic = false);
 
     /// <summary>The nodes of one message: its parts are laid out inside the container, which is what moves.</summary>
     private sealed class Slot
@@ -116,7 +131,23 @@ internal sealed class BattleTextAreaNode : OverlayNode
     /// <summary>Builds the amount text of a message; called again when hits are merged into it.</summary>
     public required Func<BattleTextMessage, string> Format { get; init; }
 
+    /// <summary>
+    /// The area has events scrolling up and events scrolling down. Each direction then gets one half of
+    /// the area and starts from its middle (up from the point upwards, down from the point downwards),
+    /// so the two never cross. With a single direction the whole area is one path, end to end.
+    /// </summary>
+    public bool SplitDirections { get; set; }
+
+    /// <summary>
+    /// The area has static events and scrolling ones. The static ones then pile up just outside the
+    /// scrolling path instead of at the area point, where the scrolling ones pass.
+    /// </summary>
+    public bool StaticOutside { get; set; }
+
     public override OverlayLayer OverlayLayer => OverlayLayer.BehindUserInterface;
+
+    /// <summary>Pixels a scrolling message travels: the whole area, or half of it when both directions share it.</summary>
+    private float Travel => Math.Max(1f, Area.Height) / (SplitDirections ? 2f : 1f);
 
     private float Duration => Math.Max(0.5f, Area.DurationTenths / 10f);
 
@@ -124,16 +155,15 @@ internal sealed class BattleTextAreaNode : OverlayNode
     {
         if (TryMerge(message)) return;
 
-        Slot slot;
-        if (_free.Count > 0)
+        // Over the limit of the area, the oldest messages go to make room for the new one.
+        var limit = Math.Clamp(Area.MaxMessages, 1, MaxMessages);
+        while (_active.Count >= limit)
         {
-            slot = _free.Pop();
-        }
-        else
-        {
-            slot = _active[0];
+            Release(_active[0]);
             _active.RemoveAt(0);
         }
+
+        var slot = _free.Pop();
 
         slot.Message = message;
         slot.Elapsed = 0f;
@@ -222,6 +252,8 @@ internal sealed class BattleTextAreaNode : OverlayNode
             if (message.Crit && !slot.Message.Crit)
             {
                 slot.Message.Crit  = true;
+                slot.Message.Mark  = message.Mark;
+                slot.Message.Look  = message.Look;
                 slot.Message.Color = message.Color;
             }
 
@@ -236,7 +268,7 @@ internal sealed class BattleTextAreaNode : OverlayNode
     private void MakeRoom()
     {
         // Only the messages going the same way as the new one are in its path.
-        var speed  = Math.Max(1f, Area.Height) / Duration;
+        var speed  = Travel / Duration;
         var behind = _active[^1];
         if (IsStatic(behind)) return;
 
@@ -256,25 +288,26 @@ internal sealed class BattleTextAreaNode : OverlayNode
     private void Show(Slot slot)
     {
         var message  = slot.Message;
-        var fontSize = MathF.Round(Area.FontSize * (message.Crit ? CritScale : 1f));
+        var fontSize = (float)Math.Clamp(message.Look?.FontSize ?? Area.FontSize, 8, 96);
         var height   = fontSize + 6f;
-        var font     = Options.Font switch
+        var font     = (message.Look?.Font ?? Options.Font) switch
         {
-            GoblinBattleText.BattleTextFont.Axis        => FontType.Axis,
-            GoblinBattleText.BattleTextFont.TrumpGothic => FontType.TrumpGothic,
-            GoblinBattleText.BattleTextFont.Miedinger   => FontType.MiedingerMed,
-            _                                           => FontType.Jupiter,
+            GoblinBattleText.BattleTextFont.Axis              => new Typeface(FontType.Axis),
+            GoblinBattleText.BattleTextFont.TrumpGothic       => new Typeface(FontType.TrumpGothic),
+            GoblinBattleText.BattleTextFont.TrumpGothicItalic => new Typeface(FontType.TrumpGothic, Italic: true),
+            GoblinBattleText.BattleTextFont.Miedinger         => new Typeface(FontType.MiedingerMed),
+            _                                                 => new Typeface(FontType.Jupiter),
         };
 
-        var hidden = message.Hidden ?? Options.Hidden;
+        var hidden = message.Hidden ?? Area.Hidden;
 
         SetText(slot.Name, hidden.Contains(GoblinBattleText.BattleTextPart.Name) ? null : message.ActionName, font, fontSize, height, message.NameColor ?? message.Color);
         SetText(slot.Number, hidden.Contains(GoblinBattleText.BattleTextPart.Number) ? null : Format(message), font, fontSize, height, message.Color);
-        SetIcon(slot.Icon, hidden.Contains(GoblinBattleText.BattleTextPart.Icon) ? 0 : message.IconId, fontSize + 2f);
-        SetIcon(slot.Type, hidden.Contains(GoblinBattleText.BattleTextPart.Type) ? 0 : message.TypeIconId, fontSize - 2f);
+        SetIcon(slot.Icon, hidden.Contains(GoblinBattleText.BattleTextPart.Icon) ? 0 : message.IconId, fontSize + 2f, message.IconIsStatus);
+        SetIcon(slot.Type, hidden.Contains(GoblinBattleText.BattleTextPart.Type) ? 0 : message.TypeIconId, fontSize - 2f, tall: false);
 
         var x = 0f;
-        foreach (var part in message.Order ?? Options.Order)
+        foreach (var part in message.Order ?? Area.Order)
         {
             NodeBase node = part switch
             {
@@ -298,32 +331,47 @@ internal sealed class BattleTextAreaNode : OverlayNode
         container.IsVisible = true;
     }
 
-    private static void SetText(TextNode node, string? text, FontType font, float fontSize, float height, Vector4 color)
+    private static void SetText(TextNode node, string? text, Typeface font, float fontSize, float height, Vector4 color)
     {
         node.IsVisible = !string.IsNullOrEmpty(text);
         if (!node.IsVisible) return;
 
-        node.FontType  = font;
+        // The node is reused: the style of the last message must not stay on.
+        if (font.Italic) node.AddTextFlags(TextFlags.Italic);
+        else             node.RemoveTextFlags(TextFlags.Italic);
+
+        node.FontType  = font.Type;
         node.FontSize  = (uint)fontSize;
         node.TextColor = color;
         node.String    = text!;
         node.Size      = new Vector2(MathF.Ceiling(node.GetTextDrawSize().X) + 2f, height);
     }
 
-    private static void SetIcon(IconImageNode node, uint iconId, float size)
+    /// <param name="tall">Keep the 3:4 shape of a status icon; a square box would squash it.</param>
+    private static void SetIcon(IconImageNode node, uint iconId, float size, bool tall)
     {
         node.IsVisible = iconId != 0;
         if (!node.IsVisible) return;
 
         node.IconId = iconId;
-        node.Size   = new Vector2(size, size);
+        node.Size   = tall ? new Vector2(size * 0.75f, size) + new Vector2(3f, 4f) : new Vector2(size, size);
     }
 
     private void Place(Slot slot, float progress)
     {
-        var height = Math.Max(1f, Area.Height);
-        var travel = progress * height;
-        var y      = (slot.Message.Downwards ? travel - height / 2f : height / 2f - travel) - slot.Height / 2f;
+        var down   = slot.Message.Downwards;
+        var travel = progress * Travel;
+        float y;
+        if (SplitDirections)
+        {
+            // Upwards: the bottom edge leaves the area point. Downwards: the top edge does.
+            y = down ? travel : -travel - slot.Height;
+        }
+        else
+        {
+            var height = Math.Max(1f, Area.Height);
+            y = (down ? travel - height / 2f : height / 2f - travel) - slot.Height / 2f;
+        }
 
         var bow = CurveWidth * (1f - MathF.Pow(2f * progress - 1f, 2f));
         var x   = Area.Style switch
@@ -342,20 +390,40 @@ internal sealed class BattleTextAreaNode : OverlayNode
     /// <summary>A message that does not scroll: it sits at the area point, and older ones pile up away from the character.</summary>
     private void PlaceStatic(Slot slot, float progress, float pile)
     {
-        var y = (Area.OffsetY < 0 ? -pile : pile) - slot.Height / 2f;
+        var above = Area.OffsetY < 0;
+        float y;
+        if (StaticOutside)
+        {
+            var edge = Math.Max(1f, Area.Height) / 2f + LaneGap + pile;
+            y = above ? -edge - slot.Height : edge;
+        }
+        else
+        {
+            y = (above ? -pile : pile) - slot.Height / 2f;
+        }
+
         var x = -slot.Width * Math.Clamp(Area.TextAnchor, 0, 100) / 100f;
 
         Apply(slot, new Vector2(x, y), progress);
     }
 
+    /// <summary>Places a message, with its fade and whatever its animation is doing at this moment.</summary>
     private static void Apply(Slot slot, Vector2 position, float progress)
     {
-        var pop = slot.Message.Crit && slot.Elapsed < PopTime ? 1f + PopScale * (1f - slot.Elapsed / PopTime) : 1f;
+        var look   = slot.Message.Look;
+        var effect = look is null
+            ? new BattleTextEffect()
+            : BattleTextAnimations.Play(look.Animation, slot.Elapsed, Math.Clamp(look.Intensity / 100f, 0f, 3f));
 
+        var fade = progress < FadeStart ? 1f : 1f - (progress - FadeStart) / (1f - FadeStart);
+
+        // Everything is set every frame: the slot is reused, and the last message may have left it tilted or glowing.
         var container = slot.Container;
-        container.Position = position;
-        container.Scale    = new Vector2(pop, pop);
-        container.Alpha    = progress < FadeStart ? 1f : 1f - (progress - FadeStart) / (1f - FadeStart);
+        container.Position        = position + effect.Offset;
+        container.Scale           = effect.Scale;
+        container.RotationDegrees = effect.Degrees;
+        container.Alpha           = fade * effect.Alpha;
+        container.AddColor        = effect.Glow;
     }
 
     private void Release(Slot slot)
