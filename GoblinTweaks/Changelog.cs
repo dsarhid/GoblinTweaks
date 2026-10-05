@@ -15,6 +15,20 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.0.6", "2026-10-04",
+            "New Goblin Battle Text: your damage, healing, buffs and cooldowns scroll around your character. GoblinSniper adds a resale column.",
+            [
+                "New: Goblin Battle Text — the damage and healing you deal and receive scroll next to your character instead of over whoever was hit",
+                "New: Goblin Battle Text has three areas (Outgoing, Incoming, Centre) with position, size, duration, alignment and path, including a static one",
+                "New: Goblin Battle Text events — damage, healing, MP, buffs and debuffs can each be turned off, sent to any area and scroll up, down or stay still",
+                "New: Goblin Battle Text cooldown alerts, off by default, with a checklist of the actions of your current job",
+                "New: Goblin Battle Text shows action and damage type icons, with the order and visibility of each part of a message configurable",
+                "New: Goblin Battle Text colors per kind of text, a help window and the /gbt chat command",
+                "New: GoblinSniper Resale column — chance that the item sells on your world within a week, with sorting by it",
+                "New: GoblinSniper ignores items nobody bought for too long (60 days by default, configurable)",
+                "Fix: Color picker — the textures of the native color picker are now shipped with the plugin",
+            ]),
+
         new("1.0.5", "2026-10-04",
             "New GoblinSniper market deal finder and Weapon pose per job tweaks, plus a memory estimate on every tweak card.",
             [
