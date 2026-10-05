@@ -56,9 +56,12 @@ internal unsafe class BattleTextAddon : NativeAddon
     private readonly List<Page> _pages = [];
 
     // Drop-downs are attached last, bottom one first, so an open list draws over the rows below it.
-    private readonly List<NodeBase> _dropDowns = [];
+    private readonly List<(NodeBase Node, ResNode Parent)> _dropDowns = [];
     private TextHelpAddon? _helpAddon;
     private Page? _page;
+
+    // A part of the page being built that is shown or hidden as one; null to build on the page itself.
+    private ResNode? _group;
     private Page? _areaPage;
     private OrderList? _areaOrder;
     private SegmentSwitchNode? _areaSwitch;
@@ -70,6 +73,9 @@ internal unsafe class BattleTextAddon : NativeAddon
     private float _y;
 
     public required GoblinBattleText Tweak { get; init; }
+
+    /// <summary>Where the controls being built go: the group of the page being built, or the page.</summary>
+    private ResNode Target => _group ?? _page!.Node;
 
     /// <summary>The area the controls of the Areas tab show and edit.</summary>
     private GoblinBattleText.AreaOptions CurrentArea => Tweak.Area(_area);
@@ -129,6 +135,7 @@ internal unsafe class BattleTextAddon : NativeAddon
         _pages.Clear();
         _dropDowns.Clear();
         _page      = null;
+        _group     = null;
         _areaPage   = null;
         _areaOrder  = null;
         _areaSwitch = null;
@@ -239,7 +246,11 @@ internal unsafe class BattleTextAddon : NativeAddon
         var colors  = options.Colors;
 
         AddCheckCell(0, "MergeHits",  () => options.MergeHits,  value => options.MergeHits = value);
-        AddCheckCell(1, "Abbreviate", () => options.Abbreviate, value => options.Abbreviate = value);
+        AddCheckCell(1, "MergeHeals", () => options.MergeHeals, value => options.MergeHeals = value);
+        _y += RowH;
+
+        AddCheckCell(0, "ShowHealTargets", () => options.ShowHealTargets, value => options.ShowHealTargets = value);
+        AddCheckCell(1, "Abbreviate",      () => options.Abbreviate,      value => options.Abbreviate = value);
         _y += RowH;
 
         AddCheckCell(0, "IncludePets", () => options.IncludePets, value => options.IncludePets = value);
@@ -281,7 +292,7 @@ internal unsafe class BattleTextAddon : NativeAddon
             Position = new Vector2(0f, _y),
         };
         _areaSwitch.OnSelected = index => SelectArea(areas[index]);
-        _areaSwitch.AttachNode(_page!.Node);
+        _areaSwitch.AttachNode(Target);
 
         var menu = new CircleButtonNode
         {
@@ -291,7 +302,7 @@ internal unsafe class BattleTextAddon : NativeAddon
             TextTooltip = Tweak.Text("Area.Menu"),
         };
         menu.OnClick = OpenAreaMenu;
-        menu.AttachNode(_page.Node);
+        menu.AttachNode(Target);
         _y += SegmentSwitchNode.SwitchHeight + 8f;
 
         AddCheckCell(0, "Area.Enabled", () => CurrentArea.Enabled, value => CurrentArea.Enabled = value);
@@ -400,10 +411,10 @@ internal unsafe class BattleTextAddon : NativeAddon
                 syncing = false;
             }
         };
-        number.AttachNode(_page!.Node);
+        number.AttachNode(Target);
 
         // After the slider's own refresh, which reads the same value.
-        _page.Refresh.Add(() =>
+        _page!.Refresh.Add(() =>
         {
             syncing = true;
             try
@@ -446,7 +457,7 @@ internal unsafe class BattleTextAddon : NativeAddon
                 slider.Value = preset.Value;
                 Tweak.Changed();
             };
-            button.AttachNode(_page!.Node);
+            button.AttachNode(Target);
         }
     }
 
@@ -494,18 +505,56 @@ internal unsafe class BattleTextAddon : NativeAddon
 
         var options = Tweak.Config;
         _y += 8f;
-        AddCheckAt(new Vector2(8f, _y + 7f), _width - 16f, "ShowFading", () => options.ShowFading, value => options.ShowFading = value);
+        AddCheckCell(0, "ShowFading",       () => options.ShowFading,       value => options.ShowFading = value);
+        AddCheckCell(1, "PositionalInline", () => options.PositionalInline, value => options.PositionalInline = value);
         _y += RowH;
     }
 
+    /// <summary>
+    /// One kind of highlighted message at a time, chosen with the switch at the top: the three kinds of hit
+    /// and the two positional alerts. Each has its block of controls, and only the chosen one is shown.
+    /// </summary>
     private void BuildHighlights()
     {
-        foreach (var kind in Enum.GetValues<GoblinBattleText.BattleTextHighlight>())
+        // The look of the cooldown alert is with the rest of its settings, in its own tab.
+        var kinds = Enum.GetValues<GoblinBattleText.BattleTextHighlight>()
+            .Where(kind => kind != GoblinBattleText.BattleTextHighlight.CooldownReady)
+            .ToArray();
+
+        var chooser = new SegmentSwitchNode([.. kinds.Select(kind => Tweak.Text($"HighlightTab.{kind}"))], _width)
         {
-            // The look of the cooldown alert is with the rest of its settings, in its own tab.
-            if (kind != GoblinBattleText.BattleTextHighlight.CooldownReady)
-                AddHighlightBlock(kind);
+            Position = new Vector2(0f, _y),
+        };
+        chooser.AttachNode(Target);
+        _y += SegmentSwitchNode.SwitchHeight + 10f;
+
+        var top    = _y;
+        var blocks = new List<ResNode>();
+        foreach (var kind in kinds)
+        {
+            _group = new ResNode
+            {
+                Position  = new Vector2(0f, top),
+                Size      = new Vector2(_width, _pageHeight - top),
+                IsVisible = blocks.Count == 0,
+            };
+            _group.AttachNode(_page!.Node);
+            blocks.Add(_group);
+
+            _y = 0f;
+            AddHighlightBlock(kind);
         }
+
+        _group = null;
+        _y     = top;
+
+        chooser.OnSelected = index =>
+        {
+            for (var block = 0; block < blocks.Count; block++)
+                blocks[block].IsVisible = block == index;
+            Tweak.PreviewHighlightSoon(kinds[index]);
+        };
+        Tweak.PreviewHighlightSoon(kinds[0]);
     }
 
     /// <summary>Everything about the cooldown alert: where it shows, its look, its order, and the actions it announces.</summary>
@@ -540,7 +589,7 @@ internal unsafe class BattleTextAddon : NativeAddon
                 Size      = new Vector2(_width - 8f, 18f),
                 TextColor = MutedGrey,
                 FontSize  = TextSize,
-            }.AttachNode(_page!.Node);
+            }.AttachNode(Target);
             return;
         }
 
@@ -551,7 +600,7 @@ internal unsafe class BattleTextAddon : NativeAddon
             PlaceholderString = Tweak.Text("Cooldowns.Search"),
             MaxCharacters     = 32,
         };
-        search.AttachNode(_page!.Node);
+        search.AttachNode(Target);
 
         new TextNode
         {
@@ -560,7 +609,7 @@ internal unsafe class BattleTextAddon : NativeAddon
             Size      = new Vector2(_width - 222f, 18f),
             TextColor = MutedGrey,
             FontSize  = 13,
-        }.AttachNode(_page.Node);
+        }.AttachNode(Target);
         _y += 34f;
 
         // One button per action, lit when its cooldown is announced. They scroll if the job has more than fit.
@@ -570,7 +619,7 @@ internal unsafe class BattleTextAddon : NativeAddon
             Size              = new Vector2(_width, Math.Max(IconCell, _pageHeight - _y)),
             AutoHideScrollBar = true,
         };
-        scroll.AttachNode(_page.Node);
+        scroll.AttachNode(Target);
 
         var buttons = new List<(uint Id, string Name, IconButtonNode Button)>();
         foreach (var (id, name, iconId) in actions)
@@ -616,7 +665,7 @@ internal unsafe class BattleTextAddon : NativeAddon
         search.OnInputComplete = text => Arrange(text.ToString().Trim());
 
         Arrange(string.Empty);
-        _page.Refresh.Add(() =>
+        _page!.Refresh.Add(() =>
         {
             foreach (var (id, _, button) in buttons)
                 Light(button, id);
@@ -640,7 +689,7 @@ internal unsafe class BattleTextAddon : NativeAddon
     private void EndPage()
     {
         for (var i = _dropDowns.Count - 1; i >= 0; i--)
-            _dropDowns[i].AttachNode(_page!.Node);
+            _dropDowns[i].Node.AttachNode(_dropDowns[i].Parent);
         _dropDowns.Clear();
     }
 
@@ -682,8 +731,8 @@ internal unsafe class BattleTextAddon : NativeAddon
             TextTooltip = Tweak.Text(key + ".Help"),
         };
         check.OnClick = isChecked => { set(isChecked); Tweak.Changed(); };
-        check.AttachNode(_page!.Node);
-        _page.Refresh.Add(() => check.IsChecked = get());
+        check.AttachNode(Target);
+        _page!.Refresh.Add(() => check.IsChecked = get());
     }
 
     private SliderNode AddSliderAt(Vector2 position, float width, string key, int min, int max, int step, Func<int> get, Action<int> set)
@@ -702,8 +751,8 @@ internal unsafe class BattleTextAddon : NativeAddon
         slider.Value = Math.Clamp(get(), min, max);
 
         slider.OnValueChanged = changed => { set(changed); Tweak.Changed(); };
-        slider.AttachNode(_page!.Node);
-        _page.Refresh.Add(() => slider.Value = Math.Clamp(get(), min, max));
+        slider.AttachNode(Target);
+        _page!.Refresh.Add(() => slider.Value = Math.Clamp(get(), min, max));
         return slider;
     }
 
@@ -722,7 +771,7 @@ internal unsafe class BattleTextAddon : NativeAddon
             TextTooltip      = Tweak.Text(key + ".Help"),
         };
         dropDown.OnOptionSelected = selected => { set(selected); Tweak.Changed(); };
-        _dropDowns.Add(dropDown);
+        _dropDowns.Add((dropDown, Target));
         _page!.Refresh.Add(() => dropDown.SelectedOption = get());
     }
 
@@ -766,7 +815,8 @@ internal unsafe class BattleTextAddon : NativeAddon
         var colorW   = (_width - checkW) / 3f;
 
         AddCheckAt(new Vector2(8f, _y + 7f), checkW - 16f, $"Highlight.{kind}", () => options.Enabled, Sampled<bool>(value => options.Enabled = value));
-        if (kind == GoblinBattleText.BattleTextHighlight.CooldownReady)
+        if (kind is GoblinBattleText.BattleTextHighlight.CooldownReady or GoblinBattleText.BattleTextHighlight.PositionalHit
+            or GoblinBattleText.BattleTextHighlight.PositionalMiss)
         {
             AddColorAt(new Vector2(half + 10f, _y + 4f), half - 22f, $"Highlight.Color.{kind}", () => options.Color,
                 defaults.Color, Sampled<Vector4>(value => options.Color = value));
@@ -862,8 +912,8 @@ internal unsafe class BattleTextAddon : NativeAddon
             Apply(first);
         };
 
-        _dropDowns.Add(groups);
-        _dropDowns.Add(animation);
+        _dropDowns.Add((groups, Target));
+        _dropDowns.Add((animation, Target));
         _page!.Refresh.Add(() =>
         {
             var group = GoblinBattleText.GroupOf(options.Animation);
@@ -883,8 +933,8 @@ internal unsafe class BattleTextAddon : NativeAddon
             Size         = new Vector2(width, 28f),
         };
         color.OnColorConfirmed = confirmed => { set(confirmed); Tweak.Changed(); };
-        color.AttachNode(_page!.Node);
-        _page.Refresh.Add(() => color.CurrentColor = get());
+        color.AttachNode(Target);
+        _page!.Refresh.Add(() => color.CurrentColor = get());
     }
 
     private void AddHeader(string key)
@@ -899,13 +949,13 @@ internal unsafe class BattleTextAddon : NativeAddon
             TextColor   = TitleGold,
             FontSize    = 15,
             TextTooltip = Tweak.Text(key + ".Help"),
-        }.AttachNode(_page!.Node);
+        }.AttachNode(Target);
 
         new HorizontalLineNode
         {
             Position = new Vector2(0f, _y + 24f),
             Size     = new Vector2(_width, 2f),
-        }.AttachNode(_page.Node);
+        }.AttachNode(Target);
 
         _y += 32f;
     }
@@ -921,7 +971,7 @@ internal unsafe class BattleTextAddon : NativeAddon
             FontSize    = TextSize,
             TextTooltip = Tweak.Text(key + ".Help"),
         };
-        label.AttachNode(_page!.Node);
+        label.AttachNode(Target);
         return label;
     }
 
@@ -935,7 +985,7 @@ internal unsafe class BattleTextAddon : NativeAddon
             Size      = new Vector2(width, 18f),
             TextColor = MutedGrey,
             FontSize  = 13,
-        }.AttachNode(_page!.Node);
+        }.AttachNode(Target);
     }
 
     // ── Order and visibility of the parts of a message ──────────────────────────
@@ -956,7 +1006,7 @@ internal unsafe class BattleTextAddon : NativeAddon
                 Position = new Vector2(i * chipW, _y),
                 Size     = new Vector2(chipW, ChipH),
             };
-            chip.AttachNode(_page!.Node);
+            chip.AttachNode(Target);
 
             var label = new TextNode
             {
@@ -981,12 +1031,12 @@ internal unsafe class BattleTextAddon : NativeAddon
             FontSize  = TextSize,
             IsVisible = false,
         };
-        list.Empty.AttachNode(_page!.Node);
+        list.Empty.AttachNode(Target);
 
         _y += ChipH;
 
         Refresh(list);
-        _page.Refresh.Add(() => Refresh(list));
+        _page!.Refresh.Add(() => Refresh(list));
     }
 
     private void AddOrderButton(ResNode chip, CircleButtonIcon icon, float x, string tooltipKey, Action onClick)
