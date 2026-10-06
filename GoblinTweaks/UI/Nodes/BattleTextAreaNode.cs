@@ -172,6 +172,23 @@ internal sealed class BattleTextAreaNode : OverlayNode
         MakeRoom();
     }
 
+    /// <summary>
+    /// Puts another message where one being shown is, without moving it. False when that one is no longer shown.
+    /// </summary>
+    public bool Replace(BattleTextMessage shown, BattleTextMessage message)
+    {
+        foreach (var slot in _active)
+        {
+            if (!ReferenceEquals(slot.Message, shown)) continue;
+
+            slot.Message = message;
+            Show(slot);
+            return true;
+        }
+
+        return false;
+    }
+
     public void Clear()
     {
         foreach (var slot in _active)

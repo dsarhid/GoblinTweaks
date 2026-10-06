@@ -31,7 +31,7 @@ internal unsafe class BattleTextAddon : NativeAddon
     private const float DefaultsW = 100f;   // the hold button of the game has this width
     private const uint  TextSize  = 14;
 
-    private static readonly string[] HelpTopics = ["Overview", "General", "Areas", "Events", "Highlights", "Cooldowns"];
+    private static readonly string[] HelpTopics = ["Overview", "General", "Areas", "Events", "Highlights", "Cooldowns", "Positionals", "OverTime", "Rules"];
 
     /// <summary>
     /// One "order of the parts" row: the parts, which of them are hidden, which of them apply, and
@@ -232,7 +232,7 @@ internal unsafe class BattleTextAddon : NativeAddon
         {
             InternalName = "GtkBattleTextHelp",
             Title        = Tweak.Text("Help.Title"),
-            Size         = new Vector2(860f, 600f),
+            Size         = new Vector2(860f, 700f),
             Pages        = [.. HelpTopics.Select(topic => (Tweak.Text($"Help.{topic}.Title"), Tweak.Text($"Help.{topic}.Text")))],
         };
         _helpAddon.Open();
@@ -254,6 +254,10 @@ internal unsafe class BattleTextAddon : NativeAddon
         _y += RowH;
 
         AddCheckCell(0, "IncludePets", () => options.IncludePets, value => options.IncludePets = value);
+        AddCheckCell(1, "ShowDefended", () => options.ShowDefended, value => options.ShowDefended = value);
+        _y += RowH;
+
+        AddDropDownCell(0, "Mitigation", "Mitigation", () => options.Mitigation, value => options.Mitigation = value);
         AddDropDownCell(1, "Font", "Font", () => options.Font, value => options.Font = value);
         _y += RowH;
 
