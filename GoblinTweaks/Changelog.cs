@@ -15,6 +15,25 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.0.11", "2026-10-06",
+            "Goblin Battle Text: settings per character, damage mitigated, pets and counterattacks named, cooldown alert fixes.",
+            [
+                "New: Goblin Battle Text settings are kept per character — one seen for the first time starts with a copy of the ones you had",
+                "New: Goblin Battle Text damage you take says how much of it was mitigated, like -270 (-30% mitigated), with only the percent or not at all if you prefer",
+                "New: Goblin Battle Text Show blocked, parried and resisted — turn the note after such a hit on or off",
+                "New: Goblin Battle Text an effect that does not take says so, like Leg Sweep Immune or Leg Sweep Full resist",
+                "New: Goblin Battle Text help pages for positionals, damage and healing over time, and what counts as yours",
+                "Change: Goblin Battle Text the actions of your pet or chocobo end with its name, and its auto-attacks say Attack before it",
+                "Change: Goblin Battle Text an action with no damage that puts an effect on someone else, like a stun, shows its icon and name",
+                "Change: Goblin Battle Text cooldown alerts leave out the mudras of a ninja",
+                "Fix: Goblin Battle Text the counterattack of Vengeance or Damnation showed as a plain Attack — it shows the name and icon of its action",
+                "Fix: Goblin Battle Text cooldown alerts named the upgraded action while level synced, like Bloodwhetting for Raw Intuition",
+                "Fix: Goblin Battle Text every cooldown was announced as ready after a loading screen",
+                "Fix: Goblin Battle Text damage over time of unknown origin showed as yours with (DoT) — a tick shows only when something of yours is ticking",
+                "Fix: Goblin Battle Text the damage over time of Choco Beak showed with no name",
+                "Fix: Goblin Battle Text a color lost from the settings showed as black text — it gets its default back",
+            ]),
+
         new("1.0.10", "2026-10-05",
             "Goblin Battle Text: ground damage like Doton shows its name and only when it is yours.",
             [
