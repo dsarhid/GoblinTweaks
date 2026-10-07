@@ -16,6 +16,9 @@ public static class Loc
     [
         ("en", "English"),
         ("es", "Español"),
+        ("de", "Deutsch"),
+        ("fr", "Français"),
+        ("ja", "日本語"),
     ];
 
     private static readonly Dictionary<string, Dictionary<string, string>> Texts = [];

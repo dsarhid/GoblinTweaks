@@ -841,6 +841,20 @@ internal unsafe class BattleTextAddon : NativeAddon
         }
         _y += RowH;
 
+        // The positional alerts can go from one color to another: the checkbox turns it on, the second color is where it ends.
+        if (kind is GoblinBattleText.BattleTextHighlight.PositionalHit or GoblinBattleText.BattleTextHighlight.PositionalMiss)
+        {
+            AddCheckAt(new Vector2(8f, _y + 7f), half - 16f, "Highlight.Gradient", () => options.Gradient, Sampled<bool>(value => options.Gradient = value));
+            AddColorAt(new Vector2(half + 10f, _y + 4f), half - 22f, "Highlight.Color.End", () => options.ColorEnd,
+                defaults.ColorEnd, Sampled<Vector4>(value => options.ColorEnd = value));
+            _y += RowH;
+
+            AddLabelAt(new Vector2(30f, _y + 9f), captionW, "Highlight.GradientDirection");
+            AddDropDownAt(new Vector2(30f + captionW, _y + 6f), half - captionW - 50f, "Highlight.GradientDirection", "GradientDirection",
+                () => options.GradientDirection, Sampled<GoblinBattleText.BattleTextGradientDirection>(value => options.GradientDirection = value));
+            _y += RowH;
+        }
+
         AddLabelAt(new Vector2(30f, _y + 9f), captionW, "Highlight.Font");
         AddDropDownAt(new Vector2(30f + captionW, _y + 6f), half - captionW - 50f, "Highlight.Font", "Font",
             () => options.Font, Sampled<GoblinBattleText.BattleTextFont>(value => options.Font = value));

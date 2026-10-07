@@ -20,7 +20,7 @@ namespace GoblinTweaks.Core;
 /// </remarks>
 internal static partial class Positionals
 {
-    internal enum Side : byte { Rear, Flank }
+    internal enum Side : byte { Rear, Flank, Front }
 
     /// <summary>What the description of an action says about its positional. A potency it does not give is 0.</summary>
     /// <param name="Base">Potency with neither combo nor positional.</param>
@@ -50,13 +50,13 @@ internal static partial class Positionals
     [GeneratedRegex(@"potency of ([\d,]+)", RegexOptions.IgnoreCase)]
     private static partial Regex BasePattern();
 
-    [GeneratedRegex(@"([\d,]+) when executed from a target's (?:rear|flank)", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"([\d,]+) when executed from a target's (?:rear|flank|front)", RegexOptions.IgnoreCase)]
     private static partial Regex PositionalPattern();
 
     [GeneratedRegex(@"^\s*Combo Potency: ([\d,]+)", RegexOptions.IgnoreCase | RegexOptions.Multiline)]
     private static partial Regex ComboPattern();
 
-    [GeneratedRegex(@"^\s*(?:Rear|Flank) Combo Potency: ([\d,]+)", RegexOptions.IgnoreCase | RegexOptions.Multiline)]
+    [GeneratedRegex(@"^\s*(?:Rear|Flank|Front) Combo Potency: ([\d,]+)", RegexOptions.IgnoreCase | RegexOptions.Multiline)]
     private static partial Regex PositionalComboPattern();
 
     /// <summary>
@@ -68,6 +68,7 @@ internal static partial class Positionals
         Side side;
         if (description.Contains("target's rear", StringComparison.OrdinalIgnoreCase))       side = Side.Rear;
         else if (description.Contains("target's flank", StringComparison.OrdinalIgnoreCase)) side = Side.Flank;
+        else if (description.Contains("target's front", StringComparison.OrdinalIgnoreCase)) side = Side.Front;
         else return null;
 
         return new Info(side,
@@ -120,7 +121,12 @@ internal static partial class Positionals
         var rearLine  = 180f - SideHalfAngle;
         var frontLine = SideHalfAngle;
 
-        var right = side == Side.Rear ? degrees > rearLine : degrees > frontLine && degrees < rearLine;
+        var right = side switch
+        {
+            Side.Rear  => degrees > rearLine,
+            Side.Front => degrees < frontLine,
+            _          => degrees > frontLine && degrees < rearLine,
+        };
         return right ? Stance.Right : Stance.Wrong;
     }
 
