@@ -135,6 +135,20 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     private CollisionNode?      _detailCollision;
     private ListNode<IngredientRow, IngredientRowNode>? _ingredientList;
 
+    // ── FC chest highlight ────────────────────────────────────────────────────
+
+    /// <summary>(tab, slot) pairs in the FC chest holding any visible ingredient of the selected recipe.</summary>
+    public IReadOnlyCollection<(int Tab, int Slot)> FCChestMarks()
+    {
+        if (_selectedEntry is null || _ingById.Count == 0) return [];
+
+        var marks = new HashSet<(int, int)>();
+        foreach (var node in _ingById.Values)
+            if (_snapshot.FCChestSlots.TryGetValue(node.Check.ItemId, out var list))
+                foreach (var m in list) marks.Add(m);
+        return marks;
+    }
+
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     protected override void OnSetup(AtkUnitBase* addon, Span<AtkValue> atkValues)
