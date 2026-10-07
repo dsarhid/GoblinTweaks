@@ -15,6 +15,18 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.0.12", "2026-10-07",
+            "Goblin Battle Text: gradient for positional alerts, front positionals, clearer texts, German, French and Japanese.",
+            [
+                "New: Goblin Battle Text positional alerts can use a gradient between two colors, left to right or top to bottom",
+                "New: Goblin Battle Text positionals that hit from the front are recognized",
+                "New: German, French and Japanese for Goblin Battle Text",
+                "New: Crafting Materials highlights the tab and slots of the FC chest that hold the ingredients of the selected recipe",
+                "Change: Goblin Battle Text positional in the damage message colors only the verdict, not the whole action name",
+                "Change: texts of Goblin Battle Text and GoblinSniper rewritten to be shorter and clearer, with the voseo kept all through the Spanish ones",
+                "Fix: Goblin Battle Text help pages that did not fit the window are cut off no more — they scroll",
+            ]),
+
         new("1.0.11", "2026-10-06",
             "Goblin Battle Text: settings per character, damage mitigated, pets and counterattacks named, cooldown alert fixes.",
             [

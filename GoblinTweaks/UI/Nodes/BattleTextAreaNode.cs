@@ -6,6 +6,8 @@ using KamiToolKit.BaseTypes;
 using KamiToolKit.Enums;
 using KamiToolKit.Nodes;
 using KamiToolKit.UiOverlay;
+using Lumina.Text;
+using Lumina.Text.ReadOnly;
 
 namespace GoblinTweaks.UI.Nodes;
 
@@ -48,8 +50,20 @@ internal sealed class BattleTextMessage
 
     public Vector4 Color { get; set; }
 
-    /// <summary>Color of the action name when it differs from the rest of the message.</summary>
+    /// <summary>Said after the action name, in its own color: whether the positional was hit.</summary>
+    public string? Verdict { get; init; }
+
+    /// <summary>Color of the verdict (or of the whole action name when there is none).</summary>
     public Vector4? NameColor { get; init; }
+
+    /// <summary>When set, the verdict goes from <see cref="NameColor"/> to this color, letter by letter.</summary>
+    public Vector4? NameColorEnd { get; init; }
+
+    /// <summary>The gradient goes from top to bottom instead of from left to right.</summary>
+    public bool GradientVertical { get; init; }
+
+    /// <summary>When set, the label goes from <see cref="Color"/> to this color, letter by letter.</summary>
+    public Vector4? ColorEnd { get; init; }
 
     /// <summary>Order of the parts of this message, when it has one of its own instead of the general one.</summary>
     public IReadOnlyList<GoblinBattleText.BattleTextPart>? Order { get; init; }
@@ -96,10 +110,73 @@ internal sealed class BattleTextAreaNode : OverlayNode
         public required TextNode Number { get; init; }
         public required IconImageNode Icon { get; init; }
         public required IconImageNode Type { get; init; }
+        public Banded? NameBands;
+        public Banded? NumberBands;
         public BattleTextMessage Message = null!;
         public float Elapsed;
         public float Width;
         public float Height;
+    }
+
+    /// <summary>
+    /// A vertical gradient: the text drawn once per band, each copy clipped to its band and in its own color.
+    /// The game's text has one color, so this is the only way to have two in a letter.
+    /// </summary>
+    private sealed class Banded
+    {
+        private const int Count = 8;
+
+        private readonly ResNode[] _clips = new ResNode[Count];
+        private readonly TextNode[] _texts = new TextNode[Count];
+        private float _height;
+
+        public Banded(ResNode parent)
+        {
+            for (var i = 0; i < Count; i++)
+            {
+                _clips[i] = new ResNode { IsVisible = false };
+                _clips[i].AddNodeFlags(NodeFlags.Clip);
+                _clips[i].AttachNode(parent);
+                _texts[i] = MakeText(_clips[i]);
+            }
+        }
+
+        public float Width { get; private set; }
+
+        public void Hide()
+        {
+            foreach (var clip in _clips)
+                clip.IsVisible = false;
+        }
+
+        public void Show(string text, Typeface font, float fontSize, float height, Vector4 top, Vector4 bottom)
+        {
+            _height = height;
+            for (var i = 0; i < Count; i++)
+            {
+                SetText(_texts[i], text, font, fontSize, height, Vector4.Lerp(top, bottom, (i + 0.5f) / Count) with { W = 1f });
+                _clips[i].IsVisible = true;
+            }
+
+            Width = _texts[0].Width;
+        }
+
+        /// <summary>Puts the bands at <paramref name="x"/>; the first and last reach the edges of the line, the rest share the letters.</summary>
+        public void Place(float x)
+        {
+            var from = _height * 0.2f;
+            var step = (_height * 0.85f - from) / Count;
+            for (var i = 0; i < Count; i++)
+            {
+                // Whole pixels, and each band reaches one pixel into the next, which is drawn over it: no gap, no line.
+                var y   = i == 0 ? 0f : MathF.Round(from + i * step);
+                var end = i == Count - 1 ? MathF.Ceiling(_height) : MathF.Round(from + (i + 1) * step) + 1f;
+
+                _clips[i].Position = new Vector2(x, y);
+                _clips[i].Size     = new Vector2(Width, end - y);
+                _texts[i].Position = new Vector2(0f, -y);
+            }
+        }
     }
 
     private readonly List<Slot> _active = [];   // oldest first
@@ -312,8 +389,40 @@ internal sealed class BattleTextAreaNode : OverlayNode
 
         var hidden = message.Hidden ?? Area.Hidden;
 
-        SetText(slot.Name, hidden.Contains(GoblinBattleText.BattleTextPart.Name) ? null : message.ActionName, font, fontSize, height, message.NameColor ?? message.Color);
-        SetText(slot.Number, hidden.Contains(GoblinBattleText.BattleTextPart.Number) ? null : Format(message), font, fontSize, height, message.Color);
+        slot.NameBands?.Hide();
+        slot.NumberBands?.Hide();
+        slot.Number.Alpha = 1f;
+
+        var showName   = !hidden.Contains(GoblinBattleText.BattleTextPart.Name);
+        var nameBands  = false;
+        var nameOffset = 0f;
+        if (showName && message is { GradientVertical: true, Verdict: { } verdict, NameColorEnd: { } verdictEnd } && !string.IsNullOrEmpty(message.ActionName))
+        {
+            // The name takes the room of the verdict too, which is drawn on top in bands.
+            SetText(slot.Name, message.ActionName, font, fontSize, height, message.Color);
+            slot.NameBands ??= new Banded(slot.Container);
+            slot.NameBands.Show(verdict, font, fontSize, height, message.NameColor ?? message.Color, verdictEnd);
+
+            nameOffset      = slot.Name.Width + fontSize * 0.3f;
+            slot.Name.Width = nameOffset + slot.NameBands.Width;
+            nameBands       = true;
+        }
+        else
+        {
+            SetName(slot.Name, showName ? message : null, font, fontSize, height);
+        }
+        SetText(slot.Number, hidden.Contains(GoblinBattleText.BattleTextPart.Number) ? null : Format(message), font, fontSize, height, message.Color, message.GradientVertical ? null : message.ColorEnd);
+
+        // The text of the number is there for its size; its bands are what shows.
+        var numberBands = slot.Number.IsVisible && message is { GradientVertical: true, ColorEnd: not null };
+        if (numberBands)
+        {
+            var numberEnd = message.ColorEnd!.Value;
+            slot.NumberBands ??= new Banded(slot.Container);
+            slot.NumberBands.Show(Format(message), font, fontSize, height, message.Color, numberEnd);
+            slot.Number.Alpha = 0f;
+        }
+
         SetIcon(slot.Icon, hidden.Contains(GoblinBattleText.BattleTextPart.Icon) ? 0 : message.IconId, fontSize + 2f, message.IconIsStatus);
         SetIcon(slot.Type, hidden.Contains(GoblinBattleText.BattleTextPart.Type) ? 0 : message.TypeIconId, fontSize - 2f, tall: false);
 
@@ -333,6 +442,12 @@ internal sealed class BattleTextAreaNode : OverlayNode
             x += node.Width + PartGap;
         }
 
+        if (numberBands)
+            slot.NumberBands!.Place(slot.Number.Position.X);
+
+        if (nameBands)
+            slot.NameBands!.Place(slot.Name.Position.X + nameOffset);
+
         slot.Width  = Math.Max(0f, x - PartGap);
         slot.Height = height;
 
@@ -342,7 +457,37 @@ internal sealed class BattleTextAreaNode : OverlayNode
         container.IsVisible = true;
     }
 
-    private static void SetText(TextNode node, string? text, Typeface font, float fontSize, float height, Vector4 color)
+    /// <summary>The action name in the color of the message, then the verdict, if any, in its own color or gradient.</summary>
+    private static void SetName(TextNode node, BattleTextMessage? message, Typeface font, float fontSize, float height)
+    {
+        if (message?.Verdict is not { } verdict || string.IsNullOrEmpty(message.ActionName))
+        {
+            SetText(node, message?.ActionName, font, fontSize, height, message?.NameColor ?? message?.Color ?? default, message?.NameColorEnd);
+            return;
+        }
+
+        var name = message.ActionName + " ";
+        SetText(node, name + verdict, font, fontSize, height, message.Color, null);
+
+        var builder = new SeStringBuilder();
+        builder.PushColorRgba(message.Color with { W = 1f });
+        builder.Append(name);
+        builder.PopColor();
+
+        var from = message.NameColor ?? message.Color;
+        var to   = message.NameColorEnd ?? from;
+        var last = Math.Max(1, verdict.Length - 1);
+        for (var i = 0; i < verdict.Length; i++)
+        {
+            builder.PushColorRgba(Vector4.Lerp(from, to, (float)i / last) with { W = 1f });
+            builder.Append(verdict[i].ToString());
+            builder.PopColor();
+        }
+
+        node.String = builder.ToReadOnlySeString();
+    }
+
+    private static void SetText(TextNode node, string? text, Typeface font, float fontSize, float height, Vector4 color, Vector4? colorEnd = null)
     {
         node.IsVisible = !string.IsNullOrEmpty(text);
         if (!node.IsVisible) return;
@@ -354,8 +499,24 @@ internal sealed class BattleTextAreaNode : OverlayNode
         node.FontType  = font.Type;
         node.FontSize  = (uint)fontSize;
         node.TextColor = color;
-        node.String    = text!;
+        node.String    = colorEnd is { } end ? Gradient(text!, color, end) : text!;
         node.Size      = new Vector2(MathF.Ceiling(node.GetTextDrawSize().X) + 2f, height);
+    }
+
+    /// <summary>The text with each letter in its own color, from one color to the other.</summary>
+    private static ReadOnlySeString Gradient(string text, Vector4 from, Vector4 to)
+    {
+        var builder = new SeStringBuilder();
+        var last    = Math.Max(1, text.Length - 1);
+        for (var i = 0; i < text.Length; i++)
+        {
+            var color = Vector4.Lerp(from, to, (float)i / last);
+            builder.PushColorRgba(new Vector4(color.X, color.Y, color.Z, 1f));
+            builder.Append(text[i].ToString());
+            builder.PopColor();
+        }
+
+        return builder.ToReadOnlySeString();
     }
 
     /// <param name="tall">Keep the 3:4 shape of a status icon; a square box would squash it.</param>

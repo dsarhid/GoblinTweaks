@@ -74,6 +74,9 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     /// <summary>The kinds of animation, to choose one without going through all of them.</summary>
     internal enum BattleTextAnimationGroup { Gentle, Impacts, Size, Rotation, Movement, Light }
 
+    /// <summary>Which way the gradient of a positional alert goes.</summary>
+    public enum BattleTextGradientDirection { Horizontal, Vertical }
+
     /// <summary>The messages that can be given a look of their own: the special kinds of hit, and the cooldown alert.</summary>
     public enum BattleTextHighlight { Critical, DirectHit, CriticalDirectHit, CooldownReady, PositionalHit, PositionalMiss }
 
@@ -173,6 +176,15 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
         /// <summary>For critical hits: color of healing, the only other thing that can be critical.</summary>
         public Vector4 ColorHeal { get; set; } = DefaultColors.Heal;
+
+        /// <summary>For the positional alerts: the text goes from <see cref="Color"/> to <see cref="ColorEnd"/>, letter by letter.</summary>
+        public bool Gradient { get; set; }
+
+        /// <summary>For the positional alerts: left to right, or top to bottom.</summary>
+        public BattleTextGradientDirection GradientDirection { get; set; }
+
+        /// <summary>For the positional alerts: the color the gradient ends on.</summary>
+        public Vector4 ColorEnd { get; set; } = new(1f, 1f, 1f, 1f);
     }
 
     public sealed class ColorOptions
@@ -315,7 +327,6 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     private const uint DamageTypeIconBase = 60010;  // + 1 physical, + 2 magical, + 3 unique: the icons of the game's own fly text
     private const int  DamageTypeCount = 3;
     private const int  GlobalCooldownGroup = 57;       // as the game counts recast groups, from 0; its sheets count from 1
-    private const uint AbilityCategory = 4;         // ActionCategory row of abilities
     private const int  MinCooldown100ms = 50;       // shorter recasts are not worth an alert
     private const byte BeneficialStatus  = 1;       // StatusCategory of buffs
     private const byte DetrimentalStatus = 2;       // StatusCategory of debuffs
@@ -520,8 +531,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         BattleTextHighlight.Critical          => new() { FontSize = 31, Animation = BattleTextAnimation.Pop,   Color = DefaultColors.OutgoingCrit },
         BattleTextHighlight.DirectHit         => new() { FontSize = 25, Animation = BattleTextAnimation.None,  Color = DefaultColors.OutgoingDirectHit },
         BattleTextHighlight.CriticalDirectHit => new() { FontSize = 34, Animation = BattleTextAnimation.Slam,  Color = DefaultColors.OutgoingCritDirectHit },
-        BattleTextHighlight.PositionalHit     => new() { FontSize = 25, Animation = BattleTextAnimation.Pop,   Color = DefaultColors.PositionalHit },
-        BattleTextHighlight.PositionalMiss    => new() { FontSize = 30, Animation = BattleTextAnimation.Shake, Color = DefaultColors.PositionalMiss },
+        BattleTextHighlight.PositionalHit     => new() { FontSize = 25, Animation = BattleTextAnimation.Pop,   Color = DefaultColors.PositionalHit,  ColorEnd = new(0.25f, 0.90f, 0.95f, 1f) },
+        BattleTextHighlight.PositionalMiss    => new() { FontSize = 30, Animation = BattleTextAnimation.Shake, Color = DefaultColors.PositionalMiss, ColorEnd = new(1f, 0.70f, 0.20f, 1f) },
         _                                     => new() { FontSize = 25, Animation = BattleTextAnimation.Pulse, Color = DefaultColors.CooldownText },
     };
 
@@ -776,6 +787,9 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         to.Color      = from.Color;
         to.ColorTaken = from.ColorTaken;
         to.ColorHeal  = from.ColorHeal;
+        to.Gradient   = from.Gradient;
+        to.GradientDirection = from.GradientDirection;
+        to.ColorEnd   = from.ColorEnd;
     }
 
     private static void Copy(AreaOptions from, AreaOptions to)
@@ -1133,7 +1147,6 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             Amount     = amount,
             Label      = label,
             ActionName = healedAfterName      ? $"{action.Name ?? over.Name} ({healed})".TrimStart()
-                       : verdictAfterName     ? $"{action.Name} {verdict}"
                        : attacker is null     ? action.Name ?? over.Name
                        : action.Name is null  ? petAttack ?? attacker
                        : $"{action.Name} {attacker}",
@@ -1149,7 +1162,10 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                        : suffix)
                        + (healed is not null && !healedAfterName ? $" ({healed})" : string.Empty)
                        + (verdict is not null && !verdictAfterName ? $" {verdict}" : string.Empty),
+            Verdict    = verdictAfterName ? verdict : null,
             NameColor  = verdictAfterName && verdictLook is { Enabled: true } ? verdictLook.Color : null,
+            GradientVertical = verdictLook is { GradientDirection: BattleTextGradientDirection.Vertical },
+            NameColorEnd = verdictAfterName && verdictLook is { Enabled: true, Gradient: true } ? verdictLook.ColorEnd : null,
             Color      = label is not null ? colors.Miss
                        : heal              ? colors.Heal
                        : !outgoing         ? colors.IncomingDamage
@@ -1389,6 +1405,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             Label      = T($"Positional.{(hit ? "Hit" : "Miss")}.{side}"),
             IconId     = action.IconId,
             Color      = highlight.Enabled ? highlight.Color : hit ? DefaultColors.PositionalHit : DefaultColors.PositionalMiss,
+            ColorEnd   = highlight is { Enabled: true, Gradient: true } ? highlight.ColorEnd : null,
+            GradientVertical = highlight.GradientDirection == BattleTextGradientDirection.Vertical,
             Look       = highlight.Enabled ? new BattleTextLook(highlight.Font, highlight.FontSize, highlight.Animation, highlight.Intensity) : null,
         };
     }
@@ -1957,9 +1975,6 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             if (action.ClassJobLevel == 0 || action.ClassJobLevel > level) continue;
             if (action.Recast100ms < MinCooldown100ms) continue;
 
-            // An ability that also starts the global cooldown is a step of something else (the mudras of a
-            // ninja, which have charges): not something to wait for and be told about.
-            if (action.ActionCategory.RowId == AbilityCategory && action.AdditionalCooldownGroup == GlobalCooldownGroup + 1) continue;
             if (action.ClassJobCategory.ValueNullable is not { } category || column.GetValue(category) is not true) continue;
 
             var group = manager->GetRecastGroup((int)ActionType.Action, action.RowId);

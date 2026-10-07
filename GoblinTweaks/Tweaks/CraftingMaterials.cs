@@ -44,6 +44,8 @@ public sealed class InventorySnapshot
     public readonly Dictionary<uint, int>                              RetainerHQ      = new(); // aggregate HQ
     public readonly Dictionary<uint, int>                              FCChest         = new();
     public readonly Dictionary<uint, int>                              FCChestHQ       = new();
+    /// <summary>Where each item sits in the FC chest, as 1-based (tab, slot) pairs.</summary>
+    public readonly Dictionary<uint, List<(int Tab, int Slot)>>        FCChestSlots    = new();
     public readonly List<(string Name, Dictionary<uint, int> Items, Dictionary<uint, int> ItemsHQ)> RetainerDetails = [];
 
     public int Get(uint itemId, InventorySource src) => src switch
@@ -100,7 +102,13 @@ public sealed class InventorySnapshot
 
         q  = FCChest.GetValueOrDefault(itemId);
         hq = FCChestHQ.GetValueOrDefault(itemId);
-        if (q > 0) yield return (CraftLoc.Get("loc.fcchest"), q, hq);
+        if (q > 0)
+        {
+            var where = string.Empty;
+            if (FCChestSlots.TryGetValue(itemId, out var slots) && slots.Count > 0)
+                where = " (" + string.Join(", ", slots.Take(4).Select(t => $"{t.Tab}.{t.Slot}")) + (slots.Count > 4 ? ", ..." : "") + ")";
+            yield return (CraftLoc.Get("loc.fcchest") + where, q, hq);
+        }
     }
 }
 
@@ -163,6 +171,8 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         public bool IncludeSaddlebag   { get; set; } = true;
         public bool IncludeRetainers   { get; set; } = true;
         public bool IncludeFCChest     { get; set; } = false;
+        /// <summary>Outline the FC chest tabs/slots that hold the selected recipe's ingredients.</summary>
+        public bool HighlightFCChest   { get; set; } = true;
         /// <summary>Max missing ingredient types before a recipe moves from NearComplete → NotReady.</summary>
         public int  NearCompleteMissing { get; set; } = 2;
         /// <summary>Game-data language for item/recipe names ("" = follow GoblinTweaks). Independent of the UI language.</summary>
@@ -185,6 +195,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
 
     private readonly WindowSystem       _settingsWindows = new("GoblinTweaks.CraftingSettings");
     private CraftingSettingsWindow?     _settingsWindow;
+    private readonly FCChestHighlighter _fcHighlighter = new();
 
     public UniversalisService      Universalis     => _universalis!;
     /// <summary>Last known inventory snapshot, loaded from disk at startup and updated after each scan.</summary>
@@ -214,6 +225,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             Title        = CraftLoc.Get("title"),
             Size         = new System.Numerics.Vector2(1180f, 740f),
             Tweak        = this,
+            RespectCloseAll = false, // stay open when the game closes windows (chest, retainer, NPC talk)
         };
 
         Svc.ContextMenu.OnMenuOpened += OnMenuOpened;
@@ -224,6 +236,11 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         _settingsWindow = new CraftingSettingsWindow(this);
         _settingsWindows.AddWindow(_settingsWindow);
         Svc.PluginInterface.UiBuilder.Draw += _settingsWindows.Draw;
+
+        _fcHighlighter.Source = () => Settings.HighlightFCChest && Settings.IncludeFCChest && _addon is { IsOpen: true } a
+            ? a.FCChestMarks()
+            : [];
+        Svc.PluginInterface.UiBuilder.Draw += _fcHighlighter.Draw;
     }
 
     protected internal override void Disable()
@@ -234,6 +251,8 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup,    "SynthesisSimpleResult", OnSynthesisResult);
 
         Svc.PluginInterface.UiBuilder.Draw -= _settingsWindows.Draw;
+        Svc.PluginInterface.UiBuilder.Draw -= _fcHighlighter.Draw;
+        _fcHighlighter.Source = null;
         _settingsWindows.RemoveAllWindows();
         _settingsWindow = null;
 
@@ -339,6 +358,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             {
                 foreach (var (k, v) in _cachedSnapshot.FCChest)   live.FCChest[k]   = v;
                 foreach (var (k, v) in _cachedSnapshot.FCChestHQ) live.FCChestHQ[k] = v;
+                foreach (var (k, v) in _cachedSnapshot.FCChestSlots) live.FCChestSlots[k] = [.. v];
                 live.HasFCData = true;
             }
         }
@@ -362,6 +382,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         public Dictionary<uint, int>  RetainerHQ      { get; set; } = [];
         public Dictionary<uint, int>  FCChest         { get; set; } = [];
         public Dictionary<uint, int>  FCChestHQ       { get; set; } = [];
+        public Dictionary<uint, List<int[]>> FCChestSlots { get; set; } = [];
         public List<RetainerDetail>   RetainerDetails { get; set; } = [];
 
         public sealed class RetainerDetail
@@ -384,6 +405,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             RetainerHQ      = new(s.RetainerHQ),
             FCChest         = new(s.FCChest),
             FCChestHQ       = new(s.FCChestHQ),
+            FCChestSlots    = s.FCChestSlots.ToDictionary(kv => kv.Key, kv => kv.Value.Select(t => new[] { t.Tab, t.Slot }).ToList()),
             RetainerDetails = s.RetainerDetails
                 .Select(r => new RetainerDetail { Name = r.Name, Items = new(r.Items), ItemsHQ = new(r.ItemsHQ) })
                 .ToList(),
@@ -405,6 +427,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             foreach (var (k, v) in RetainerHQ)  s.RetainerHQ[k]  = v;
             foreach (var (k, v) in FCChest)     s.FCChest[k]     = v;
             foreach (var (k, v) in FCChestHQ)   s.FCChestHQ[k]   = v;
+            foreach (var (k, v) in FCChestSlots) s.FCChestSlots[k] = v.Where(a => a.Length == 2).Select(a => (a[0], a[1])).ToList();
             foreach (var r in RetainerDetails)
                 s.RetainerDetails.Add((r.Name, new Dictionary<uint, int>(r.Items), new Dictionary<uint, int>(r.ItemsHQ)));
             return s;
@@ -450,6 +473,10 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         var fc = Settings.IncludeFCChest;
         if (Widgets.SettingToggle(T("IncludeFCChest"), T("IncludeFCChest.Help"), ref fc))
         { Settings.IncludeFCChest = fc; SaveSettings(); }
+
+        var hl = Settings.HighlightFCChest;
+        if (Widgets.SettingToggle(T("HighlightFCChest"), T("HighlightFCChest.Help"), ref hl))
+        { Settings.HighlightFCChest = hl; SaveSettings(); }
     }
 
     /// <summary>Settings window title (localized to the GoblinTweaks UI language).</summary>
@@ -509,12 +536,45 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             snap.HasRetainerData = ScanRetainers(snap.Retainer, snap.RetainerHQ, snap.RetainerDetails, mgr);
 
         if (Settings.IncludeFCChest)
-            snap.HasFCData = ScanContainers(snap.FCChest, snap.FCChestHQ, mgr,
-                InventoryType.FreeCompanyPage1, InventoryType.FreeCompanyPage2,
-                InventoryType.FreeCompanyPage3, InventoryType.FreeCompanyPage4,
-                InventoryType.FreeCompanyPage5);
+            snap.HasFCData = ScanFCChest(snap, mgr);
 
         return snap;
+    }
+
+    // The FC chest containers exist in memory even when the chest was never opened, so only
+    // count pages the game reports as loaded; otherwise an empty scan would wipe the saved data.
+    private static unsafe bool ScanFCChest(InventorySnapshot snap, InventoryManager* mgr)
+    {
+        InventoryType[] pages =
+        [
+            InventoryType.FreeCompanyPage1, InventoryType.FreeCompanyPage2,
+            InventoryType.FreeCompanyPage3, InventoryType.FreeCompanyPage4,
+            InventoryType.FreeCompanyPage5,
+        ];
+
+        var anyLoaded = false;
+        for (var p = 0; p < pages.Length; p++)
+        {
+            var container = mgr->GetInventoryContainer(pages[p]);
+            if (container == null || !container->IsLoaded) continue;
+
+            anyLoaded = true;
+            for (var i = 0; i < container->Size; i++)
+            {
+                var slot = container->GetInventorySlot(i);
+                if (slot == null || slot->ItemId == 0) continue;
+
+                var id = slot->ItemId;
+                snap.FCChest[id] = snap.FCChest.GetValueOrDefault(id) + (int)slot->Quantity;
+                if ((slot->Flags & InventoryItem.ItemFlags.HighQuality) != 0)
+                    snap.FCChestHQ[id] = snap.FCChestHQ.GetValueOrDefault(id) + (int)slot->Quantity;
+
+                if (!snap.FCChestSlots.TryGetValue(id, out var list))
+                    snap.FCChestSlots[id] = list = [];
+                list.Add((p + 1, i + 1));
+            }
+        }
+        return anyLoaded;
     }
 
     // Returns true if at least one container was non-null (data was accessible in memory).
@@ -617,6 +677,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             ?.ToDictionary(ct => ct.RowId, ct => ct.Name.ExtractText())
             ?? [];
 
+        var logRecipeIds = LogRecipeIds();
         var results = new List<CraftableEntry>();
 
         foreach (var recipe in recipeSheet)
@@ -668,7 +729,9 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             // special-category housing recipes (FilterGroup 14). Master recipes and other
             // special-category recipes (seasonal/event) are not tracked by the log.
             var isLogRecipe = recipe.SecretRecipeBook.RowId == 0
-                && (!recipe.IsSecondary || resultItem.FilterGroup == 14);
+                && (logRecipeIds is not null
+                    ? logRecipeIds.Contains(recipe.RowId) || (resultItem.FilterGroup == 14 && !recipe.IsExpert)
+                    : !recipe.IsSecondary || resultItem.FilterGroup == 14);
 
             results.Add(new CraftableEntry
             {
@@ -690,6 +753,24 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         }
 
         return results;
+    }
+
+    private HashSet<uint>? _logRecipeIds;
+
+    /// <summary>Recipes listed in the crafting log's class tabs (RecipeNotebookList); null if the sheet is unavailable.</summary>
+    private HashSet<uint>? LogRecipeIds()
+    {
+        if (_logRecipeIds is not null) return _logRecipeIds;
+
+        var sheet = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.RecipeNotebookList>();
+        if (sheet is null) return null;
+
+        var set = new HashSet<uint>();
+        foreach (var page in sheet)
+            foreach (var r in page.Recipe)
+                if (r.RowId != 0) set.Add(r.RowId);
+
+        return set.Count > 0 ? _logRecipeIds = set : null;
     }
 
     public int NearCompleteMissing => Settings.NearCompleteMissing;
