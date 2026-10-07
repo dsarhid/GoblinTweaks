@@ -15,6 +15,16 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.0.13", "2026-10-07",
+            "Goblin Battle Text: merging fixed and extended — criticals merge, and misses, blocks, immunities and ticks have their own options.",
+            [
+                "New: Goblin Battle Text critical hits merge with critical hits, and critical direct hits with critical direct hits — never with each other",
+                "New: Goblin Battle Text options to merge misses and dodges, blocked, parried and resisted hits, immune and resisted effects, and ticks of damage and healing over time on several targets",
+                "Change: Goblin Battle Text merging waits 0.4 seconds for the next hit instead of 0.35",
+                "Change: Goblin Battle Text hits defended or mitigated differently no longer merge into one message that shows the note of only the first",
+                "Fix: Goblin Battle Text hits of one action split in several messages (x2, critical, x2, critical) when a critical came between them",
+            ]),
+
         new("1.0.12", "2026-10-07",
             "Goblin Battle Text: gradient for positional alerts, front positionals, clearer texts, German, French and Japanese.",
             [

@@ -91,7 +91,7 @@ internal sealed class BattleTextAreaNode : OverlayNode
     public const int MaxMessages = 15;
 
     private const float FadeStart   = 0.8f;   // fraction of the scroll after which the text fades out
-    private const float MergeWindow = 0.35f;  // seconds during which hits of the same action are merged
+    private const float MergeWindow = 0.4f;   // seconds during which hits of the same action are merged
     private const float LaneGap     = 4f;
     private const float CurveWidth  = 60f;
     private const float PartGap     = 4f;
@@ -114,6 +114,9 @@ internal sealed class BattleTextAreaNode : OverlayNode
         public Banded? NumberBands;
         public BattleTextMessage Message = null!;
         public float Elapsed;
+
+        /// <summary>Seconds since it was shown. Unlike <see cref="Elapsed"/>, newer messages pushing it ahead do not change it.</summary>
+        public float Age;
         public float Width;
         public float Height;
     }
@@ -244,6 +247,7 @@ internal sealed class BattleTextAreaNode : OverlayNode
 
         slot.Message = message;
         slot.Elapsed = 0f;
+        slot.Age     = 0f;
         _active.Add(slot);
         Show(slot);
         MakeRoom();
@@ -285,6 +289,7 @@ internal sealed class BattleTextAreaNode : OverlayNode
         {
             var slot = _active[i];
             slot.Elapsed += delta;
+            slot.Age     += delta;
             if (slot.Elapsed >= duration)
             {
                 Release(slot);
@@ -338,7 +343,7 @@ internal sealed class BattleTextAreaNode : OverlayNode
         for (var i = _active.Count - 1; i >= 0; i--)
         {
             var slot = _active[i];
-            if (slot.Elapsed > MergeWindow) break;
+            if (slot.Age > MergeWindow) break;
             if (slot.Message.MergeKey != message.MergeKey) continue;
 
             // Messages with the same key look the same: critical hits have no key, and are never merged.

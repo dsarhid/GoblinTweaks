@@ -249,6 +249,14 @@ internal unsafe class BattleTextAddon : NativeAddon
         AddCheckCell(1, "MergeHeals", () => options.MergeHeals, value => options.MergeHeals = value);
         _y += RowH;
 
+        AddCheckCell(0, "MergeMisses",   () => options.MergeMisses,   value => options.MergeMisses = value);
+        AddCheckCell(1, "MergeDefended", () => options.MergeDefended, value => options.MergeDefended = value);
+        _y += RowH;
+
+        AddCheckCell(0, "MergeNoEffect", () => options.MergeNoEffect, value => options.MergeNoEffect = value);
+        AddCheckCell(1, "MergeTicks",    () => options.MergeTicks,    value => options.MergeTicks = value);
+        _y += RowH;
+
         AddCheckCell(0, "ShowHealTargets", () => options.ShowHealTargets, value => options.ShowHealTargets = value);
         AddCheckCell(1, "Abbreviate",      () => options.Abbreviate,      value => options.Abbreviate = value);
         _y += RowH;

@@ -244,6 +244,18 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         /// <summary>The same for healing: one action that heals several targets shows a single total.</summary>
         public bool MergeHeals { get; set; } = true;
 
+        /// <summary>Merge the misses, dodges and invulnerable hits of one action: "Miss x3".</summary>
+        public bool MergeMisses { get; set; }
+
+        /// <summary>Merge the blocked, parried and resisted hits of one action, each kind with its own kind.</summary>
+        public bool MergeDefended { get; set; } = true;
+
+        /// <summary>Merge the effects that did not take (immune, fully resisted) of one action: "Leg Sweep Immune x3".</summary>
+        public bool MergeNoEffect { get; set; }
+
+        /// <summary>Merge the ticks of one damage or healing over time on several targets: "132 Higanbana x3".</summary>
+        public bool MergeTicks { get; set; }
+
         /// <summary>Healing you give says who it heals. With <see cref="MergeHeals"/>, only where there is one target: the ticks.</summary>
         public bool ShowHealTargets { get; set; }
 
@@ -717,6 +729,10 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             case BattleTextTab.General:
                 Settings.MergeHits   = defaults.MergeHits;
                 Settings.MergeHeals  = defaults.MergeHeals;
+                Settings.MergeMisses = defaults.MergeMisses;
+                Settings.MergeDefended = defaults.MergeDefended;
+                Settings.MergeNoEffect = defaults.MergeNoEffect;
+                Settings.MergeTicks  = defaults.MergeTicks;
                 Settings.ShowHealTargets = defaults.ShowHealTargets;
                 Settings.Abbreviate  = defaults.Abbreviate;
                 Settings.IncludePets = defaults.IncludePets;
@@ -1141,6 +1157,26 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         if (mitigated > 0)
             suffix += string.Format(T(Settings.Mitigation == BattleTextMitigation.Percent ? "Suffix.MitigatedPercent" : "Suffix.Mitigated"), mitigated);
 
+        // What decides whether two hits are alike enough to merge, besides the action and the kind of hit: how they
+        // were defended, how much was mitigated and, for misses, which one it was.
+        var defendedKind = Settings.ShowDefended && (ScreenLogOption)option is ScreenLogOption.Blocked or ScreenLogOption.Parried or ScreenLogOption.Resisted
+            ? (ulong)option : 0UL;
+        var labelKind    = label is null ? 0UL : kind switch
+        {
+            FlyTextKind.Dodge or FlyTextKind.NamedDodge => 2UL,
+            FlyTextKind.Invulnerable                    => 3UL,
+            _                                           => 1UL,
+        };
+
+        // A tick has no action: the effect that ticks, by its name and icon, is what makes ticks alike. Estimated ones
+        // (with ~) do not merge with exact ones.
+        var tickId = (tick || healTick) && Settings.MergeTicks && healed is null && over.Name is { } tickName
+            ? (uint)tickName.GetHashCode() ^ over.IconId * 31u | 1u
+            : 0u;
+
+        var mergeable = (heal ? Settings.MergeHeals : Settings.MergeHits)
+                        && (label is null ? (actionId != 0 || tickId != 0) && (defendedKind == 0 || Settings.MergeDefended) : Settings.MergeMisses)
+                        && (attacker is null || !auto) && verdict is null;
         var colors  = Settings.Colors;
         var message = new BattleTextMessage
         {
@@ -1171,10 +1207,10 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                        : !outgoing         ? colors.IncomingDamage
                        : colors.OutgoingDamage,
 
-            // A critical hit is never merged: it shows apart, with its own look, and the total of the others
-            // does not pass for one. Direct hits merge among themselves, so a total has one look.
-            MergeKey   = (heal ? Settings.MergeHeals : Settings.MergeHits) && label is null && actionId != 0 && (attacker is null || !auto) && !crit && verdict is null
-                       ? ((ulong)(countering != 0 ? countering : actionId) << 3) | (directHit ? 4u : 0u) | (heal ? 2u : 0u) | 1u
+            MergeKey   = mergeable
+                       ? ((ulong)(countering != 0 ? countering : actionId != 0 ? actionId : tickId) << 4) | (crit ? 8u : 0u) | (directHit ? 4u : 0u) | (heal ? 2u : 0u) | 1u
+                         | ((defendedKind | (ulong)mitigated << 3 | labelKind << 12 | (estimated ? 1UL << 14 : 0UL)) << 40)
+                         | (tickId != 0 && actionId == 0 ? 1UL << 61 : 0UL)
                        : 0,
         };
 
@@ -1496,6 +1532,11 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             Color        = Settings.Colors.Miss,
             Downwards    = options.Motion == BattleTextMotion.Down,
             Static       = options.Motion == BattleTextMotion.Static,
+
+            // The same effect failing on several targets of one action; the high bit keeps it apart from damage.
+            MergeKey     = Settings.MergeNoEffect
+                         ? (1UL << 62) | ((ulong)(usedId != 0 ? usedId : statusId | 1u << 31) << 4) | (labelKey == "Label.Immune" ? 2UL : 4UL) | 1UL
+                         : 0,
         };
 
         // In the place of the announcement of that action, when it is still there to be replaced.
@@ -1937,7 +1978,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     private string Format(BattleTextMessage message)
     {
         if (message.Label is not null)
-            return message.Label;
+            return message.Hits > 1 ? $"{message.Label} x{message.Hits}" : message.Label;
 
         var amount = message.Amount;
         var number = !Settings.Abbreviate || amount < 10_000 ? amount.ToString("#,0", CultureInfo.InvariantCulture)
