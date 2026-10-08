@@ -35,6 +35,8 @@ public sealed class InventorySnapshot
     public bool HasRetainerData;
     /// <summary>True when the FC chest container was accessible during this scan (chest opened this session).</summary>
     public bool HasFCData;
+    /// <summary>True when the saddlebag was loaded in memory during this scan (opened this session).</summary>
+    public bool HasSaddlebagData;
 
     public readonly Dictionary<uint, int>                              Player          = new();
     public readonly Dictionary<uint, int>                              PlayerHQ        = new();
@@ -193,8 +195,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     private UniversalisService?         _universalis;
     private InventorySnapshot?          _cachedSnapshot;
 
-    private readonly WindowSystem       _settingsWindows = new("GoblinTweaks.CraftingSettings");
-    private CraftingSettingsWindow?     _settingsWindow;
+    private CraftingSettingsAddon?      _settingsAddon;
     private readonly FCChestHighlighter _fcHighlighter = new();
 
     public UniversalisService      Universalis     => _universalis!;
@@ -230,12 +231,18 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
 
         Svc.ContextMenu.OnMenuOpened += OnMenuOpened;
         Svc.GameInventory.InventoryChanged += OnInventoryChanged;
+        Svc.Framework.Update += OnCaptureUpdate;
         Svc.AddonLifecycle.RegisterListener(AddonEvent.PreFinalize,  "RetainerList",         OnRetainerUiClosed);
         Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup,    "SynthesisSimpleResult", OnSynthesisResult);
 
-        _settingsWindow = new CraftingSettingsWindow(this);
-        _settingsWindows.AddWindow(_settingsWindow);
-        Svc.PluginInterface.UiBuilder.Draw += _settingsWindows.Draw;
+        _settingsAddon = new CraftingSettingsAddon
+        {
+            InternalName    = "GtkCraftingSettings",
+            Title           = SettingsTitle,
+            Size            = new System.Numerics.Vector2(520f, 580f),
+            Tweak           = this,
+            RespectCloseAll = false,
+        };
 
         _fcHighlighter.Source = () => Settings.HighlightFCChest && Settings.IncludeFCChest && _addon is { IsOpen: true } a
             ? a.FCChestMarks()
@@ -247,14 +254,14 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     {
         Svc.ContextMenu.OnMenuOpened -= OnMenuOpened;
         Svc.GameInventory.InventoryChanged -= OnInventoryChanged;
+        Svc.Framework.Update -= OnCaptureUpdate;
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PreFinalize,  "RetainerList",         OnRetainerUiClosed);
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup,    "SynthesisSimpleResult", OnSynthesisResult);
 
-        Svc.PluginInterface.UiBuilder.Draw -= _settingsWindows.Draw;
         Svc.PluginInterface.UiBuilder.Draw -= _fcHighlighter.Draw;
         _fcHighlighter.Source = null;
-        _settingsWindows.RemoveAllWindows();
-        _settingsWindow = null;
+        _settingsAddon?.Close();
+        _settingsAddon = null;
 
         _addon?.Close();
         _addon = null;
@@ -286,8 +293,29 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         }
     }
 
-    private void OnInventoryChanged(IReadOnlyCollection<InventoryEventArgs> events) =>
+    private bool     _captureDirty;
+    private DateTime _nextCapture = DateTime.MinValue;
+
+    private void OnInventoryChanged(IReadOnlyCollection<InventoryEventArgs> events)
+    {
+        _captureDirty = true;
         _addon?.NotifyInventoryChanged();
+    }
+
+    // Only one retainer lives in memory at a time, so save the snapshot while a retainer is open
+    // (window open or not) instead of waiting for the window; otherwise visiting retainer 2 loses retainer 1.
+    private unsafe void OnCaptureUpdate(IFramework _)
+    {
+        if (!_captureDirty || DateTime.UtcNow < _nextCapture) return;
+
+        var retMgr = RetainerManager.Instance();
+        if (retMgr == null || retMgr->GetActiveRetainer() == null) { _captureDirty = false; return; }
+
+        _captureDirty = false;
+        _nextCapture  = DateTime.UtcNow.AddSeconds(2);
+        try   { ScanAndMerge(); }
+        catch (Exception ex) { Svc.Log.Warning(ex, "CraftingMaterials: background capture failed"); }
+    }
 
     // Retainer inventory is cached when the RetainerList UI closes (after visiting the bell).
     private void OnRetainerUiClosed(AddonEvent type, AddonArgs args) =>
@@ -345,13 +373,33 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
 
         if (_cachedSnapshot != null)
         {
-            if (Settings.IncludeRetainers && !live.HasRetainerData && _cachedSnapshot.HasRetainerData)
+            // Saved data of another character must not leak into this one.
+            var sameCharacter = _cachedSnapshot.PlayerName == live.PlayerName;
+
+            // Only one retainer is live at a time, so merge per retainer: live ones win, the rest come from the saved copy.
+            if (Settings.IncludeRetainers && sameCharacter && _cachedSnapshot.HasRetainerData)
             {
-                foreach (var (k, v) in _cachedSnapshot.Retainer)   live.Retainer[k]   = v;
-                foreach (var (k, v) in _cachedSnapshot.RetainerHQ) live.RetainerHQ[k] = v;
+                var liveNames = live.RetainerDetails.Select(r => r.Name).ToHashSet();
                 foreach (var (name, items, hq) in _cachedSnapshot.RetainerDetails)
-                    live.RetainerDetails.Add((name, new Dictionary<uint, int>(items), new Dictionary<uint, int>(hq)));
-                live.HasRetainerData = true;
+                    if (!liveNames.Contains(name))
+                        live.RetainerDetails.Add((name, new Dictionary<uint, int>(items), new Dictionary<uint, int>(hq)));
+
+                live.Retainer.Clear();
+                live.RetainerHQ.Clear();
+                foreach (var (_, items, hq) in live.RetainerDetails)
+                {
+                    foreach (var (k, v) in items) live.Retainer[k]   = live.Retainer.GetValueOrDefault(k)   + v;
+                    foreach (var (k, v) in hq)    live.RetainerHQ[k] = live.RetainerHQ.GetValueOrDefault(k) + v;
+                }
+                live.HasRetainerData = live.RetainerDetails.Count > 0;
+            }
+
+            // The saddlebag is only in memory after opening it; keep the last known contents.
+            if (Settings.IncludeSaddlebag && sameCharacter && !live.HasSaddlebagData)
+            {
+                foreach (var (k, v) in _cachedSnapshot.Saddlebag)   live.Saddlebag[k]   = v;
+                foreach (var (k, v) in _cachedSnapshot.SaddlebagHQ) live.SaddlebagHQ[k] = v;
+                live.HasSaddlebagData = _cachedSnapshot.HasSaddlebagData;
             }
 
             if (Settings.IncludeFCChest && !live.HasFCData && _cachedSnapshot.HasFCData)
@@ -374,6 +422,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         public string                 PlayerName      { get; set; } = string.Empty;
         public bool                   HasRetainerData { get; set; }
         public bool                   HasFCData       { get; set; }
+        public bool                   HasSaddlebagData { get; set; }
         public Dictionary<uint, int>  Player          { get; set; } = [];
         public Dictionary<uint, int>  PlayerHQ        { get; set; } = [];
         public Dictionary<uint, int>  Saddlebag       { get; set; } = [];
@@ -397,6 +446,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             PlayerName      = s.PlayerName,
             HasRetainerData = s.HasRetainerData,
             HasFCData       = s.HasFCData,
+            HasSaddlebagData = s.HasSaddlebagData,
             Player          = new(s.Player),
             PlayerHQ        = new(s.PlayerHQ),
             Saddlebag       = new(s.Saddlebag),
@@ -418,6 +468,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
                 PlayerName      = PlayerName,
                 HasRetainerData = HasRetainerData,
                 HasFCData       = HasFCData,
+                HasSaddlebagData = HasSaddlebagData,
             };
             foreach (var (k, v) in Player)      s.Player[k]      = v;
             foreach (var (k, v) in PlayerHQ)    s.PlayerHQ[k]    = v;
@@ -446,71 +497,26 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             ImGui.SetTooltip(T("Open.Help"));
 
         ImGui.SameLine();
-        if (ImGuiComponents.IconButtonWithText(FontAwesomeIcon.Cog, T("Settings")) && _settingsWindow is not null)
-            _settingsWindow.IsOpen = true;
-    }
-
-    /// <summary>Full tweak configuration, drawn in its own window (opened from the Settings button).</summary>
-    public void DrawConfigContents()
-    {
-        DrawLanguagePicker();
-
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-
-        ImGui.TextColored(Palette.Accent, T("Sources"));
-        ImGui.Spacing();
-
-        var saddlebag = Settings.IncludeSaddlebag;
-        if (Widgets.SettingToggle(T("IncludeSaddlebag"), null, ref saddlebag))
-        { Settings.IncludeSaddlebag = saddlebag; SaveSettings(); }
-
-        var retainers = Settings.IncludeRetainers;
-        if (Widgets.SettingToggle(T("IncludeRetainers"), T("IncludeRetainers.Help"), ref retainers))
-        { Settings.IncludeRetainers = retainers; SaveSettings(); }
-
-        var fc = Settings.IncludeFCChest;
-        if (Widgets.SettingToggle(T("IncludeFCChest"), T("IncludeFCChest.Help"), ref fc))
-        { Settings.IncludeFCChest = fc; SaveSettings(); }
-
-        var hl = Settings.HighlightFCChest;
-        if (Widgets.SettingToggle(T("HighlightFCChest"), T("HighlightFCChest.Help"), ref hl))
-        { Settings.HighlightFCChest = hl; SaveSettings(); }
+        if (ImGuiComponents.IconButtonWithText(FontAwesomeIcon.Cog, T("Settings")) && _settingsAddon is { } window)
+        {
+            if (window.IsOpen) window.Close(); else window.Open();
+        }
     }
 
     /// <summary>Settings window title (localized to the GoblinTweaks UI language).</summary>
     public string SettingsTitle => $"{Name} — {T("Settings")}";
 
-    private void DrawLanguagePicker()
-    {
-        ImGui.TextColored(Palette.Accent, T("Language"));
-        ImGui.Spacing();
+    // ── Access for the native settings window ─────────────────────────────────
 
-        string Label(string code) => code.Length == 0
-            ? T("Language.Same")
-            : DataLanguages.First(l => l.Code == code).Label;
+    internal Options Current => Settings;
 
-        ImGui.SetNextItemWidth(220 * ImGuiHelpers.GlobalScale);
-        using (var combo = ImRaii.Combo("##cmlang", Label(Settings.DataLanguage)))
-        {
-            if (combo)
-            {
-                foreach (var (code, _) in DataLanguages)
-                {
-                    if (ImGui.Selectable(Label(code), code == Settings.DataLanguage) && code != Settings.DataLanguage)
-                    {
-                        Settings.DataLanguage = code;
-                        SaveSettings();
-                    }
-                }
-            }
-        }
+    internal void SaveCurrent() => SaveSettings();
 
-        ImGui.PushTextWrapPos(0);
-        ImGui.TextColored(Palette.Muted, T("Language.Help"));
-        ImGui.PopTextWrapPos();
-    }
+    internal string Text(string key) => T(key);
+
+    /// <summary>Language choices for the item and recipe names; the first follows the GoblinTweaks language.</summary>
+    internal IReadOnlyList<(string Code, string Text)> LanguageChoices
+        => DataLanguages.Select(l => (l.Code, l.Code.Length == 0 ? T("Language.Same") : l.Label)).ToList();
 
     // ── Inventory scanning ────────────────────────────────────────────────────
 
@@ -528,7 +534,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             InventoryType.Crystals);
 
         if (Settings.IncludeSaddlebag)
-            ScanContainers(snap.Saddlebag, snap.SaddlebagHQ, mgr,
+            snap.HasSaddlebagData = ScanContainers(snap.Saddlebag, snap.SaddlebagHQ, mgr, requireLoaded: true,
                 InventoryType.SaddleBag1, InventoryType.SaddleBag2,
                 InventoryType.PremiumSaddleBag1, InventoryType.PremiumSaddleBag2);
 
@@ -580,12 +586,17 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     // Returns true if at least one container was non-null (data was accessible in memory).
     private static unsafe bool ScanContainers(
         Dictionary<uint, int> target, Dictionary<uint, int>? hqTarget, InventoryManager* mgr, params InventoryType[] types)
+        => ScanContainers(target, hqTarget, mgr, false, types);
+
+    // requireLoaded: skip containers the game reports as not loaded (e.g. an unopened saddlebag).
+    private static unsafe bool ScanContainers(
+        Dictionary<uint, int> target, Dictionary<uint, int>? hqTarget, InventoryManager* mgr, bool requireLoaded, params InventoryType[] types)
     {
         var anyLoaded = false;
         foreach (var type in types)
         {
             var container = mgr->GetInventoryContainer(type);
-            if (container == null) continue;
+            if (container == null || (requireLoaded && !container->IsLoaded)) continue;
 
             anyLoaded = true;
             for (var i = 0; i < container->Size; i++)
@@ -615,11 +626,19 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         var retMgr = RetainerManager.Instance();
         if (retMgr == null) return false;
 
+        // The game keeps ONE retainer's inventory in memory (RetainerPage1-7): the one opened last.
+        // Reading it for any other retainer would attribute the wrong items.
+        // Right after picking another retainer from the list the pages still hold the previous one's items,
+        // so only trust them while a retainer is actually open.
+        var activeRetainer = retMgr->GetActiveRetainer();
+        if (activeRetainer == null) return false;
+        var activeId = activeRetainer->RetainerId;
+
         var count = retMgr->GetRetainerCount();
         for (uint ri = 0; ri < count && ri < 10; ri++)
         {
             var retainer = retMgr->GetRetainerBySortedIndex(ri);
-            if (retainer == null || !retainer->Available) continue;
+            if (retainer == null || !retainer->Available || retainer->RetainerId != activeId) continue;
 
             // Name is a Span<byte> with a null terminator — decode as UTF-8.
             var nameSpan     = retainer->Name;
@@ -630,13 +649,14 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
 
             var retainerItems   = new Dictionary<uint, int>();
             var retainerItemsHQ = new Dictionary<uint, int>();
+            var anyPage         = false;
 
             for (var page = 0; page < 7; page++)
             {
-                // Each retainer occupies 7 consecutive InventoryType slots starting at RetainerPage1
-                var type = (InventoryType)((uint)InventoryType.RetainerPage1 + ri * 7 + (uint)page);
+                var type = (InventoryType)((uint)InventoryType.RetainerPage1 + (uint)page);
                 var container = mgr->GetInventoryContainer(type);
-                if (container == null) continue;
+                if (container == null || !container->IsLoaded) continue;
+                anyPage = true;
 
                 for (var s = 0; s < container->Size; s++)
                 {
@@ -655,8 +675,10 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
                 }
             }
 
-            if (retainerItems.Count > 0)
+            // Keep empty retainers too, so a retainer that was emptied replaces its stale saved copy.
+            if (anyPage)
                 details.Add((retainerName, retainerItems, retainerItemsHQ));
+            break;
         }
 
         return details.Count > 0;
