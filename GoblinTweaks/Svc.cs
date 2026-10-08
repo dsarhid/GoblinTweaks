@@ -17,6 +17,7 @@ internal sealed class Svc
     [PluginService] public static IPlayerState PlayerState { get; private set; } = null!;
     [PluginService] public static IContextMenu   ContextMenu   { get; private set; } = null!;
     [PluginService] public static IPluginLog     Log           { get; private set; } = null!;
+    [PluginService] public static IChatGui       Chat          { get; private set; } = null!;
     [PluginService] public static IDtrBar        DtrBar        { get; private set; } = null!;
     [PluginService] public static IGameInventory GameInventory { get; private set; } = null!;
     [PluginService] public static IGameInteropProvider GameInterop { get; private set; } = null!;

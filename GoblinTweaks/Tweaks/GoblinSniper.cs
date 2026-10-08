@@ -163,9 +163,8 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
             .ToDictionary(group => group.Key, group => group.Count());
     }
 
-    private readonly WindowSystem _settingsWindows = new("GoblinTweaks.SniperSettings");
     private readonly HashSet<string> _seen = [];
-    private GoblinSniperSettingsWindow? _settingsWindow;
+    private GoblinSniperSettingsAddon? _settingsAddon;
     private GoblinSniperAddon? _addon;
     private IDtrBarEntry? _entry;
     private CancellationTokenSource? _cancel;
@@ -180,9 +179,6 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
     private volatile Catalog? _catalog;
 
     // Settings window item search.
-    private string _search = string.Empty;
-    private string _searchedFor = string.Empty;
-    private List<SniperItem> _searchResults = [];
 
     /// <summary>Current deals, best discount first. A new list instance is published whenever a scan changes it.</summary>
     public IReadOnlyList<SniperDeal> Deals => _deals;
@@ -228,9 +224,14 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         _entry.Shown = false;
         _entry.OnClick = _ => _addon?.Open();
 
-        _settingsWindow = new GoblinSniperSettingsWindow(this);
-        _settingsWindows.AddWindow(_settingsWindow);
-        Svc.PluginInterface.UiBuilder.Draw += _settingsWindows.Draw;
+        _settingsAddon = new GoblinSniperSettingsAddon
+        {
+            InternalName    = "GtkGoblinSniperSettings",
+            Title           = SettingsTitle,
+            Size            = new System.Numerics.Vector2(560f, 700f),
+            Tweak           = this,
+            RespectCloseAll = false,
+        };
 
         Svc.Framework.Update += OnUpdate;
     }
@@ -240,9 +241,8 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         Svc.Framework.Update -= OnUpdate;
         CancelScan();
 
-        Svc.PluginInterface.UiBuilder.Draw -= _settingsWindows.Draw;
-        _settingsWindows.RemoveAllWindows();
-        _settingsWindow = null;
+        _settingsAddon?.Close();
+        _settingsAddon = null;
 
         _addon?.Close();
         _addon = null;
@@ -251,7 +251,6 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
 
         _deals = [];
         _catalog = null;
-        _searchResults = [];
         _seen.Clear();
     }
 
@@ -268,8 +267,10 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
 
     public void OpenSettings()
     {
-        if (_settingsWindow is not null)
-            _settingsWindow.IsOpen = true;
+        if (_settingsAddon is { } window)
+        {
+            if (window.IsOpen) window.Close(); else window.Open();
+        }
     }
 
     /// <summary>Called while the window is open: everything listed has been seen, so the tooltip stops calling it new.</summary>
@@ -514,204 +515,42 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
             OpenSettings();
     }
 
-    /// <summary>Full tweak configuration, drawn in its own window (opened from the Settings button).</summary>
-    public void DrawConfigContents()
+    // ── Access for the native settings window ─────────────────────────────────
+
+    internal Options Current => Settings;
+
+    internal void SaveCurrent() => SaveSettings();
+
+    /// <summary>Language choices for the item names; the first follows the GoblinTweaks language.</summary>
+    internal IReadOnlyList<(string Code, string Text)> LanguageChoices
+        => DataLanguages.Select(l => (l.Code, l.Code.Length == 0 ? T("Language.Same") : l.Label)).ToList();
+
+    /// <summary>Changes the language of the item names and starts over, since the names already listed are in the old one.</summary>
+    internal void SetDataLanguage(string code)
+    {
+        if (code == Settings.DataLanguage) return;
+
+        Settings.DataLanguage = code;
+        _deals = [];
+        SaveSettings();
+    }
+
+    /// <summary>True once the item names exist in the language in use (they load in the background).</summary>
+    internal bool CatalogReady()
     {
         EnsureCatalog();
-        var catalog = _catalog;
-        if (catalog?.Language != DataLanguage)
-            catalog = null; // still loading the names in the newly chosen language
-        var scale = ImGuiHelpers.GlobalScale;
-
-        DrawLanguagePicker();
-
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-
-        var notify = Settings.Notify;
-        if (Widgets.SettingToggle(T("Notify"), T("Notify.Help"), ref notify))
-        { Settings.Notify = notify; SaveSettings(); }
-
-        var dataCenter = Settings.WholeDataCenter;
-        if (Widgets.SettingToggle(T("WholeDataCenter"), T("WholeDataCenter.Help"), ref dataCenter))
-        { Settings.WholeDataCenter = dataCenter; SaveSettings(); }
-
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-        ImGui.TextColored(Palette.Accent, T("Rules"));
-        ImGui.Spacing();
-
-        // Sliders change the value while dragging and save (and re-scan) once on release.
-        var discount = Settings.DiscountPercent;
-        ImGui.SetNextItemWidth(220 * scale);
-        if (ImGui.SliderInt(T("Discount"), ref discount, 10, 95, "%d%%"))
-            Settings.DiscountPercent = discount;
-        if (ImGui.IsItemDeactivatedAfterEdit())
-            SaveSettings();
-        DrawHelp(T("Discount.Help"));
-
-        var minPrice = Settings.MinAveragePrice;
-        ImGui.SetNextItemWidth(220 * scale);
-        if (ImGui.InputInt(T("MinPrice"), ref minPrice, 10_000, 100_000))
-            Settings.MinAveragePrice = Math.Max(0, minPrice);
-        if (ImGui.IsItemDeactivatedAfterEdit())
-            SaveSettings();
-        DrawHelp(T("MinPrice.Help"));
-
-        var minutes = Settings.ScanMinutes;
-        ImGui.SetNextItemWidth(220 * scale);
-        if (ImGui.SliderInt(T("ScanMinutes"), ref minutes, 5, 60))
-            Settings.ScanMinutes = minutes;
-        if (ImGui.IsItemDeactivatedAfterEdit())
-            SaveSettings();
-
-        var maxAge = Settings.MaxAgeHours;
-        ImGui.SetNextItemWidth(220 * scale);
-        if (ImGui.SliderInt(T("MaxAge"), ref maxAge, 1, 72, "%d h"))
-            Settings.MaxAgeHours = maxAge;
-        if (ImGui.IsItemDeactivatedAfterEdit())
-            SaveSettings();
-        DrawHelp(T("MaxAge.Help"));
-
-        var maxDays = Settings.MaxDaysWithoutSale;
-        ImGui.SetNextItemWidth(220 * scale);
-        if (ImGui.SliderInt(T("MaxDays"), ref maxDays, 7, 180))
-            Settings.MaxDaysWithoutSale = maxDays;
-        if (ImGui.IsItemDeactivatedAfterEdit())
-            SaveSettings();
-        DrawHelp(T("MaxDays.Help"));
-
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-        ImGui.TextColored(Palette.Accent, T("Types"));
-        DrawHelp(T("Types.Help"));
-        ImGui.Spacing();
-
-        foreach (var (key, _) in Categories)
-        {
-            var watched = Settings.Categories.Contains(key);
-            var label   = T($"Category.{key}");
-            if (catalog != null)
-                label += $" ({catalog.CategoryCounts.GetValueOrDefault(key)})";
-
-            if (ImGui.Checkbox($"{label}##{key}", ref watched))
-            {
-                if (watched) Settings.Categories.Add(key);
-                else Settings.Categories.Remove(key);
-                SaveSettings();
-            }
-        }
-
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-        ImGui.TextColored(Palette.Accent, T("Items"));
-        DrawHelp(T("Items.Help"));
-        ImGui.Spacing();
-
-        if (catalog == null)
-        {
-            ImGui.TextColored(Palette.Muted, T("Loading"));
-            return;
-        }
-
-        DrawItemSearch(catalog);
-        DrawWatchedItems(catalog);
+        return _catalog is { } catalog && catalog.Language == DataLanguage;
     }
 
-    private void DrawLanguagePicker()
-    {
-        ImGui.TextColored(Palette.Accent, T("Language"));
-        ImGui.Spacing();
+    internal int CategoryCount(string key) => _catalog?.CategoryCounts.GetValueOrDefault(key) ?? 0;
 
-        string Label(string code) => code.Length == 0
-            ? T("Language.Same")
-            : DataLanguages.First(l => l.Code == code).Label;
+    /// <summary>Items whose name contains the text, at most <see cref="MaxSearchResults"/>.</summary>
+    internal List<(uint Id, string Name)> SearchItems(string term)
+        => _catalog is not { } catalog || catalog.Language != DataLanguage
+            ? []
+            : catalog.ByName.Where(item => item.Name.Contains(term, StringComparison.OrdinalIgnoreCase))
+                .Take(MaxSearchResults).Select(item => (item.Id, item.Name)).ToList();
 
-        ImGui.SetNextItemWidth(220 * ImGuiHelpers.GlobalScale);
-        using (var combo = ImRaii.Combo("##sniperlang", Label(Settings.DataLanguage)))
-        {
-            if (combo)
-            {
-                foreach (var (code, _) in DataLanguages)
-                {
-                    if (ImGui.Selectable(Label(code), code == Settings.DataLanguage) && code != Settings.DataLanguage)
-                    {
-                        Settings.DataLanguage = code;
-
-                        // Names already listed are in the old language: start over.
-                        _deals = [];
-                        _searchedFor = string.Empty;
-                        _searchResults = [];
-                        SaveSettings();
-                    }
-                }
-            }
-        }
-
-        DrawHelp(T("Language.Help"));
-    }
-
-    private void DrawItemSearch(Catalog catalog)
-    {
-        ImGui.SetNextItemWidth(-1);
-        ImGui.InputTextWithHint("##snipersearch", T("Items.Search"), ref _search, 64);
-
-        var term = _search.Trim();
-        if (term != _searchedFor)
-        {
-            _searchedFor = term;
-            _searchResults = term.Length < 2
-                ? []
-                : catalog.ByName.Where(item => item.Name.Contains(term, StringComparison.OrdinalIgnoreCase)).Take(MaxSearchResults).ToList();
-        }
-
-        foreach (var item in _searchResults)
-        {
-            if (Settings.Items.Contains(item.Id)) continue;
-
-            if (ImGui.Selectable($"+ {item.Name}##add{item.Id}"))
-            {
-                Settings.Items.Add(item.Id);
-                SaveSettings();
-                break;
-            }
-        }
-
-        if (term.Length >= 2 && _searchResults.Count == 0)
-            ImGui.TextColored(Palette.Muted, T("Items.NoResults"));
-    }
-
-    private void DrawWatchedItems(Catalog catalog)
-    {
-        ImGui.Spacing();
-        if (Settings.Items.Count == 0)
-        {
-            ImGui.TextColored(Palette.Muted, T("Items.Empty"));
-            return;
-        }
-
-        foreach (var id in Settings.Items)
-        {
-            if (ImGui.SmallButton($"x##remove{id}"))
-            {
-                Settings.Items.Remove(id);
-                SaveSettings();
-                break;
-            }
-
-            ImGui.SameLine();
-            ImGui.Text(catalog.Items.TryGetValue(id, out var item) ? item.Name : $"#{id}");
-        }
-    }
-
-    private static void DrawHelp(string text)
-    {
-        ImGui.PushTextWrapPos(0);
-        ImGui.TextColored(Palette.Muted, text);
-        ImGui.PopTextWrapPos();
-    }
+    internal string ItemName(uint id)
+        => _catalog is { } catalog && catalog.Items.TryGetValue(id, out var item) ? item.Name : $"#{id}";
 }

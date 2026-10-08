@@ -15,6 +15,17 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.0.14", "2026-10-08",
+            "New tweak AutoGoblinRetainer: reprices and lists your retainers' Market Board items for you.",
+            [
+                "New: AutoGoblinRetainer — Pinch button in the retainer list reprices every listing of every retainer just below the cheapest other seller",
+                "New: AutoGoblinRetainer — Sell window to tick items from your bags, armoury chest and retainers and list them on the Market Board, sharing the 20 listings of each retainer",
+                "New: AutoGoblinRetainer — price column estimated by Universalis (median of the last 30 days), sortable columns, quantity to sell per item and a Pinch after listing option",
+                "New: AutoGoblinRetainer — settings window and help window, both native game windows",
+                "Change: the settings windows of Crafting Materials and GoblinSniper are now native game windows, with a drop-down to pick the language",
+                "Fix: Crafting Materials attributed the items of the last retainer you opened to the wrong one and forgot the others — each retainer and the saddlebag are now remembered between visits",
+            ]),
+
         new("1.0.13", "2026-10-07",
             "Goblin Battle Text: merging fixed and extended — criticals merge, and misses, blocks, immunities and ticks have their own options.",
             [

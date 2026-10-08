@@ -25,6 +25,9 @@ public sealed record MarketSales(long AverageNq, long AverageHq, double WorldSal
     public static readonly MarketSales None = new(0, 0, 0, 0, DateTime.MinValue);
 }
 
+/// <summary>One sale from the history of an item.</summary>
+public sealed record SaleEntry(long PricePerUnit, int Quantity, bool Hq, DateTime Time);
+
 /// <summary>Current listings (cheapest first) of one item and how it has been selling.</summary>
 public sealed record MarketSnapshot(uint ItemId, List<MarketListing> Listings, MarketSales Sales);
 
@@ -97,6 +100,45 @@ public sealed class UniversalisService : IDisposable
         {
             result.Add(snapshot);
         }
+
+        return result;
+    }
+
+    /// <summary>
+    /// The sales of up to a handful of items on one world within <paramref name="within"/>, newest first.
+    /// Items without sales come back with an empty list. Throws on network or parse errors.
+    /// </summary>
+    public static async Task<Dictionary<uint, List<SaleEntry>>> GetRecentSalesAsync(string world, IReadOnlyCollection<uint> itemIds, TimeSpan within, CancellationToken token)
+    {
+        var ids = string.Join(',', itemIds);
+        var url = $"https://universalis.app/api/v2/history/{Uri.EscapeDataString(world)}/{ids}?entriesWithin={(long)within.TotalSeconds}&entriesToReturn=100";
+
+        using var document = await GetJsonAsync(url, token).ConfigureAwait(false);
+        var root   = document.RootElement;
+        var result = itemIds.ToDictionary(id => id, _ => new List<SaleEntry>());
+
+        void Read(JsonElement item)
+        {
+            if (!item.TryGetProperty("itemID", out var idElement) || !idElement.TryGetUInt32(out var id)) return;
+            if (!result.TryGetValue(id, out var list)) return;
+            if (!item.TryGetProperty("entries", out var entries) || entries.ValueKind != JsonValueKind.Array) return;
+
+            foreach (var entry in entries.EnumerateArray())
+            {
+                if (!entry.TryGetProperty("pricePerUnit", out var price) || !price.TryGetInt64(out var unitPrice)) continue;
+                if (!entry.TryGetProperty("timestamp", out var time) || !time.TryGetInt64(out var seconds)) continue;
+
+                var quantity = entry.TryGetProperty("quantity", out var q) && q.TryGetInt32(out var n) ? n : 1;
+                var hq       = entry.TryGetProperty("hq", out var h) && h.ValueKind == JsonValueKind.True;
+                list.Add(new SaleEntry(unitPrice, Math.Max(1, quantity), hq, DateTimeOffset.FromUnixTimeSeconds(seconds).UtcDateTime));
+            }
+        }
+
+        // Several items come wrapped in "items"; a single item is returned as the root object.
+        if (root.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Object)
+            foreach (var item in items.EnumerateObject()) Read(item.Value);
+        else
+            Read(root);
 
         return result;
     }
