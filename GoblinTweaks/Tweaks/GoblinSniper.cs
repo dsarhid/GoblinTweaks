@@ -1,14 +1,10 @@
 using System.Text;
-using Dalamud.Bindings.ImGui;
 using Dalamud.Game;
 using Dalamud.Game.Gui.Dtr;
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.Interface;
-using Dalamud.Interface.Components;
 using Dalamud.Interface.Utility;
-using Dalamud.Interface.Utility.Raii;
-using Dalamud.Interface.Windowing;
 using Dalamud.Plugin.Services;
 using GoblinTweaks.Core;
 using GoblinTweaks.Localization;
@@ -110,9 +106,7 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
     [
         ("",   ""),          // label resolved from Loc at draw time
         ("en", "English"),
-        ("de", "Deutsch"),
-        ("fr", "Français"),
-        ("ja", "日本語"),
+        ("es", "Español"),
     ];
 
     /// <summary>
@@ -193,16 +187,41 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
     /// <summary>Game-data language used for item names.</summary>
     public ClientLanguage DataLanguage => (string.IsNullOrEmpty(Settings.DataLanguage) ? Loc.CurrentLanguage : Settings.DataLanguage) switch
     {
-        "de" => ClientLanguage.German,
-        "fr" => ClientLanguage.French,
-        "ja" => ClientLanguage.Japanese,
         _    => ClientLanguage.English, // "en", "es" and anything without game data
     };
 
-    public string SettingsTitle => $"{Name} — {T("Settings")}";
+    /// <summary>Language of this tweak's own texts: the one chosen for it, or the plugin's when none was.</summary>
+    internal string UiLang => string.IsNullOrEmpty(Settings.DataLanguage) ? Loc.CurrentLanguage : Settings.DataLanguage;
 
-    /// <summary>Localized text of this tweak, for the native window.</summary>
-    internal string Text(string key) => T(key);
+    public string SettingsTitle => $"{Text("Name")} — {Text("Settings")}";
+
+    /// <summary>Text of this tweak in its own language (see <see cref="UiLang"/>), for the native windows.</summary>
+    internal string Text(string key) => Loc.GetIn(UiLang, $"Tweaks.{Id}.{key}");
+
+    private GoblinSniperSettingsAddon NewSettingsAddon() => new()
+    {
+        InternalName    = "GtkGoblinSniperSettings",
+        Title           = SettingsTitle,
+        Size            = new System.Numerics.Vector2(560f, 700f),
+        Tweak           = this,
+        RespectCloseAll = false,
+    };
+
+    /// <summary>Rebuilds the open settings window (its texts follow the language chosen in it).</summary>
+    internal void RefreshSettingsWindow()
+    {
+        var old = _settingsAddon;
+        if (old is not { IsOpen: true }) return;
+
+        // A moment later, never from inside the click of its own drop-down.
+        Svc.Framework.RunOnTick(() =>
+        {
+            old.Dispose();
+            if (_settingsAddon != old) return;
+            _settingsAddon = NewSettingsAddon();
+            Svc.Framework.RunOnTick(() => _settingsAddon?.Open(), delayTicks: 6);
+        }, delayTicks: 2);
+    }
 
     protected internal override void Enable()
     {
@@ -224,14 +243,7 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         _entry.Shown = false;
         _entry.OnClick = _ => _addon?.Open();
 
-        _settingsAddon = new GoblinSniperSettingsAddon
-        {
-            InternalName    = "GtkGoblinSniperSettings",
-            Title           = SettingsTitle,
-            Size            = new System.Numerics.Vector2(560f, 700f),
-            Tweak           = this,
-            RespectCloseAll = false,
-        };
+        _settingsAddon = NewSettingsAddon();
 
         Svc.Framework.Update += OnUpdate;
     }
@@ -241,10 +253,10 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         Svc.Framework.Update -= OnUpdate;
         CancelScan();
 
-        _settingsAddon?.Close();
+        _settingsAddon?.Dispose();
         _settingsAddon = null;
 
-        _addon?.Close();
+        _addon?.Dispose();
         _addon = null;
         _entry?.Remove();
         _entry = null;
@@ -502,18 +514,15 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
 
     // ── Settings ──────────────────────────────────────────────────────────────
 
-    public override void DrawSettings()
-    {
-        // Open the native window (icon hints that a separate window opens).
-        if (ImGuiComponents.IconButtonWithText(FontAwesomeIcon.ExternalLinkAlt, T("Open")))
-            _addon?.Open();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(T("Open.Help"));
+    public override TweakButton? OpenButton => new(T("Open"), T("Open.Help"), () => _addon?.Toggle());
 
-        ImGui.SameLine();
-        if (ImGuiComponents.IconButtonWithText(FontAwesomeIcon.Cog, T("Settings")))
-            OpenSettings();
-    }
+    public override TweakButton? HelpButton => new(Loc.Get("Window.Help"), null, () => _addon?.OpenHelp());
+
+    protected override IReadOnlyList<string> CommandNames => ["/gsn", "/gsnipe"];
+
+    protected override void OnCommand() => _addon?.Toggle();
+
+    public override IReadOnlyList<TweakButton> Buttons => [new(T("Settings"), null, OpenSettings)];
 
     // ── Access for the native settings window ─────────────────────────────────
 
@@ -523,7 +532,7 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
 
     /// <summary>Language choices for the item names; the first follows the GoblinTweaks language.</summary>
     internal IReadOnlyList<(string Code, string Text)> LanguageChoices
-        => DataLanguages.Select(l => (l.Code, l.Code.Length == 0 ? T("Language.Same") : l.Label)).ToList();
+        => DataLanguages.Select(l => (l.Code, l.Code.Length == 0 ? Text("Language.Same") : l.Label)).ToList();
 
     /// <summary>Changes the language of the item names and starts over, since the names already listed are in the old one.</summary>
     internal void SetDataLanguage(string code)
@@ -533,6 +542,7 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         Settings.DataLanguage = code;
         _deals = [];
         SaveSettings();
+        RefreshSettingsWindow();
     }
 
     /// <summary>True once the item names exist in the language in use (they load in the background).</summary>

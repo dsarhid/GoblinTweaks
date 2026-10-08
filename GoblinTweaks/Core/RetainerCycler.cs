@@ -33,6 +33,8 @@ internal sealed unsafe class RetainerCycler
     private DateTime   _notBefore;
     private List<int>  _rows = [];   // retainer-list rows still to visit
     private int        _visited;
+    private int        _totalRepriced, _totalUnchanged, _totalSkipped;
+    private readonly Dictionary<int, string> _names = [];
     private bool       _pincherEnded;
 
     public RetainerCycler(AutoPincher pincher, Action<string> say)
@@ -61,7 +63,10 @@ internal sealed unsafe class RetainerCycler
             {
                 var ret = retMgr->GetRetainerBySortedIndex(i);
                 if (ret != null && ret->Available && ret->MarketItemCount > 0)
+                {
                     _rows.Add((int)i);
+                    _names[(int)i] = SellInventory.RetainerName(ret, i);
+                }
             }
 
         if (_rows.Count == 0)
@@ -71,6 +76,7 @@ internal sealed unsafe class RetainerCycler
         }
 
         _visited = 0;
+        _totalRepriced = _totalUnchanged = _totalSkipped = 0;
         Enter(Step.SelectRetainer);
         return true;
     }
@@ -117,9 +123,12 @@ internal sealed unsafe class RetainerCycler
 
             case Step.WaitSellList:
                 if (!AddonCallback.Ready(SellListAddon, out _)) return;
+                var row = _rows[0];
                 _rows.RemoveAt(0);
                 _visited++;
                 _pincherEnded = false;
+                _pincher.Label = _names.GetValueOrDefault(row);
+                _say($"visiting|{_pincher.Label}");
                 if (!_pincher.Start())
                 {
                     // Nothing to reprice for this retainer; carry on with the next one.
@@ -132,7 +141,10 @@ internal sealed unsafe class RetainerCycler
 
             case Step.Pinching:
                 if (_pincher.IsRunning && !_pincherEnded) { _deadline = DateTime.UtcNow + TimeSpan.FromMinutes(10); return; }
-                if (!_pincher.LastRunCompleted) { _step = Step.Idle; return; } // it already reported why it stopped
+                if (!_pincher.LastRunCompleted) { _pincher.Label = null; _step = Step.Idle; return; } // it already reported why it stopped
+                _totalRepriced  += _pincher.Repriced;
+                _totalUnchanged += _pincher.Unchanged;
+                _totalSkipped   += _pincher.Skipped;
                 Enter(Step.CloseSellList);
                 break;
 
@@ -178,7 +190,8 @@ internal sealed unsafe class RetainerCycler
     private void Finish()
     {
         _step = Step.Idle;
-        _say($"cycleDone|{_visited}");
+        _pincher.Label = null;
+        _say($"cycleDone|{_visited}|{_totalRepriced}|{_totalUnchanged}|{_totalSkipped}");
     }
 
     private void Enter(Step step, TimeSpan? timeout = null)

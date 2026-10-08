@@ -42,26 +42,57 @@ internal abstract unsafe class SettingsPanelAddon : NativeAddon
     /// <summary>Called when the window closes, to forget the nodes the subclass kept.</summary>
     protected virtual void OnClosed() { }
 
+    /// <summary>Top-left corner of the scrolling area in the window. By default it fills the window under the header strip.</summary>
+    protected virtual Vector2 ScrollPosition => ContentStartPosition + new Vector2(0f, HeaderHeight);
+
+    /// <summary>Size of the scrolling area.</summary>
+    protected virtual Vector2 ScrollSize => ContentSize - new Vector2(0f, HeaderHeight);
+
+    private bool _rebuild;
+
+    /// <summary>Asks for the scrolling options to be built again on the next frame (never while one of them is handling its own click).</summary>
+    protected void RequestRebuild() => _rebuild = true;
+
     protected override void OnSetup(AtkUnitBase* addon, Span<AtkValue> atkValues)
     {
         base.OnSetup(addon, atkValues);
 
-        var header = HeaderHeight;
+        CreateScroll();
+
+        // After the scrolling area, so its drop-down opens on top of the options.
+        if (HeaderHeight > 0f) BuildHeader(ContentStartPosition, ContentSize.X);
+
+        BuildContent();
+    }
+
+    private void CreateScroll()
+    {
         _scroll = new ScrollingNode<ResNode>
         {
-            Position          = ContentStartPosition + new Vector2(0f, header),
-            Size              = ContentSize - new Vector2(0f, header),
+            Position          = ScrollPosition,
+            Size              = ScrollSize,
             AutoHideScrollBar = true,
         };
         _scroll.AttachNode(this);
+    }
 
-        // After the scrolling area, so its drop-down opens on top of the options.
-        if (header > 0f) BuildHeader(ContentStartPosition, ContentSize.X);
-
-        ContentW = ContentSize.X - ScrollBarW - Pad * 2;
+    private void BuildContent()
+    {
+        ContentW = ScrollSize.X - ScrollBarW - Pad * 2;
         Y        = 4f;
         Build();
         FinishLayout();
+    }
+
+    protected override void OnUpdate(AtkUnitBase* addon)
+    {
+        base.OnUpdate(addon);
+        if (!_rebuild || _scroll is null) return;
+
+        _rebuild = false;
+        _scroll.Dispose();
+        CreateScroll();
+        BuildContent();
     }
 
     protected override void OnFinalize(AtkUnitBase* addon)
@@ -116,8 +147,9 @@ internal abstract unsafe class SettingsPanelAddon : NativeAddon
             Position  = new Vector2(Pad, Y),
             Size      = new Vector2(ContentW, 24f),
             TextColor = Gold,
-            FontType  = FontType.TrumpGothic,
-            FontSize  = 20,
+            FontType  = UiFont.Heading,
+            FontSize  = UiFont.Size(20),
+            CharSpacing = UiFont.Spacing,
         }.AttachNode(Host);
         Y += 26f;
 
@@ -219,7 +251,7 @@ internal abstract unsafe class SettingsPanelAddon : NativeAddon
 
         // Set after attaching so the box shows the current choice's label instead of staying empty.
         select.Options        = keys;
-        select.SelectedOption = ToKey(get());
+        select.SelectedOption = keys.Contains(ToKey(get())) ? ToKey(get()) : Same;
 
         if (string.IsNullOrEmpty(help)) return;
 

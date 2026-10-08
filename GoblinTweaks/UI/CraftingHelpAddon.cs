@@ -117,8 +117,9 @@ internal unsafe class CraftingHelpAddon : NativeAddon
             Position  = _contentPos,
             Size      = new Vector2(_contentW, 28f),
             TextColor = TitleGold,
-            FontType  = FontType.TrumpGothic,
-            FontSize  = 24,
+            FontType  = UiFont.Heading,
+            FontSize  = UiFont.Size(24),
+            CharSpacing = UiFont.Spacing,
         };
         _title.AttachNode(this);
 
@@ -214,8 +215,9 @@ internal unsafe class CraftingHelpAddon : NativeAddon
             Position  = new Vector2(x, y),
             Size      = new Vector2(w, 24f),
             TextColor = TitleGold,
-            FontType  = FontType.TrumpGothic,
-            FontSize  = 20,
+            FontType  = UiFont.Heading,
+            FontSize  = UiFont.Size(20),
+            CharSpacing = UiFont.Spacing,
         };
         node.AttachNode(this);
         return node;

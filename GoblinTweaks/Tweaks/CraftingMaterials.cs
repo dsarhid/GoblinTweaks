@@ -7,11 +7,7 @@ using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Game.Inventory.InventoryEventArgTypes;
 using Dalamud.Plugin.Services;
 using Dalamud.Interface;
-using Dalamud.Interface.Components;
 using Dalamud.Interface.Utility;
-using Dalamud.Interface.Utility.Raii;
-using Dalamud.Interface.Windowing;
-using Dalamud.Bindings.ImGui;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using GoblinTweaks.Core;
 using GoblinTweaks.Services;
@@ -186,9 +182,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     [
         ("",   ""),          // label resolved from Loc at draw time
         ("en", "English"),
-        ("de", "Deutsch"),
-        ("fr", "Français"),
-        ("ja", "日本語"),
+        ("es", "Español"),
     ];
 
     private CraftingMaterialsAddon?     _addon;
@@ -209,9 +203,6 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     /// <summary>Game-data language used for item/recipe names in the window.</summary>
     public ClientLanguage DataLanguage => WindowUiLang switch
     {
-        "de" => ClientLanguage.German,
-        "fr" => ClientLanguage.French,
-        "ja" => ClientLanguage.Japanese,
         _    => ClientLanguage.English, // "en", "es" and anything without game data
     };
 
@@ -235,19 +226,12 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         Svc.AddonLifecycle.RegisterListener(AddonEvent.PreFinalize,  "RetainerList",         OnRetainerUiClosed);
         Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup,    "SynthesisSimpleResult", OnSynthesisResult);
 
-        _settingsAddon = new CraftingSettingsAddon
-        {
-            InternalName    = "GtkCraftingSettings",
-            Title           = SettingsTitle,
-            Size            = new System.Numerics.Vector2(520f, 580f),
-            Tweak           = this,
-            RespectCloseAll = false,
-        };
+        _settingsAddon = NewSettingsAddon();
 
         _fcHighlighter.Source = () => Settings.HighlightFCChest && Settings.IncludeFCChest && _addon is { IsOpen: true } a
             ? a.FCChestMarks()
             : [];
-        Svc.PluginInterface.UiBuilder.Draw += _fcHighlighter.Draw;
+        _fcHighlighter.Start();
     }
 
     protected internal override void Disable()
@@ -258,12 +242,12 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PreFinalize,  "RetainerList",         OnRetainerUiClosed);
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup,    "SynthesisSimpleResult", OnSynthesisResult);
 
-        Svc.PluginInterface.UiBuilder.Draw -= _fcHighlighter.Draw;
+        _fcHighlighter.Stop();
         _fcHighlighter.Source = null;
-        _settingsAddon?.Close();
+        _settingsAddon?.Dispose();
         _settingsAddon = null;
 
-        _addon?.Close();
+        _addon?.Dispose();
         _addon = null;
         _universalis?.Dispose();
         _universalis = null;
@@ -324,8 +308,6 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     // Synthesis result popup appears → immediately refresh to update craft check marks.
     private void OnSynthesisResult(AddonEvent type, AddonArgs args) =>
         _addon?.RequestRefresh();
-
-    public override bool HasSettings => true;
 
     // ── Snapshot persistence ──────────────────────────────────────────────────
 
@@ -488,23 +470,53 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     // Any settings change re-scans the window with the new options.
     protected override void OnSettingsChanged() => _addon?.RequestRefresh();
 
-    public override void DrawSettings()
-    {
-        // Open the native window (icon hints that a separate window opens).
-        if (ImGuiComponents.IconButtonWithText(FontAwesomeIcon.ExternalLinkAlt, T("Open")))
-            _addon?.Open();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(T("Open.Help"));
+    public override TweakButton? OpenButton => new(T("Open"), T("Open.Help"), () => _addon?.Toggle());
 
-        ImGui.SameLine();
-        if (ImGuiComponents.IconButtonWithText(FontAwesomeIcon.Cog, T("Settings")) && _settingsAddon is { } window)
-        {
-            if (window.IsOpen) window.Close(); else window.Open();
-        }
+    public override TweakButton? HelpButton => new(Loc.Get("Window.Help"), null, () => _addon?.OpenHelp());
+
+    protected override IReadOnlyList<string> CommandNames => ["/gcm", "/gmaterials"];
+
+    protected override void OnCommand() => _addon?.Toggle();
+
+    public override IReadOnlyList<TweakButton> Buttons =>
+    [
+        new(TMain("Settings"), null, ToggleSettings),
+    ];
+
+    /// <summary>Opens the settings window, or closes it if it is open.</summary>
+    internal void ToggleSettings()
+    {
+        if (_settingsAddon is not { } window) return;
+        if (window.IsOpen) window.Close(); else window.Open();
     }
 
-    /// <summary>Settings window title (localized to the GoblinTweaks UI language).</summary>
-    public string SettingsTitle => $"{Name} — {T("Settings")}";
+    /// <summary>Settings window title, in the language chosen for this tweak.</summary>
+    public string SettingsTitle => $"{Text("Name")} — {Text("Settings")}";
+
+    private CraftingSettingsAddon NewSettingsAddon() => new()
+    {
+        InternalName    = "GtkCraftingSettings",
+        Title           = SettingsTitle,
+        Size            = new System.Numerics.Vector2(520f, 580f),
+        Tweak           = this,
+        RespectCloseAll = false,
+    };
+
+    /// <summary>Rebuilds the open settings window (its texts follow the language chosen in it).</summary>
+    internal void RefreshSettingsWindow()
+    {
+        var old = _settingsAddon;
+        if (old is not { IsOpen: true }) return;
+
+        // A moment later, never from inside the click of its own drop-down.
+        Svc.Framework.RunOnTick(() =>
+        {
+            old.Dispose();
+            if (_settingsAddon != old) return;
+            _settingsAddon = NewSettingsAddon();
+            Svc.Framework.RunOnTick(() => _settingsAddon?.Open(), delayTicks: 6);
+        }, delayTicks: 2);
+    }
 
     // ── Access for the native settings window ─────────────────────────────────
 
@@ -512,11 +524,12 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
 
     internal void SaveCurrent() => SaveSettings();
 
-    internal string Text(string key) => T(key);
+    /// <summary>Text of this tweak in the language chosen for it (the window language), not the plugin language.</summary>
+    internal string Text(string key) => Loc.GetIn(WindowUiLang, $"Tweaks.{Id}.{key}");
 
     /// <summary>Language choices for the item and recipe names; the first follows the GoblinTweaks language.</summary>
     internal IReadOnlyList<(string Code, string Text)> LanguageChoices
-        => DataLanguages.Select(l => (l.Code, l.Code.Length == 0 ? T("Language.Same") : l.Label)).ToList();
+        => DataLanguages.Select(l => (l.Code, l.Code.Length == 0 ? Text("Language.Same") : l.Label)).ToList();
 
     // ── Inventory scanning ────────────────────────────────────────────────────
 

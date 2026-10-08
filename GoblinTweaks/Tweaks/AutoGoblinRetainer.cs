@@ -1,9 +1,12 @@
+using GoblinTweaks.Localization;
 using System.Numerics;
-using Dalamud.Bindings.ImGui;
 using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
+using Dalamud.Game.Chat;
+using Dalamud.Game.Text;
+using Dalamud.Game.Text.SeStringHandling;
+using Lumina.Excel.Sheets;
 using Dalamud.Interface;
-using Dalamud.Interface.Components;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using GoblinTweaks.Core;
@@ -42,6 +45,13 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
     private const float ButtonTop    = 9f;
     private const float SellListMarginRight = 60f;
 
+    // The game answers every price change with "Asking price updated." and something copies each compared price to
+    // the clipboard with a chat line. During a run that is dozens of lines, so they are hidden while it works.
+    private const uint AskingPriceUpdatedId = 740; // LogMessage row of "Asking price updated."
+    private static readonly string[] ClipboardWords = ["clipboard", "portapapeles", "zwischenablage", "presse-papiers", "クリップボード"];
+    private string? _askingPriceText;
+    private DateTime _quietUntil = DateTime.MinValue;
+
     private DateTime            _nextCapture = DateTime.MinValue;
     private AutoPincher?        _pincher;
     private RetainerCycler?     _cycler;
@@ -64,18 +74,14 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
             RespectCloseAll = false,
         };
 
-        _settingsWindow = new AutoGoblinRetainerSettingsAddon
-        {
-            InternalName    = "GtkAutoGoblinRetainerSettings",
-            Title           = T("SettingsTitle"),
-            Size            = new Vector2(540f, 470f),
-            Tweak           = this,
-            RespectCloseAll = false,
-        };
+        _settingsWindow = NewSettingsWindow();
 
         _pincher = new AutoPincher(PinchRulesNow, Say);
         _cycler  = new RetainerCycler(_pincher, Say);
         _runner  = new SellRunner(_pincher, PinchRulesNow, Say);
+
+        _askingPriceText = Svc.Data.GetExcelSheet<LogMessage>()?.GetRowOrDefault(AskingPriceUpdatedId)?.Text.ExtractText();
+        Svc.Chat.CheckMessageHandled += OnCheckMessage;
 
         Svc.Framework.Update += OnUpdate;
         Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup,    "RetainerSellList", OnSellListSetup);
@@ -96,6 +102,7 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
     protected internal override void Disable()
     {
         Svc.Framework.Update -= OnUpdate;
+        Svc.Chat.CheckMessageHandled -= OnCheckMessage;
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup,   "RetainerSellList", OnSellListSetup);
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PreFinalize, "RetainerSellList", OnSellListClosing);
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup,   "RetainerList", OnRetainerListSetup);
@@ -109,11 +116,11 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
         _pincher = null;
         DetachButtons();
         DetachSellListButton();
-        _window?.Close();
+        _window?.Dispose();
         _window = null;
-        _settingsWindow?.Close();
+        _settingsWindow?.Dispose();
         _settingsWindow = null;
-        _helpWindow?.Close();
+        _helpWindow?.Dispose();
         _helpWindow = null;
     }
 
@@ -121,6 +128,9 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
     // because the game only keeps one retainer in memory at a time.
     private void OnUpdate(IFramework _)
     {
+        if (_runner is { IsRunning: true } || _cycler is { IsRunning: true } || _pincher is { IsRunning: true })
+            _quietUntil = DateTime.UtcNow.AddSeconds(3); // the last messages of a run arrive a moment after it ends
+
         try   { _runner?.Update(); _cycler?.Update(); _pincher?.Update(); }
         catch (Exception ex)
         {
@@ -137,6 +147,21 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
             SellInventory.CaptureActiveRetainer();
         }
         catch (Exception ex) { ReportFailure(ex); }
+    }
+
+    // ── Chat noise ────────────────────────────────────────────────────────────
+
+    private bool Working => DateTime.UtcNow < _quietUntil;
+
+    /// <summary>Hides the "price copied to clipboard" and "Asking price updated." lines while a run is working.</summary>
+    private void OnCheckMessage(IHandleableChatMessage message)
+    {
+        if (message.IsHandled || !Working) return;
+
+        var text = message.Message.TextValue;
+        if (ClipboardWords.Any(word => text.Contains(word, StringComparison.OrdinalIgnoreCase))
+            || (!string.IsNullOrEmpty(_askingPriceText) && text.Contains(_askingPriceText, StringComparison.Ordinal)))
+            message.PreventOriginal();
     }
 
     // ── Retainer list hooks ───────────────────────────────────────────────────
@@ -265,8 +290,8 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
         var reason = parts[0].Split(':')[0];
         var text   = reason switch
         {
-            "done"          => string.Format(T("Msg.Done"), Part(parts, 1), Part(parts, 2), Part(parts, 3)),
-            "stopped"       => string.Format(T("Msg.Stopped"), Part(parts, 1), Part(parts, 2), Part(parts, 3)),
+            "done"          => string.Format(T("Msg.Done"), Part(parts, 1), Part(parts, 2), Part(parts, 3)) + Who(parts),
+            "stopped"       => string.Format(T("Msg.Stopped"), Part(parts, 1), Part(parts, 2), Part(parts, 3)) + Who(parts),
             "closed"        => string.Format(T("Msg.Closed"), Part(parts, 1), Part(parts, 2), Part(parts, 3)),
             "timeout"       => string.Format(T("Msg.Timeout"), Part(parts, 1), Part(parts, 2), Part(parts, 3)) + " " + code.Split('|')[0].Replace("timeout:", string.Empty),
             "error"         => string.Format(T("Msg.Stopped"), Part(parts, 1), Part(parts, 2), Part(parts, 3)),
@@ -278,26 +303,46 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
             "noCapacity"    => T("Msg.NoCapacity"),
             "sellDone"      => string.Format(T("Msg.SellDone"), Part(parts, 1), Part(parts, 2), Part(parts, 3)),
             "sellstop"      => string.Format(T("Msg.SellStopped"), Part(parts, 1), Part(parts, 2), Part(parts, 3)) + (parts.Length > 4 ? " (" + parts[4] + ")" : string.Empty),
-            "problem"       => "  - " + (parts.Length > 1 ? parts[1] : string.Empty),
-            "cycleDone"     => string.Format(T("Msg.CycleDone"), Part(parts, 1)),
+            "problem"       => "  - " + (parts.Length > 1 ? parts[1] : string.Empty) + ": " + (parts.Length > 2 ? T("Problem." + parts[2]) : string.Empty),
+            "cycleDone"     => string.Format(T("Msg.CycleDone"), Part(parts, 1), Part(parts, 2), Part(parts, 3), Part(parts, 4)),
+            "visiting"      => string.Format(T("Msg.Visiting"), parts.Length > 1 ? parts[1] : "?"),
             _               => code,
         };
         Svc.Chat.Print($"[AutoGoblinRetainer] {text}");
     }
 
+    /// <summary>The retainer a message is about, when a tour of several retainers is running.</summary>
+    private static string Who(string[] parts) => parts.Length > 4 && parts[4].Length > 0 ? $" [{parts[4]}]" : string.Empty;
+
     private static string Part(string[] parts, int i) => i < parts.Length ? parts[i] : "0";
 
     // ── Settings and help windows ─────────────────────────────────────────────
 
-    /// <summary>The card in the GoblinTweaks window: just the two buttons; the options live in a native window.</summary>
-    public override void DrawSettings()
-    {
-        if (ImGuiComponents.IconButtonWithText(FontAwesomeIcon.Cog, T("Settings")))
-            _settingsWindow?.Open();
+    /// <summary>The buttons in the GoblinTweaks window: the options live in a native window.</summary>
+    public override IReadOnlyList<TweakButton> Buttons => [new(TMain("Settings"), null, () => _settingsWindow?.Toggle())];
 
-        ImGui.SameLine();
-        if (ImGuiComponents.IconButtonWithText(FontAwesomeIcon.QuestionCircle, T("Help")))
-            OpenHelp();
+    public override TweakButton? HelpButton => new(Loc.Get("Window.Help"), null, OpenHelp);
+
+    protected override IReadOnlyList<string> CommandNames => ["/agr", "/goblinretainer"];
+
+    protected override void OnCommand() => _settingsWindow?.Toggle();
+
+    private AutoGoblinRetainerSettingsAddon NewSettingsWindow() => new()
+    {
+        InternalName    = "GtkAutoGoblinRetainerSettings",
+        Title           = T("SettingsTitle"),
+        Size            = new Vector2(540f, 510f),
+        Tweak           = this,
+        RespectCloseAll = false,
+    };
+
+    protected override void OnLanguageChanged()
+    {
+        if (State != TweakState.Enabled) return;
+
+        Rebuild(ref _settingsWindow, NewSettingsWindow);
+        _helpWindow?.Dispose();
+        _helpWindow = null;
     }
 
     internal Options Current => Settings;
@@ -307,6 +352,7 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
     {
         // Built when opened so its text follows the language selected now.
         if (_helpWindow is { IsOpen: true }) { _helpWindow.Close(); return; }
+        _helpWindow?.Dispose();
 
         _helpWindow = new TextHelpAddon
         {

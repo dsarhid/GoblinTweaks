@@ -96,7 +96,7 @@ internal unsafe class WeaponPoseAddon : NativeAddon
         _rows.Clear();
         _helpButton = null;
 
-        _helpAddon?.Close();
+        _helpAddon?.Dispose();
         _helpAddon = null;
 
         base.OnFinalize(addon);
@@ -163,8 +163,9 @@ internal unsafe class WeaponPoseAddon : NativeAddon
         {
             Position      = new Vector2(pos.X + 2f + IconSz, pos.Y + 3f),
             Size          = new Vector2(LevelW, 26f),
-            FontType      = FontType.TrumpGothic,
-            FontSize      = 23,
+            FontType      = UiFont.Heading,
+            FontSize      = UiFont.Size(23),
+            CharSpacing = UiFont.Spacing,
             AlignmentType = AlignmentType.Right,
         };
         level.AttachNode(this);
@@ -210,9 +211,11 @@ internal unsafe class WeaponPoseAddon : NativeAddon
         };
         _helpButton.OnClick = OpenHelp;
         _helpButton.AttachNode(this);
+
+        TweakLanguageSelect.Add(this, Tweak, new Vector2(pos.X + size.X - TweakLanguageSelect.Width - 6f, pos.Y + (size.Y - 26f) / 2f));
     }
 
-    private void OpenHelp()
+    internal void OpenHelp()
     {
         _helpAddon ??= new TextHelpAddon
         {
@@ -221,7 +224,7 @@ internal unsafe class WeaponPoseAddon : NativeAddon
             Size         = new Vector2(440f, 300f),
             Pages        = [(Tweak.Text("Help.Title"), Tweak.Text("Help.Text"))],
         };
-        _helpAddon.Open();
+        _helpAddon.Toggle();
     }
 
     private void Refresh()

@@ -1,6 +1,5 @@
-using Dalamud.Bindings.ImGui;
+using GoblinTweaks.Localization;
 using Dalamud.Interface;
-using Dalamud.Interface.Components;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
@@ -44,13 +43,7 @@ public sealed unsafe class WeaponPosePerJob : Tweak<WeaponPosePerJob.Options>
     {
         _job = 0;
         _restoring = false;
-        _addon = new WeaponPoseAddon
-        {
-            InternalName = "GtkWeaponPoses",
-            Title        = T("Title"),
-            Size         = new System.Numerics.Vector2(450f, 610f),
-            Tweak        = this,
-        };
+        _addon = NewAddon();
 
         Svc.Framework.Update += OnUpdate;
     }
@@ -58,7 +51,7 @@ public sealed unsafe class WeaponPosePerJob : Tweak<WeaponPosePerJob.Options>
     protected internal override void Disable()
     {
         Svc.Framework.Update -= OnUpdate;
-        _addon?.Close();
+        _addon?.Dispose();
         _addon = null;
     }
 
@@ -68,14 +61,26 @@ public sealed unsafe class WeaponPosePerJob : Tweak<WeaponPosePerJob.Options>
     /// <summary>Localized text of this tweak, for the native window.</summary>
     internal string Text(string key) => T(key);
 
-    public override void DrawSettings()
+    public override TweakButton? OpenButton => new(TMain("Open"), TMain("Open.Help"), () => _addon?.Toggle());
+
+    public override TweakButton? HelpButton => new(Loc.Get("Window.Help"), null, () => _addon?.OpenHelp());
+
+    private WeaponPoseAddon NewAddon() => new()
     {
-        // Open the native window (icon hints that a separate window opens).
-        if (ImGuiComponents.IconButtonWithText(FontAwesomeIcon.ExternalLinkAlt, T("Open")))
-            _addon?.Open();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(T("Open.Help"));
+        InternalName = "GtkWeaponPoses",
+        Title        = T("Title"),
+        Size         = new System.Numerics.Vector2(450f, 610f),
+        Tweak        = this,
+    };
+
+    protected override void OnLanguageChanged()
+    {
+        if (State == TweakState.Enabled) Rebuild(ref _addon, NewAddon);
     }
+
+    protected override IReadOnlyList<string> CommandNames => ["/gwp", "/gweapon"];
+
+    protected override void OnCommand() => _addon?.Toggle();
 
     private void OnUpdate(IFramework _)
     {

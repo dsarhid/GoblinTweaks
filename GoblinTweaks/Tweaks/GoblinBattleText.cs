@@ -1,12 +1,11 @@
+using GoblinTweaks.Localization;
 using System.Globalization;
 using System.Numerics;
 using System.Text.Json.Serialization;
-using Dalamud.Bindings.ImGui;
 using Dalamud.Game.Command;
 using Dalamud.Game.Gui.FlyText;
 using Dalamud.Hooking;
 using Dalamud.Interface;
-using Dalamud.Interface.Components;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.Character;
@@ -200,6 +199,9 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         public Vector4 DebuffEnd { get; set; } = DefaultColors.DebuffEnd;
         public Vector4 Cooldown { get; set; } = DefaultColors.Cooldown;
         public Vector4 Action { get; set; } = DefaultColors.Action;
+
+        /// <summary>Color of the outline of every message, when <see cref="Options.OutlineEnabled"/> is on.</summary>
+        public Vector4 Outline { get; set; } = DefaultColors.Outline;
     }
 
     public static class DefaultColors
@@ -221,6 +223,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         public static readonly Vector4 Action            = new(0.80f, 0.86f, 1f, 1f);
         public static readonly Vector4 PositionalHit     = new(0.55f, 1f, 0.60f, 1f);
         public static readonly Vector4 PositionalMiss    = new(1f, 0.35f, 0.30f, 1f);
+        public static readonly Vector4 Outline           = new(0.05f, 0.05f, 0.05f, 1f);
     }
 
     /// <summary>
@@ -280,6 +283,12 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
         public BattleTextFont Font { get; set; } = BattleTextFont.Jupiter;
 
+        /// <summary>Draws a thicker outline of its own around the letters of every message, in <see cref="ColorOptions.Outline"/>.</summary>
+        public bool OutlineEnabled { get; set; }
+
+        /// <summary>Width of that outline, in pixels.</summary>
+        public int OutlineThickness { get; set; } = 2;
+
         /// <summary>Per event: whether it shows, in which area and in which direction. Filled with <see cref="DefaultEvent"/>.</summary>
         public Dictionary<BattleTextEvent, EventOptions> Events { get; set; } = [];
 
@@ -331,7 +340,6 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     internal const int OffsetLimitX = 900;
     internal const int OffsetLimitY = 600;
 
-    private const string Command = "/gbt";
     private const byte ActionKindAction = 1;
     private const uint AutoAttackCategory = 1;      // ActionCategory row of auto-attacks
     private const uint AttackAction = 7;            // the auto-attack of a melee job
@@ -615,14 +623,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             _overlay.AddNode(handle);
         }
 
-        _addon = new BattleTextAddon
-        {
-            InternalName = "GtkBattleText",
-            Title        = T("Title"),
-            Subtitle     = _characterId == 0 ? null : Svc.PlayerState.CharacterName,
-            Size         = new Vector2(780f, 640f),
-            Tweak        = this,
-        };
+        _addon = NewAddon();
 
         _hook = Svc.GameInterop.HookFromAddress<BattleLog.Delegates.AddToScreenLogWithScreenLogKind>((nint)address, OnScreenLog);
         _hook.Enable();
@@ -644,14 +645,12 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             _tickHook.Enable();
         }
 
-        Svc.Commands.AddHandler(Command, new CommandInfo((_, _) => _addon?.Toggle()) { HelpMessage = T("Command.Help") });
         Svc.Framework.Update += OnUpdate;
     }
 
     protected internal override void Disable()
     {
         Svc.Framework.Update -= OnUpdate;
-        Svc.Commands.RemoveHandler(Command);
 
         _hook?.Dispose();
         _hook = null;
@@ -661,7 +660,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         _tickHook = null;
         _tickSource = null;
 
-        _addon?.Close();
+        _addon?.Dispose();
         _addon = null;
         Preview = false;
 
@@ -682,17 +681,27 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         FlushSettings();
     }
 
-    public override void DrawSettings()
-    {
-        // Open the native window (icon hints that a separate window opens).
-        if (ImGuiComponents.IconButtonWithText(FontAwesomeIcon.ExternalLinkAlt, T("Open")))
-            _addon?.Open();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(T("Open.Help"));
+    public override IReadOnlyList<TweakButton> Buttons => [new(Loc.Get("Window.Settings"), TMain("Open.Help"), () => _addon?.Toggle())];
 
-        ImGui.SameLine();
-        ImGui.TextColored(Palette.Muted, string.Format(T("Command"), Command));
+    public override TweakButton? HelpButton => new(Loc.Get("Window.Help"), null, () => _addon?.OpenHelp());
+
+    private BattleTextAddon NewAddon() => new()
+    {
+        InternalName = "GtkBattleText",
+        Title        = T("Title"),
+        Subtitle     = _characterId == 0 ? null : Svc.PlayerState.CharacterName,
+        Size         = new Vector2(900f, 736f),
+        Tweak        = this,
+    };
+
+    protected override void OnLanguageChanged()
+    {
+        if (State == TweakState.Enabled) Rebuild(ref _addon, NewAddon);
     }
+
+    protected override IReadOnlyList<string> CommandNames => ["/gbt", "/goblinbattletext"];
+
+    protected override void OnCommand() => _addon?.Toggle();
 
     /// <summary>The options were edited: they apply at once and are saved once the user stops changing them.</summary>
     internal void Changed() => _saveAt = DateTime.UtcNow + SaveDelay;
@@ -739,6 +748,9 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                 Settings.Mitigation  = defaults.Mitigation;
                 Settings.ShowDefended = defaults.ShowDefended;
                 Settings.Font       = defaults.Font;
+                Settings.OutlineEnabled   = defaults.OutlineEnabled;
+                Settings.OutlineThickness = defaults.OutlineThickness;
+                colors.Outline            = DefaultColors.Outline;
 
                 colors.OutgoingDamage = DefaultColors.OutgoingDamage;
                 colors.IncomingDamage = DefaultColors.IncomingDamage;
@@ -861,6 +873,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         colors.DebuffEnd      = Kept(colors.DebuffEnd,      source.DebuffEnd,      DefaultColors.DebuffEnd);
         colors.Cooldown       = Kept(colors.Cooldown,       source.Cooldown,       DefaultColors.Cooldown);
         colors.Action         = Kept(colors.Action,         source.Action,         DefaultColors.Action);
+        colors.Outline        = Kept(colors.Outline,        source.Outline,        DefaultColors.Outline);
+        Settings.OutlineThickness = Math.Clamp(Settings.OutlineThickness, 1, BattleTextAreaNode.MaxOutline);
 
         foreach (var kind in Enum.GetValues<BattleTextHighlight>())
         {

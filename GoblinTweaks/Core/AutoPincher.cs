@@ -65,6 +65,14 @@ internal sealed unsafe class AutoPincher
     /// <summary>True when the last run went through every item (not stopped or timed out).</summary>
     public bool LastRunCompleted { get; private set; }
 
+    /// <summary>Counts of the current or last run.</summary>
+    public int Repriced => _repriced;
+    public int Unchanged => _unchanged;
+    public int Skipped => _skipped;
+
+    /// <summary>Name shown in the end-of-run message (the retainer being worked on during a tour); null for none.</summary>
+    public string? Label { get; set; }
+
     /// <summary>Starts repricing the open retainer's listings. Returns false (and says why) if it cannot start.</summary>
     public bool Start()
     {
@@ -104,7 +112,7 @@ internal sealed unsafe class AutoPincher
 
         _step = Step.Idle;
         LastRunCompleted = false;
-        _say($"{reason}|{_repriced}|{_unchanged}|{_skipped}");
+        _say($"{reason}|{_repriced}|{_unchanged}|{_skipped}|{Label}");
         Ended?.Invoke();
     }
 
@@ -254,7 +262,7 @@ internal sealed unsafe class AutoPincher
     {
         _step = Step.Idle;
         LastRunCompleted = true;
-        _say($"done|{_repriced}|{_unchanged}|{_skipped}");
+        _say($"done|{_repriced}|{_unchanged}|{_skipped}|{Label}");
         Ended?.Invoke();
     }
 

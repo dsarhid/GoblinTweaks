@@ -157,6 +157,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         _selectedEntry  = null;
         _pendingRefresh = true;
         BuildLayout();
+        BuildSettingsButton();
 
         // Route row right-clicks: ingredients → native item menu; recipes → item menu if
         // the result is in your bags, otherwise the native Crafting Log for that recipe.
@@ -261,7 +262,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         _bottomShowing    = null;
         _bottomCrafted    = null;
 
-        _helpAddon?.Close();
+        _helpAddon?.Dispose();
         _helpAddon = null;
 
         RecipeRowNode.OnItemRightClick     = null;
@@ -890,7 +891,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         _bottomShowing.AttachNode(this);
     }
 
-    private void OpenHelp()
+    internal void OpenHelp()
     {
         _helpAddon ??= new CraftingHelpAddon
         {
@@ -898,7 +899,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             Title        = CraftLoc.Get("help.title"),
             Size         = new Vector2(780f, 560f),
         };
-        _helpAddon.Open();
+        _helpAddon.Toggle();
     }
 
     private void UpdateBottomBar()
@@ -1156,6 +1157,20 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     }
 
     /// <summary>Section header in FFXIV's condensed title font (TrumpGothic), like "CATEGORY".</summary>
+    /// <summary>The gear in the title bar, left of the window's close button: opens the settings window.</summary>
+    private void BuildSettingsButton()
+    {
+        var gear = new CircleButtonNode
+        {
+            Icon        = CircleButtonIcon.GearCog,
+            Position    = new Vector2(Size.X - 70f, 9f),
+            Size        = new Vector2(24f, 24f),
+            TextTooltip = CraftLoc.Get("tip.settings"),
+        };
+        gear.OnClick = () => Tweak?.ToggleSettings();
+        gear.AttachNode(this);
+    }
+
     private TextNode MakeTitle(float x, float y, float w, string text)
     {
         var node = new TextNode
@@ -1164,8 +1179,9 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             Position  = new Vector2(x, y),
             Size      = new Vector2(w, 24f),
             TextColor = CategoryGold,
-            FontType  = FontType.TrumpGothic,
-            FontSize  = 20,
+            FontType  = UiFont.Heading,
+            FontSize  = UiFont.Size(20),
+            CharSpacing = UiFont.Spacing,
         };
         node.AttachNode(this);
         return node;

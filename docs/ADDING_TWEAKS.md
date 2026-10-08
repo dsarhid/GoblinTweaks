@@ -50,8 +50,6 @@ Inherit from `Tweak<TOptions>`; the options class is saved as JSON automatically
 New fields with default values never need a migration.
 
 ```csharp
-using GoblinTweaks.UI;
-
 [Tweak(TweakCategory.Interface)]
 public sealed class MyTweak : Tweak<MyTweak.Options>
 {
@@ -60,15 +58,17 @@ public sealed class MyTweak : Tweak<MyTweak.Options>
         public bool Compact { get; set; } = true;
     }
 
-    public override void DrawSettings()
-    {
-        var compact = Settings.Compact;
-        if (Widgets.SettingToggle(T("Compact"), T("Compact.Help"), ref compact))
+    // Simple on/off options appear in the tweak's panel in the main window (native UI).
+    public override IReadOnlyList<TweakToggle> Toggles =>
+    [
+        new(T("Compact"), T("Compact.Help"), () => Settings.Compact, on =>
         {
-            Settings.Compact = compact;
+            Settings.Compact = on;
             SaveSettings(); // saves and calls OnSettingsChanged()
-        }
-    }
+        }),
+    ];
+
+    // Buttons (e.g. to open a native window of the tweak) go in `Buttons`, and a chat command in `CommandHint`.
     // Enable / Disable as above
 }
 ```

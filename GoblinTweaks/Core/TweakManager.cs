@@ -123,6 +123,7 @@ public sealed class TweakManager : IDisposable
         try
         {
             tweak.Enable();
+            tweak.RegisterCommands();
             tweak.State = TweakState.Enabled;
             tweak.ErrorMessage = null;
             Svc.Log.Debug("Enabled {tweak}", tweak.Id);
@@ -154,6 +155,15 @@ public sealed class TweakManager : IDisposable
         catch (Exception ex)
         {
             Svc.Log.Error(ex, "Error while disabling {tweak}", tweak.Id);
+        }
+
+        try
+        {
+            tweak.Cleanup();
+        }
+        catch (Exception ex)
+        {
+            Svc.Log.Error(ex, "Error while cleaning up {tweak}", tweak.Id);
         }
     }
 

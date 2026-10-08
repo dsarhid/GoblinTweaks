@@ -4,6 +4,7 @@ using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using GoblinTweaks.Core;
+using GoblinTweaks.Localization;
 
 namespace GoblinTweaks.Tweaks;
 
@@ -30,6 +31,12 @@ public sealed class RetainerVentureTimer : Tweak
         _entry?.Remove();
         _entry = null;
     }
+
+    public override TweakButton? HelpButton => new(Loc.Get("Window.Help"), null, ToggleHelpWindow);
+
+    protected override IReadOnlyList<string> CommandNames => ["/grvt", "/gretimer"];
+
+    protected override void OnCommand() => ToggleHelpWindow();
 
     private void OnUpdate(IFramework _)
     {

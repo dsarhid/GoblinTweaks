@@ -209,7 +209,7 @@ internal sealed unsafe class SellRunner
             // The game ignoring "Put Up for Sale" for one stack (for example Market Prohibited items) must not stop the whole run.
             if (_step is Step.OpenArmoury or Step.WaitItemMenu or Step.WaitPriceWindow && _task is not null)
             {
-                Skip("the game would not put it up for sale (Market Prohibited?)");
+                Skip("WouldNot");
                 return;
             }
 
@@ -301,7 +301,7 @@ internal sealed unsafe class SellRunner
                 var agent = AgentInventoryContext.Instance();
                 if (agent == null || agent->ContextItemCount <= 0 || agent->TargetInventoryId != _task!.Type || agent->TargetInventorySlotId != _task.Slot)
                     return;
-                if (agent->IsContextItemDisabled(PutUpForSale)) { Skip("not allowed on the Market Board (Market Prohibited)"); return; }
+                if (agent->IsContextItemDisabled(PutUpForSale)) { Skip("NotAllowed"); return; }
                 AddonCallback.Fire(context, 0, PutUpForSale, 0u, null, null);
                 Enter(Step.WaitPriceWindow);
                 break;
@@ -310,7 +310,7 @@ internal sealed unsafe class SellRunner
                 if (!AddonCallback.Ready(PriceAddon, out var price)) return;
                 var prepared = PrepareListing((AddonRetainerSell*)price);
                 if (prepared is null) return;                          // the window has not filled in its item yet
-                if (prepared == false) { Skip("unexpected item"); return; }
+                if (prepared == false) { Skip("Unexpected"); return; }
                 Enter(Step.Compare);
                 break;
 
@@ -345,7 +345,7 @@ internal sealed unsafe class SellRunner
                 {
                     AddonCallback.Fire(price, PriceCancel);
                     _skipped++;
-                    _problems.Add($"{_task.Name}: no price reference");
+                    _problems.Add($"{_task.Name}|NoPrice");
                     _confirmed = false;
                 }
 
@@ -373,13 +373,13 @@ internal sealed unsafe class SellRunner
                 else if (_verifySeen != DateTime.MinValue)
                 {
                     _skipped++;
-                    _problems.Add($"{_task!.Name}: the server refused the listing");
+                    _problems.Add($"{_task!.Name}|Refused");
                     Enter(Step.NextItem);
                 }
                 else if (DateTime.UtcNow > _verifyUntil)
                 {
                     _skipped++;
-                    _problems.Add($"{_task!.Name}: the game did not add the listing");
+                    _problems.Add($"{_task!.Name}|NotAdded");
                     Enter(Step.NextItem);
                 }
                 break;
@@ -473,7 +473,7 @@ internal sealed unsafe class SellRunner
         var hq        = slot != null && (slot->Flags & InventoryItem.ItemFlags.HighQuality) != 0;
         if (slot == null || slot->ItemId != task.ItemId || hq != task.Hq)
         {
-            Skip("no longer there");
+            Skip("Gone");
             return;
         }
 
@@ -537,7 +537,7 @@ internal sealed unsafe class SellRunner
         if (AddonCallback.Ready(ContextAddon, out var context)) context->Close(true);
 
         _skipped++;
-        _problems.Add($"{_task?.Name}: {reason}");
+        _problems.Add($"{_task?.Name}|{reason}");
         Enter(Step.NextItem);
     }
 

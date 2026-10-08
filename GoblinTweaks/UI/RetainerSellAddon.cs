@@ -53,6 +53,7 @@ internal sealed unsafe class RetainerSellAddon : NativeAddon
     private string?            _shownTabId;
 
     private bool     _pendingReload = true;
+    private bool     _scrollToTop;
     private DateTime _nextRefresh   = DateTime.MinValue;
 
     private int SellQuantityOf(SellableItem item)
@@ -149,14 +150,18 @@ internal sealed unsafe class RetainerSellAddon : NativeAddon
                 var alive = items.Select(i => i.Key).ToHashSet();
                 _selected.RemoveWhere(k => k.StartsWith(_tabs[_activeTab].Id + "|") && !alive.Contains(k));
 
-                // Reassigning the list resets its scroll, so only do it when something changed.
-                var tabId = _tabs[_activeTab].Id;
-                if (_shownTabId != tabId || !_shown.SequenceEqual(items))
+                var tabId      = _tabs[_activeTab].Id;
+                var tabChanged = _shownTabId != tabId;
+                if (tabChanged || !_shown.SequenceEqual(items))
                 {
                     _shownTabId       = tabId;
                     _shown            = items;
                     _list.OptionsList = items;
+
+                    if (tabChanged || _scrollToTop) _list.ResetScroll();
                 }
+
+                _scrollToTop = false;
             }
 
             UpdateCount();
@@ -253,6 +258,10 @@ internal sealed unsafe class RetainerSellAddon : NativeAddon
             ItemSpacing              = 2f,
             AllowMultipleSelection   = false,
             ShowNoResultsPlaceholder = true,
+
+            // The prices arrive while the user scrolls and the list is set again each time: it keeps its place.
+            // It goes back to the top only when the tab or the sorting changes (see Reload).
+            AutoResetScroll          = false,
             OptionsList              = [],
         };
         _list.AttachNode(this);
@@ -368,6 +377,7 @@ internal sealed unsafe class RetainerSellAddon : NativeAddon
 
         UpdateHeaders();
         _pendingReload = true;
+        _scrollToTop   = true;
     }
 
     /// <summary>Marks the sorted column with an arrow (^ ascending, v descending) and a brighter color.</summary>

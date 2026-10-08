@@ -14,6 +14,7 @@ internal sealed unsafe class AutoGoblinRetainerSettingsAddon : NativeAddon
 
     private const float InputW = 150f;
     private const float RowH   = 74f;
+    private const float LanguageRowH = 40f;
 
     public AutoGoblinRetainer? Tweak { get; init; }
 
@@ -31,6 +32,8 @@ internal sealed unsafe class AutoGoblinRetainerSettingsAddon : NativeAddon
         var c = ContentStartPosition;
         var y = c.Y + 6f;
         var options = Tweak.Current;
+
+        y += LanguageRowH;
 
         _undercut = AddNumber(c, ref y, "Setting.Undercut", "Setting.Undercut.Help", 0, 1_000_000, 1, options.UndercutAmount,
             value => options.UndercutAmount = value);
@@ -51,6 +54,9 @@ internal sealed unsafe class AutoGoblinRetainerSettingsAddon : NativeAddon
         };
         _pinchAfter.OnClick = isChecked => Tweak.PinchAfter = isChecked;
         _pinchAfter.AttachNode(this);
+
+        // Last, so its list opens over the options.
+        TweakLanguageSelect.Add(this, Tweak, new Vector2(c.X + ContentSize.X - TweakLanguageSelect.Width - 6f, c.Y + 6f));
     }
 
     protected override void OnUpdate(AtkUnitBase* addon)

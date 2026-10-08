@@ -18,6 +18,12 @@ public sealed class PluginConfig
 
     /// <summary>Plugin language ("en" or "es"). Independent from the Dalamud language.</summary>
     public string Language { get; set; } = "en";
+
+    /// <summary>Language of the windows of each tweak that has its own (tweak id -> "en" / "es"); a tweak that is not here follows <see cref="Language"/>.</summary>
+    public Dictionary<string, string> TweakLanguages { get; set; } = [];
+
+    /// <summary>Font of the titles and headings of the GoblinTweaks windows (a key of <c>UiFont.Choices</c>).</summary>
+    public string FontFamily { get; set; } = "Jupiter";
 }
 
 /// <summary>
