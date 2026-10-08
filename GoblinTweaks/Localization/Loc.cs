@@ -16,9 +16,6 @@ public static class Loc
     [
         ("en", "English"),
         ("es", "Español"),
-        ("de", "Deutsch"),
-        ("fr", "Français"),
-        ("ja", "日本語"),
     ];
 
     private static readonly Dictionary<string, Dictionary<string, string>> Texts = [];
@@ -58,6 +55,15 @@ public static class Loc
             return text;
 
         return defaultText ?? key;
+    }
+
+    /// <summary>The text of <paramref name="key"/> in a given language (English if it has no such text), whatever the plugin language is.</summary>
+    public static string GetIn(string language, string key)
+    {
+        if (Texts.TryGetValue(language, out var texts) && texts.TryGetValue(key, out var text))
+            return text;
+
+        return Texts.TryGetValue(DefaultLanguage, out var fallback) && fallback.TryGetValue(key, out text) ? text : key;
     }
 
     public static string Format(string key, params object[] args) => string.Format(Get(key), args);

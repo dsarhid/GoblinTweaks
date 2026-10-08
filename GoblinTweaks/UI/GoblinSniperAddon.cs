@@ -1,5 +1,4 @@
 using System.Numerics;
-using Dalamud.Bindings.ImGui;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using GoblinTweaks.Tweaks;
 using GoblinTweaks.UI.Nodes;
@@ -149,7 +148,7 @@ internal unsafe class GoblinSniperAddon : NativeAddon
         _list           = null;
         _shownDeals     = null;
 
-        _helpAddon?.Close();
+        _helpAddon?.Dispose();
         _helpAddon = null;
 
         SniperRowNode.SubText = null;
@@ -337,7 +336,7 @@ internal unsafe class GoblinSniperAddon : NativeAddon
         _count.AttachNode(this);
     }
 
-    private void OpenHelp()
+    internal void OpenHelp()
     {
         _helpAddon ??= new TextHelpAddon
         {
@@ -346,7 +345,7 @@ internal unsafe class GoblinSniperAddon : NativeAddon
             Size         = new Vector2(860f, 600f),
             Pages        = [.. HelpTopics.Select(topic => (Tweak.Text($"Help.{topic}.Title"), Tweak.Text($"Help.{topic}.Text")))],
         };
-        _helpAddon.Open();
+        _helpAddon.Toggle();
     }
 
     // ── Data ──────────────────────────────────────────────────────────────────
@@ -463,7 +462,7 @@ internal unsafe class GoblinSniperAddon : NativeAddon
 
     private void CopyName(SniperDeal deal)
     {
-        ImGui.SetClipboardText(deal.Name);
+        GoblinTweaks.Native.ClipboardHelper.SetText(deal.Name);
         _notice      = string.Format(Tweak.Text("Window.Copied"), deal.Name);
         _noticeUntil = DateTime.UtcNow.AddSeconds(4);
         _nextStatus  = DateTime.MinValue;

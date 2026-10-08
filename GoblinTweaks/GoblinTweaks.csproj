@@ -4,7 +4,7 @@
 -->
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
-    <Version>1.0.14</Version>
+    <Version>1.1.0</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -24,6 +24,8 @@
   <ItemGroup>
     <EmbeddedResource Include="Localization\*.json" />
     <EmbeddedResource Include="Assets\Icon.png" />
+    <EmbeddedResource Include="Assets\Screenshots\*.png" LogicalName="Screenshots.%(Filename)%(Extension)" />
+    <EmbeddedResource Include="Assets\IconTweaks\*.png" LogicalName="Screenshots.%(Filename)%(Extension)" />
     <!-- Icon shown by Dalamud for dev builds -->
     <None Include="Assets\Icon.png" Link="images\icon.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

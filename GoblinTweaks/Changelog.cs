@@ -1,3 +1,5 @@
+using GoblinTweaks.Localization;
+
 namespace GoblinTweaks;
 
 /// <summary>One version entry in the plugin changelog.</summary>
@@ -5,7 +7,24 @@ public sealed record ChangelogEntry(
     string   Version,
     string   Date,
     string   Summary,
-    string[] Changes);
+    string[] Changes)
+{
+    private (string Summary, string[] Changes)? Spanish
+        => Loc.CurrentLanguage == "es" && ChangelogEs.Entries.TryGetValue(Version, out var entry) ? entry : null;
+
+    /// <summary>The summary in the plugin language (English when there is no Spanish text for this version).</summary>
+    public string LocalSummary => Spanish?.Summary ?? Summary;
+
+    /// <summary>The changes in the plugin language; the New/Fix/Change labels follow it too.</summary>
+    public IReadOnlyList<string> LocalChanges
+        => Spanish is { } es ? es.Changes.Select(Label).ToArray() : Changes;
+
+    private static string Label(string change)
+        => change.StartsWith("New:", StringComparison.Ordinal) ? "Nuevo:" + change[4..]
+         : change.StartsWith("Fix:", StringComparison.Ordinal) ? "Arreglo:" + change[4..]
+         : change.StartsWith("Change:", StringComparison.Ordinal) ? "Cambio:" + change[7..]
+         : change;
+}
 
 /// <summary>
 /// All GoblinTweaks releases, newest first.
@@ -15,6 +34,20 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.1.0", "2026-10-08",
+            "New native main window with icons, screenshots and chat commands for every tweak; each tweak has its own language.",
+            [
+                "Change: the whole interface is now native to the game: a new main window with a tweak list, tabs, search, and a detail panel with description, commands, settings and screenshots",
+                "New: every tweak has an icon, and up to three screenshots that open big in their own window, with next and previous buttons",
+                "New: chat commands for every tweak, a short one and a long one (for example /gwp and /gweapon, /gbt and /goblinbattletext), listed in the detail panel",
+                "New: Retainer Venture Timer, Squadron Timer and Recipe List marks have a help window that explains how they work and where to look (the Server Info Bar)",
+                "New: AutoGoblinRetainer, Goblin Battle Text and Weapon pose per job have their own language, independent from the GoblinTweaks one, as Crafting Materials and GoblinSniper already had",
+                "New: Crafting Materials has a gear button in its title bar that opens its settings",
+                "Change: richer descriptions for every tweak, Jupiter as the default font, and only English and Spanish are shipped",
+                "Fix: the sell list of AutoGoblinRetainer jumped back to the top each time the Universalis prices arrived",
+                "Fix: the game could crash after switching tweaks on and off many times in a row",
+            ]),
+
         new("1.0.14", "2026-10-08",
             "New tweak AutoGoblinRetainer: reprices and lists your retainers' Market Board items for you.",
             [

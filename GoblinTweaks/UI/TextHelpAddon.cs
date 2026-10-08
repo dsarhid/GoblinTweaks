@@ -74,8 +74,9 @@ internal unsafe class TextHelpAddon : NativeAddon
                 Position  = new Vector2(contentX, c.Y + 6f),
                 Size      = new Vector2(contentW, 28f),
                 TextColor = TitleGold,
-                FontType  = FontType.TrumpGothic,
-                FontSize  = 24,
+                FontType  = UiFont.Heading,
+                FontSize  = UiFont.Size(24),
+                CharSpacing = UiFont.Spacing,
             };
             _title.AttachNode(this);
 

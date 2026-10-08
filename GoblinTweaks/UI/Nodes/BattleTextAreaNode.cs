@@ -97,15 +97,74 @@ internal sealed class BattleTextAreaNode : OverlayNode
     private const float PartGap     = 4f;
     private const float MaxDelta    = 0.1f;
 
+    /// <summary>Widest outline the settings offer, in pixels.</summary>
+    public const int MaxOutline = 4;
+
     private static readonly Vector4 Outline = new(0.05f, 0.05f, 0.05f, 1f);
 
     /// <summary>One of the game's fonts and the style it is drawn in.</summary>
     private readonly record struct Typeface(FontType Type, bool Italic = false);
 
+    /// <summary>
+    /// A thicker outline for a text: the same text drawn again in the outline color, shifted around a circle,
+    /// behind it. The game's own edge is one pixel wide and cannot be made wider.
+    /// </summary>
+    private sealed class Outlined(ResNode layer)
+    {
+        private readonly List<TextNode> _copies = [];
+
+        public void Hide()
+        {
+            foreach (var copy in _copies)
+                copy.IsVisible = false;
+        }
+
+        /// <summary>Draws <paramref name="text"/> around <paramref name="source"/>, which must already be laid out.</summary>
+        public void Update(TextNode source, string? text, Typeface font, float fontSize, Vector4 color, int thickness)
+        {
+            if (string.IsNullOrEmpty(text) || !source.IsVisible)
+            {
+                Hide();
+                return;
+            }
+
+            var count = thickness <= 2 ? 8 : 16;
+            while (_copies.Count < count)
+            {
+                var copy = MakeText(layer);
+                copy.RemoveTextFlags(TextFlags.Edge);
+                _copies.Add(copy);
+            }
+
+            for (var i = 0; i < _copies.Count; i++)
+            {
+                var copy = _copies[i];
+                copy.IsVisible = i < count;
+                if (!copy.IsVisible) continue;
+
+                if (font.Italic) copy.AddTextFlags(TextFlags.Italic);
+                else             copy.RemoveTextFlags(TextFlags.Italic);
+
+                var angle = MathF.Tau * i / count;
+                copy.FontType  = font.Type;
+                copy.FontSize  = (uint)fontSize;
+                copy.TextColor = color;
+                copy.String    = text;
+                copy.Size      = source.Size;
+                copy.Position  = source.Position + new Vector2(MathF.Cos(angle), MathF.Sin(angle)) * thickness;
+            }
+        }
+    }
+
     /// <summary>The nodes of one message: its parts are laid out inside the container, which is what moves.</summary>
     private sealed class Slot
     {
         public required ResNode Container { get; init; }
+
+        /// <summary>Holds the outline copies of the texts; first in the container, so they are drawn behind everything.</summary>
+        public required ResNode OutlineLayer { get; init; }
+        public Outlined? NameOutline;
+        public Outlined? NumberOutline;
         public required TextNode Name { get; init; }
         public required TextNode Number { get; init; }
         public required IconImageNode Icon { get; init; }
@@ -152,6 +211,12 @@ internal sealed class BattleTextAreaNode : OverlayNode
                 clip.IsVisible = false;
         }
 
+        public void SetOutline(Vector4 color)
+        {
+            foreach (var text in _texts)
+                text.TextOutlineColor = color;
+        }
+
         public void Show(string text, Typeface font, float fontSize, float height, Vector4 top, Vector4 bottom)
         {
             _height = height;
@@ -193,9 +258,13 @@ internal sealed class BattleTextAreaNode : OverlayNode
             var container = new ResNode { IsVisible = false };
             container.AttachNode(this);
 
+            var layer = new ResNode();
+            layer.AttachNode(container);
+
             _free.Push(new Slot
             {
                 Container = container,
+                OutlineLayer = layer,
                 Name      = MakeText(container),
                 Number    = MakeText(container),
                 Icon      = MakeIcon(container),
@@ -416,7 +485,8 @@ internal sealed class BattleTextAreaNode : OverlayNode
         {
             SetName(slot.Name, showName ? message : null, font, fontSize, height);
         }
-        SetText(slot.Number, hidden.Contains(GoblinBattleText.BattleTextPart.Number) ? null : Format(message), font, fontSize, height, message.Color, message.GradientVertical ? null : message.ColorEnd);
+        var numberText = hidden.Contains(GoblinBattleText.BattleTextPart.Number) ? null : Format(message);
+        SetText(slot.Number, numberText, font, fontSize, height, message.Color, message.GradientVertical ? null : message.ColorEnd);
 
         // The text of the number is there for its size; its bands are what shows.
         var numberBands = slot.Number.IsVisible && message is { GradientVertical: true, ColorEnd: not null };
@@ -424,7 +494,7 @@ internal sealed class BattleTextAreaNode : OverlayNode
         {
             var numberEnd = message.ColorEnd!.Value;
             slot.NumberBands ??= new Banded(slot.Container);
-            slot.NumberBands.Show(Format(message), font, fontSize, height, message.Color, numberEnd);
+            slot.NumberBands.Show(numberText!, font, fontSize, height, message.Color, numberEnd);
             slot.Number.Alpha = 0f;
         }
 
@@ -453,6 +523,8 @@ internal sealed class BattleTextAreaNode : OverlayNode
         if (nameBands)
             slot.NameBands!.Place(slot.Name.Position.X + nameOffset);
 
+        ApplyOutline(slot, message, font, fontSize, showName, nameBands, numberText);
+
         slot.Width  = Math.Max(0f, x - PartGap);
         slot.Height = height;
 
@@ -460,6 +532,39 @@ internal sealed class BattleTextAreaNode : OverlayNode
         container.Size      = new Vector2(slot.Width, height);
         container.Origin    = new Vector2(slot.Width / 2f, height / 2f);
         container.IsVisible = true;
+    }
+
+    /// <summary>
+    /// The outline of the user's choice, once the parts are laid out. Off, the texts keep the game's own dark edge;
+    /// on, that edge takes the outline color and the copies behind the text widen it.
+    /// </summary>
+    private void ApplyOutline(Slot slot, BattleTextMessage message, Typeface font, float fontSize, bool showName, bool nameBands, string? numberText)
+    {
+        var on    = Options.OutlineEnabled;
+        var color = on ? Options.Colors.Outline with { W = 1f } : Outline;
+
+        slot.Name.TextOutlineColor   = color;
+        slot.Number.TextOutlineColor = color;
+        slot.NameBands?.SetOutline(color);
+        slot.NumberBands?.SetOutline(color);
+
+        if (!on)
+        {
+            slot.NameOutline?.Hide();
+            slot.NumberOutline?.Hide();
+            return;
+        }
+
+        // With a gradient verdict, only the name is drawn: the bands of the verdict keep the game's edge.
+        var name = !showName ? null
+            : nameBands || message.Verdict is null || string.IsNullOrEmpty(message.ActionName) ? message.ActionName
+            : message.ActionName + " " + message.Verdict;
+
+        var thickness = Math.Clamp(Options.OutlineThickness, 1, MaxOutline);
+        slot.NameOutline   ??= new Outlined(slot.OutlineLayer);
+        slot.NumberOutline ??= new Outlined(slot.OutlineLayer);
+        slot.NameOutline.Update(slot.Name, name, font, fontSize, color, thickness);
+        slot.NumberOutline.Update(slot.Number, numberText, font, fontSize, color, thickness);
     }
 
     /// <summary>The action name in the color of the message, then the verdict, if any, in its own color or gradient.</summary>

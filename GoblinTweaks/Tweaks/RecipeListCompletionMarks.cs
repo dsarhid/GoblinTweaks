@@ -4,6 +4,7 @@ using Dalamud.Game.Text.SeStringHandling;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using GoblinTweaks.Core;
+using GoblinTweaks.Localization;
 using GoblinTweaks.Native;
 using GoblinTweaks.UI;
 using CraftTypeRow = Lumina.Excel.Sheets.CraftType;
@@ -63,15 +64,20 @@ public sealed unsafe class RecipeListCompletionMarks : Tweak<RecipeListCompletio
         _craftTypes.Clear();
     }
 
-    public override void DrawSettings()
-    {
-        var anyClass = Settings.AnyClass;
-        if (Widgets.SettingToggle(T("AnyClass"), T("AnyClass.Help"), ref anyClass))
+    public override TweakButton? HelpButton => new(Loc.Get("Window.Help"), null, ToggleHelpWindow);
+
+    protected override IReadOnlyList<string> CommandNames => ["/grm", "/gmarks"];
+
+    protected override void OnCommand() => ToggleHelpWindow();
+
+    public override IReadOnlyList<TweakToggle> Toggles =>
+    [
+        new(T("AnyClass"), T("AnyClass.Help"), () => Settings.AnyClass, on =>
         {
-            Settings.AnyClass = anyClass;
+            Settings.AnyClass = on;
             SaveSettings();
-        }
-    }
+        }),
+    ];
 
     private void BuildIndex()
     {

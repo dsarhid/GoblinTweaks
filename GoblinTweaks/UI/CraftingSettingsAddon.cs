@@ -17,7 +17,7 @@ internal sealed class CraftingSettingsAddon : SettingsPanelAddon
 
         LanguageSelect(origin, width, Tweak.Text("Language"), Tweak.Text("Language.Help"), Tweak.LanguageChoices,
             () => options.DataLanguage,
-            code => { options.DataLanguage = code; Tweak.SaveCurrent(); });
+            code => { options.DataLanguage = code; Tweak.SaveCurrent(); Tweak.RefreshSettingsWindow(); });
     }
 
     protected override void Build()

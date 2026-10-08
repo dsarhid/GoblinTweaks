@@ -140,7 +140,7 @@ internal unsafe class BattleTextAddon : NativeAddon
         _areaOrder  = null;
         _areaSwitch = null;
 
-        _helpAddon?.Close();
+        _helpAddon?.Dispose();
         _helpAddon = null;
 
         base.OnFinalize(addon);
@@ -198,7 +198,7 @@ internal unsafe class BattleTextAddon : NativeAddon
         {
             String    = Tweak.Text("Preview.Hint"),
             Position  = new Vector2(pos.X + 38f, pos.Y + 13f),
-            Size      = new Vector2(width - 50f - DefaultsW, 18f),
+            Size      = new Vector2(width - 50f - DefaultsW - TweakLanguageSelect.Width - 12f, 18f),
             TextColor = MutedGrey,
             FontSize  = 13,
         }.AttachNode(this);
@@ -214,6 +214,8 @@ internal unsafe class BattleTextAddon : NativeAddon
         };
         defaults.OnClick = RestoreDefaults;
         defaults.AttachNode(this);
+
+        TweakLanguageSelect.Add(this, Tweak, new Vector2(pos.X + width - DefaultsW - 12f - TweakLanguageSelect.Width, pos.Y + 8f));
     }
 
     /// <summary>Puts the tab on screen (in the Areas tab, the area on screen) back to its defaults and shows them in its controls.</summary>
@@ -226,7 +228,7 @@ internal unsafe class BattleTextAddon : NativeAddon
             refresh();
     }
 
-    private void OpenHelp()
+    internal void OpenHelp()
     {
         _helpAddon ??= new TextHelpAddon
         {
@@ -235,7 +237,7 @@ internal unsafe class BattleTextAddon : NativeAddon
             Size         = new Vector2(860f, 700f),
             Pages        = [.. HelpTopics.Select(topic => (Tweak.Text($"Help.{topic}.Title"), Tweak.Text($"Help.{topic}.Text")))],
         };
-        _helpAddon.Open();
+        _helpAddon.Toggle();
     }
 
     // ── Pages ───────────────────────────────────────────────────────────────────
@@ -269,6 +271,10 @@ internal unsafe class BattleTextAddon : NativeAddon
         AddDropDownCell(1, "Font", "Font", () => options.Font, value => options.Font = value);
         _y += RowH;
 
+        AddCheckCell(0, "OutlineEnabled", () => options.OutlineEnabled, value => options.OutlineEnabled = value);
+        AddSliderCell(1, "OutlineThickness", 1, BattleTextAreaNode.MaxOutline, 1, () => options.OutlineThickness, value => options.OutlineThickness = value);
+        _y += RowH;
+
         AddHeader("Colors");
 
         AddColorCell(0, "Color.OutgoingDamage", () => colors.OutgoingDamage, GoblinBattleText.DefaultColors.OutgoingDamage, value => colors.OutgoingDamage = value);
@@ -289,6 +295,9 @@ internal unsafe class BattleTextAddon : NativeAddon
 
         AddColorCell(0, "Color.Mp",     () => colors.Mp,     GoblinBattleText.DefaultColors.Mp,     value => colors.Mp = value);
         AddColorCell(1, "Color.Action", () => colors.Action, GoblinBattleText.DefaultColors.Action, value => colors.Action = value);
+        _y += RowH;
+
+        AddColorCell(0, "Color.Outline", () => colors.Outline, GoblinBattleText.DefaultColors.Outline, value => colors.Outline = value);
         _y += RowH;
     }
 
