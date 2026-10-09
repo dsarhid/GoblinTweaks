@@ -8,6 +8,13 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.1.1"] = (
+            "Crafting Materials recuerda el cofre de la FC entre sesiones y apaga los slots del cofre que no son de la receta elegida.",
+            [
+                "New: con una receta elegida en Crafting Materials, los slots del cofre de la FC sin un ingrediente de esa receta se apagan, así los que necesitás se destacan",
+                "Fix: el resaltado del cofre de la FC no hacía nada porque se interpretaba mal su diseño (50 slots por página, pestañas en vertical) — corregido",
+                "Fix: el contenido del cofre de la FC se perdía entre sesiones, y al abrir el cofre sin entrar a ninguna pestaña (las recetas bajaban de 212 a 53) — ahora se conserva página por página",
+            ]),
         ["1.1.0"] = (
             "Ventana principal nativa nueva con iconos, capturas y comandos de cada tweak; cada tweak tiene su propio idioma.",
             [
