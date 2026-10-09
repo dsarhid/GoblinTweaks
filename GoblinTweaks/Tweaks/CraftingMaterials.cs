@@ -45,6 +45,22 @@ public sealed class InventorySnapshot
     /// <summary>Where each item sits in the FC chest, as 1-based (tab, slot) pairs.</summary>
     public readonly Dictionary<uint, List<(int Tab, int Slot)>>        FCChestSlots    = new();
     public readonly List<(string Name, Dictionary<uint, int> Items, Dictionary<uint, int> ItemsHQ)> RetainerDetails = [];
+    /// <summary>Raw contents per FC chest page (1-based), so pages can be kept or replaced one by one. The aggregates above derive from it.</summary>
+    public readonly Dictionary<int, List<(int Slot, uint Id, int Qty, bool Hq)>> FCChestPages = new();
+
+    /// <summary>Rebuilds FCChest / FCChestHQ / FCChestSlots from FCChestPages.</summary>
+    public void RebuildFCChest()
+    {
+        FCChest.Clear(); FCChestHQ.Clear(); FCChestSlots.Clear();
+        foreach (var (page, items) in FCChestPages.OrderBy(kv => kv.Key))
+            foreach (var (slot, id, qty, hq) in items)
+            {
+                FCChest[id] = FCChest.GetValueOrDefault(id) + qty;
+                if (hq) FCChestHQ[id] = FCChestHQ.GetValueOrDefault(id) + qty;
+                if (!FCChestSlots.TryGetValue(id, out var list)) FCChestSlots[id] = list = [];
+                list.Add((page, slot));
+            }
+    }
 
     public int Get(uint itemId, InventorySource src) => src switch
     {
@@ -384,7 +400,15 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
                 live.HasSaddlebagData = _cachedSnapshot.HasSaddlebagData;
             }
 
-            if (Settings.IncludeFCChest && !live.HasFCData && _cachedSnapshot.HasFCData)
+            // The chest may be only partly loaded (pages not opened this session): keep the saved copy of every page the game didn't load.
+            if (Settings.IncludeFCChest && _cachedSnapshot.FCChestPages.Count > 0)
+            {
+                foreach (var (page, items) in _cachedSnapshot.FCChestPages)
+                    live.FCChestPages.TryAdd(page, [.. items]);
+                live.RebuildFCChest();
+                live.HasFCData = true;
+            }
+            else if (Settings.IncludeFCChest && !live.HasFCData && _cachedSnapshot.HasFCData)
             {
                 foreach (var (k, v) in _cachedSnapshot.FCChest)   live.FCChest[k]   = v;
                 foreach (var (k, v) in _cachedSnapshot.FCChestHQ) live.FCChestHQ[k] = v;
@@ -414,6 +438,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         public Dictionary<uint, int>  FCChest         { get; set; } = [];
         public Dictionary<uint, int>  FCChestHQ       { get; set; } = [];
         public Dictionary<uint, List<int[]>> FCChestSlots { get; set; } = [];
+        public Dictionary<int, List<long[]>> FCChestPages { get; set; } = [];
         public List<RetainerDetail>   RetainerDetails { get; set; } = [];
 
         public sealed class RetainerDetail
@@ -438,6 +463,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             FCChest         = new(s.FCChest),
             FCChestHQ       = new(s.FCChestHQ),
             FCChestSlots    = s.FCChestSlots.ToDictionary(kv => kv.Key, kv => kv.Value.Select(t => new[] { t.Tab, t.Slot }).ToList()),
+            FCChestPages    = s.FCChestPages.ToDictionary(kv => kv.Key, kv => kv.Value.Select(e => new long[] { e.Slot, e.Id, e.Qty, e.Hq ? 1 : 0 }).ToList()),
             RetainerDetails = s.RetainerDetails
                 .Select(r => new RetainerDetail { Name = r.Name, Items = new(r.Items), ItemsHQ = new(r.ItemsHQ) })
                 .ToList(),
@@ -461,6 +487,8 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             foreach (var (k, v) in FCChest)     s.FCChest[k]     = v;
             foreach (var (k, v) in FCChestHQ)   s.FCChestHQ[k]   = v;
             foreach (var (k, v) in FCChestSlots) s.FCChestSlots[k] = v.Where(a => a.Length == 2).Select(a => (a[0], a[1])).ToList();
+            foreach (var (page, items) in FCChestPages)
+                s.FCChestPages[page] = items.Where(a => a.Length == 4).Select(a => ((int)a[0], (uint)a[1], (int)a[2], a[3] != 0)).ToList();
             foreach (var r in RetainerDetails)
                 s.RetainerDetails.Add((r.Name, new Dictionary<uint, int>(r.Items), new Dictionary<uint, int>(r.ItemsHQ)));
             return s;
@@ -562,6 +590,8 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
 
     // The FC chest containers exist in memory even when the chest was never opened, so only
     // count pages the game reports as loaded; otherwise an empty scan would wipe the saved data.
+    private static readonly HashSet<int> SeenFCPages = [];
+
     private static unsafe bool ScanFCChest(InventorySnapshot snap, InventoryManager* mgr)
     {
         InventoryType[] pages =
@@ -577,22 +607,22 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             var container = mgr->GetInventoryContainer(pages[p]);
             if (container == null || !container->IsLoaded) continue;
 
-            anyLoaded = true;
+                var items = new List<(int, uint, int, bool)>();
             for (var i = 0; i < container->Size; i++)
             {
                 var slot = container->GetInventorySlot(i);
                 if (slot == null || slot->ItemId == 0) continue;
-
-                var id = slot->ItemId;
-                snap.FCChest[id] = snap.FCChest.GetValueOrDefault(id) + (int)slot->Quantity;
-                if ((slot->Flags & InventoryItem.ItemFlags.HighQuality) != 0)
-                    snap.FCChestHQ[id] = snap.FCChestHQ.GetValueOrDefault(id) + (int)slot->Quantity;
-
-                if (!snap.FCChestSlots.TryGetValue(id, out var list))
-                    snap.FCChestSlots[id] = list = [];
-                list.Add((p + 1, i + 1));
+                items.Add((i + 1, slot->ItemId, (int)slot->Quantity, (slot->Flags & InventoryItem.ItemFlags.HighQuality) != 0));
             }
+            // The game reports pages as loaded but empty after a restart and when the chest opens without visiting a tab.
+            // An empty page only counts once we've seen it with items this session (i.e. it was really emptied).
+            if (items.Count > 0) SeenFCPages.Add(p + 1);
+            else if (!SeenFCPages.Contains(p + 1)) continue;
+
+            anyLoaded = true;
+            snap.FCChestPages[p + 1] = items;
         }
+        snap.RebuildFCChest();
         return anyLoaded;
     }
 
