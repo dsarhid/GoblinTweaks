@@ -34,6 +34,13 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.1.1", "2026-10-09",
+            "Crafting Materials remembers your FC chest between sessions, and dims the chest slots that aren't part of the selected recipe.",
+            [
+                "New: with a recipe selected in Crafting Materials, the FC chest slots without an ingredient of that recipe are dimmed, so the ones you need stand out",
+                "Fix: the FC chest highlight did nothing because the chest layout was misread (50 slots per page, vertical tabs) — corrected",
+                "Fix: the FC chest contents were lost between sessions, and when opening the chest without visiting a tab (recipes dropped from 212 to 53) — they are now kept page by page",
+            ]),
         new("1.1.0", "2026-10-08",
             "New native main window with icons, screenshots and chat commands for every tweak; each tweak has its own language.",
             [

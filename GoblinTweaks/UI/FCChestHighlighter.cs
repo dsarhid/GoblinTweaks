@@ -16,14 +16,14 @@ internal sealed unsafe class FCChestHighlighter : IDisposable
 {
     private const string ChestAddon   = "FreeCompanyChest";
     private const int    PageCount    = 5;
-    private const int    SlotsPerPage = 35;
+    private const int    SlotsPerPage = 50;
 
     private static readonly Vector4 Gold = new(1f, 0.85f, 0.2f, 1f);
 
     /// <summary>Supplies the (tab, slot) pairs to mark, 1-based. Null/empty = nothing to mark.</summary>
     public Func<IReadOnlyCollection<(int Tab, int Slot)>>? Source;
 
-    private sealed record Outline(ColorImageNode? Fill, BorderNineGridNode Border);
+    private sealed record Outline(ColorImageNode? Fill, BorderNineGridNode? Border);
 
     private readonly List<Outline> _outlines = [];
     private bool _loggedMismatch;
@@ -56,7 +56,7 @@ internal sealed unsafe class FCChestHighlighter : IDisposable
         foreach (var outline in _outlines)
         {
             outline.Fill?.Dispose();
-            outline.Border.Dispose();
+            outline.Border?.Dispose();
         }
         _outlines.Clear();
     }
@@ -75,6 +75,13 @@ internal sealed unsafe class FCChestHighlighter : IDisposable
             var tabs  = new List<Pointer>();
             Collect(&addon->UldManager, slots, tabs, 0);
 
+            // The window also holds the crystal slots (a different size) and the Crystals/Gil tabs: keep only the item grid and the 5 item tabs.
+            var gridSize = slots.GroupBy(s => (MathF.Round(s.W), MathF.Round(s.H))).OrderByDescending(g => g.Count()).FirstOrDefault()?.Key;
+            if (gridSize is { } size0)
+                slots.RemoveAll(s => (MathF.Round(s.W), MathF.Round(s.H)) != size0);
+            tabs.Sort((a, b) => a.Y.CompareTo(b.Y));
+            if (tabs.Count > PageCount) tabs.RemoveRange(PageCount, tabs.Count - PageCount);
+
             if (slots.Count != SlotsPerPage || tabs.Count != PageCount)
             {
                 Clear();
@@ -82,13 +89,14 @@ internal sealed unsafe class FCChestHighlighter : IDisposable
                 {
                     _loggedMismatch = true;
                     Svc.Log.Warning($"FCChestHighlighter: unexpected chest layout ({slots.Count} slots, {tabs.Count} tabs); highlight disabled.");
+                    Svc.Log.Warning("FCChestHighlighter slots: " + string.Join(" | ", slots.Select(s => $"{s.X:0},{s.Y:0},{s.W:0}x{s.H:0}")));
+                    Svc.Log.Warning("FCChestHighlighter tabs: " + string.Join(" | ", tabs.Select(t => $"{t.X:0},{t.Y:0},{t.W:0}x{t.H:0},{t.Selected}")));
                 }
                 return;
             }
 
             // Order by on-screen position so indexes follow the visual grid / tab order.
             slots.Sort((a, b) => Compare(a, b, rowTolerance: 4f));
-            tabs .Sort((a, b) => a.X.CompareTo(b.X));
 
             var currentTab = -1;
             for (var i = 0; i < tabs.Count; i++)
@@ -99,9 +107,14 @@ internal sealed unsafe class FCChestHighlighter : IDisposable
                 if (tab >= 1 && tab <= tabs.Count && tab != currentTab)
                     targets.Add(new Target(tabs[tab - 1], false, true));
 
-            foreach (var (tab, slot) in marks)
-                if (tab == currentTab && slot >= 1 && slot <= slots.Count)
-                    targets.Add(new Target(slots[slot - 1], true, false));
+            // Dim every slot of the open tab except the ones holding an ingredient, so those stay at normal brightness.
+            if (currentTab >= 1)
+            {
+                var wanted = marks.Where(m => m.Tab == currentTab).Select(m => m.Slot).ToHashSet();
+                for (var i = 0; i < slots.Count; i++)
+                    if (!wanted.Contains(i + 1))
+                        targets.Add(new Target(slots[i], true, false, Dim: true));
+            }
 
             Place(addon, targets);
         }
@@ -113,14 +126,14 @@ internal sealed unsafe class FCChestHighlighter : IDisposable
         }
     }
 
-    private readonly record struct Target(Pointer Box, bool Fill, bool Pulse);
+    private readonly record struct Target(Pointer Box, bool Fill, bool Pulse, bool Dim = false);
 
     private void Place(AtkUnitBase* addon, List<Target> targets)
     {
         // Same kind and count as last frame: only move them. Otherwise start over.
         var same = _outlines.Count == targets.Count;
         for (var i = 0; same && i < targets.Count; i++)
-            same = (_outlines[i].Fill is not null) == targets[i].Fill;
+            same = (_outlines[i].Fill is not null) == targets[i].Fill && (_outlines[i].Border is null) == targets[i].Dim;
         if (!same) Clear();
 
         var scale = addon->Scale <= 0f ? 1f : addon->Scale;
@@ -135,12 +148,16 @@ internal sealed unsafe class FCChestHighlighter : IDisposable
                 ColorImageNode? fill = null;
                 if (target.Fill)
                 {
-                    fill = new ColorImageNode { Color = Gold with { W = 0.18f } };
+                    fill = new ColorImageNode { Color = new Vector4(0f, 0f, 0f, 0.62f) };
                     fill.AttachNode(addon);
                 }
 
-                var border = new BorderNineGridNode { Color = Gold };
-                border.AttachNode(addon);
+                BorderNineGridNode? border = null;
+                if (!target.Dim)
+                {
+                    border = new BorderNineGridNode { Color = Gold };
+                    border.AttachNode(addon);
+                }
                 _outlines.Add(new Outline(fill, border));
             }
 
@@ -154,9 +171,12 @@ internal sealed unsafe class FCChestHighlighter : IDisposable
                 fill2.Position = position;
                 fill2.Size     = size;
             }
-            outline.Border.Position = position;
-            outline.Border.Size     = size;
-            outline.Border.Color    = Gold with { W = target.Pulse ? pulse : 1f };
+            if (outline.Border is { } border2)
+            {
+                border2.Position = position;
+                border2.Size     = size;
+                border2.Color    = Gold with { W = target.Pulse ? pulse : 1f };
+            }
         }
     }
 
