@@ -194,6 +194,9 @@ internal sealed unsafe class AutoPincher
                     ((AddonRetainerSell*)price)->AskingPrice->SetValue(newPrice);
                     Fire(price, PriceConfirm);
                     _repriced++;
+
+                    // What changed, for the chat: item, old price, new price (the tweak works out the percentage).
+                    _say($"repriced|{ItemName(itemId)}|{(hq ? 1 : 0)}|{_currentPrice}|{newPrice}");
                 }
                 else
                 {
@@ -210,6 +213,13 @@ internal sealed unsafe class AutoPincher
                 Enter(Step.OpenMenu, MenuTimeout);
                 break;
         }
+    }
+
+    /// <summary>The name of an item in the language of the game; its id when it is not found.</summary>
+    private static string ItemName(uint itemId)
+    {
+        var name = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>()?.GetRowOrDefault(itemId)?.Name.ExtractText();
+        return string.IsNullOrWhiteSpace(name) ? itemId.ToString() : name.Replace('|', '/');
     }
 
     private static bool NameHasHq(AddonRetainerSell* price)

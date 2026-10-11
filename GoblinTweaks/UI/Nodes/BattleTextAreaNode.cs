@@ -78,7 +78,7 @@ internal sealed class BattleTextMessage
     public bool Downwards { get; set; }
 
     /// <summary>Messages with the same non-zero key that arrive together are merged into one.</summary>
-    public ulong MergeKey { get; init; }
+    public ulong MergeKey { get; set; }
 }
 
 /// <summary>
@@ -91,7 +91,6 @@ internal sealed class BattleTextAreaNode : OverlayNode
     public const int MaxMessages = 15;
 
     private const float FadeStart   = 0.8f;   // fraction of the scroll after which the text fades out
-    private const float MergeWindow = 0.4f;   // seconds during which hits of the same action are merged
     private const float LaneGap     = 4f;
     private const float CurveWidth  = 60f;
     private const float PartGap     = 4f;
@@ -99,6 +98,9 @@ internal sealed class BattleTextAreaNode : OverlayNode
 
     /// <summary>Widest outline the settings offer, in pixels.</summary>
     public const int MaxOutline = 4;
+
+    /// <summary>Longest time the settings offer for merging hits of the same action, in tenths of a second.</summary>
+    public const int MaxMergeWindowTenths = 30;
 
     private static readonly Vector4 Outline = new(0.05f, 0.05f, 0.05f, 1f);
 
@@ -409,13 +411,15 @@ internal sealed class BattleTextAreaNode : OverlayNode
     {
         if (message.MergeKey == 0) return false;
 
+        var window = Math.Clamp(Options.MergeWindowTenths, 1, MaxMergeWindowTenths) / 10f;
         for (var i = _active.Count - 1; i >= 0; i--)
         {
             var slot = _active[i];
-            if (slot.Age > MergeWindow) break;
+            if (slot.Age > window) break;
             if (slot.Message.MergeKey != message.MergeKey) continue;
 
-            // Messages with the same key look the same: critical hits have no key, and are never merged.
+            // Messages with the same key look the same: the key tells critical and direct hits apart, so normal
+            // hits merge with normal ones and critical ones with critical ones, never with each other.
             slot.Message.Amount += message.Amount;
             slot.Message.Hits   += message.Hits;
 

@@ -41,7 +41,7 @@ internal static unsafe class AddonCallback
         for (var i = 7; i < menu->AtkValuesCount; i++)
         {
             var v = menu->AtkValues[i];
-            if (v.Type is not (AtkValueType.String or AtkValueType.String8 or AtkValueType.ManagedString)) break;
+            if (v.Type is not (AtkValueType.String or AtkValueType.ConstString or AtkValueType.ManagedString)) break;
             entries.Add(v.GetValueAsString());
         }
 

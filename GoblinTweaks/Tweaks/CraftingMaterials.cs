@@ -185,8 +185,9 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         public bool IncludeSaddlebag   { get; set; } = true;
         public bool IncludeRetainers   { get; set; } = true;
         public bool IncludeFCChest     { get; set; } = false;
-        /// <summary>Outline the FC chest tabs/slots that hold the selected recipe's ingredients.</summary>
-        public bool HighlightFCChest   { get; set; } = true;
+        /// <summary>Outline, in the FC chest, the bags, the retainers and the saddlebag, what holds the selected recipe's ingredients.</summary>
+        [System.Text.Json.Serialization.JsonPropertyName("HighlightFCChest")]
+        public bool Highlight          { get; set; } = true;
         /// <summary>Max missing ingredient types before a recipe moves from NearComplete → NotReady.</summary>
         public int  NearCompleteMissing { get; set; } = 2;
         /// <summary>Game-data language for item/recipe names ("" = follow GoblinTweaks). Independent of the UI language.</summary>
@@ -207,6 +208,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
 
     private CraftingSettingsAddon?      _settingsAddon;
     private readonly FCChestHighlighter _fcHighlighter = new();
+    private readonly InventoryHighlighter _bagHighlighter = new();
 
     public UniversalisService      Universalis     => _universalis!;
     /// <summary>Last known inventory snapshot, loaded from disk at startup and updated after each scan.</summary>
@@ -244,10 +246,15 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
 
         _settingsAddon = NewSettingsAddon();
 
-        _fcHighlighter.Source = () => Settings.HighlightFCChest && Settings.IncludeFCChest && _addon is { IsOpen: true } a
+        _fcHighlighter.Source = () => Settings.Highlight && Settings.IncludeFCChest && _addon is { IsOpen: true } a
             ? a.FCChestMarks()
             : [];
         _fcHighlighter.Start();
+
+        _bagHighlighter.Source = () => Settings.Highlight && _addon is { IsOpen: true } a
+            ? a.IngredientItemIds()
+            : [];
+        _bagHighlighter.Start();
     }
 
     protected internal override void Disable()
@@ -258,6 +265,8 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PreFinalize,  "RetainerList",         OnRetainerUiClosed);
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup,    "SynthesisSimpleResult", OnSynthesisResult);
 
+        _bagHighlighter.Stop();
+        _bagHighlighter.Source = null;
         _fcHighlighter.Stop();
         _fcHighlighter.Source = null;
         _settingsAddon?.Dispose();

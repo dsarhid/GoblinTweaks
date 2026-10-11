@@ -16,7 +16,7 @@ internal sealed class SellItemRowNode : ListItemNode<SellableItem>, IListItemNod
     public static float ItemHeight => 34f;
 
     /// <summary>Set by the addon: whether a stack is selected, and the callback when the checkbox changes.</summary>
-    internal static Func<string, bool>? IsSelected;
+    internal static new Func<string, bool>? IsSelected;
     internal static Action<string, bool>? SelectionChanged;
 
     /// <summary>Set by the addon: Universalis normal price per unit (null while loading, 0 when unknown) and its tooltip.</summary>
@@ -66,7 +66,7 @@ internal sealed class SellItemRowNode : ListItemNode<SellableItem>, IListItemNod
 
         ShowSelected(IsSelected?.Invoke(_key) ?? false);
 
-        var price = PriceOf?.Invoke(ItemData);
+        var price = ItemData is { } item ? PriceOf?.Invoke(item) : null;
         _price.String = price is null ? "..." : price > 0 ? $"{price:N0}" : "-";
     }
 

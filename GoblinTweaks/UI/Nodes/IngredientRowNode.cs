@@ -134,8 +134,20 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
         {
             statusColor = ColorFulfilled;
             locText     = CraftLoc.Get("loc.mainbags");
-            TextTooltip = string.Empty;
-            ItemTooltip = ing.ItemId;
+
+            // The main bags are enough, but there is more elsewhere (retainers, saddlebag, FC chest): say so, and where.
+            var locs = data.AllLocations;
+            if (locs.Count > 1)
+            {
+                locText     += " +";
+                TextTooltip = string.Join("\n", locs.Select(l => $"{l.Location}: {FormatQty(l.Total, l.Hq)}"));
+                ItemTooltip = 0;
+            }
+            else
+            {
+                TextTooltip = string.Empty;
+                ItemTooltip = ing.ItemId;
+            }
         }
         else
         {

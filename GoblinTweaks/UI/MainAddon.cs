@@ -47,6 +47,8 @@ internal sealed unsafe class MainAddon : SettingsPanelAddon
     private readonly List<NodeBase> _rowNodes = [];
     private readonly Dictionary<Tweak, TextButtonNode> _marks = [];
     private readonly Dictionary<Tweak, WrapImageNode> _icons = [];
+    private WrapImageNode? _newsIcon;
+    private bool _forceWhatsNew;
 
     private Tweak? _selected;
     private string? _filter;
@@ -118,6 +120,7 @@ internal sealed unsafe class MainAddon : SettingsPanelAddon
         _rowNodes.Clear();
         _marks.Clear();
         _icons.Clear();
+        _newsIcon = null;
         _viewer?.Dispose();
         _viewer = null;
         _window = null;
@@ -220,6 +223,18 @@ internal sealed unsafe class MainAddon : SettingsPanelAddon
             _icons[tweak] = icon;
         }
 
+        // The What's new card has its own icon, in the same square.
+        if (ScreenshotStore.TryGet("whatsnewIcon", out var newsTexture))
+        {
+            _newsIcon = new WrapImageNode(newsTexture)
+            {
+                Position  = new Vector2(x + Pad, c.Y + TopH + 8f),
+                Size      = new Vector2(IconSize, IconSize),
+                IsVisible = false,
+            };
+            _newsIcon.AttachNode(this);
+        }
+
         _title = new TextNode
         {
             Position  = new Vector2(x + HeaderTextX, c.Y + TopH + 2f),
@@ -291,7 +306,8 @@ internal sealed unsafe class MainAddon : SettingsPanelAddon
 
         var x = c.X + Pad + 70f;
         x += FooterButton(Loc.Get("Window.Footer.Repository"), x, y + 4f, buttonH, () => Util.OpenLink(PluginInfo.RepositoryUrl)) + 12f;
-        FooterButton(Loc.Get("Window.Footer.Changelog"), x, y + 4f, buttonH, OpenChangelog);
+        x += FooterButton(Loc.Get("Window.Footer.Changelog"), x, y + 4f, buttonH, OpenChangelog) + 12f;
+        FooterButton(Loc.Get("Window.Footer.WhatsNew"), x, y + 4f, buttonH, ShowWhatsNew);
 
         var issues = Loc.Get("Window.Footer.Issues");
         var width  = Measure(issues) + 44f;
@@ -324,7 +340,19 @@ internal sealed unsafe class MainAddon : SettingsPanelAddon
     private bool WelcomePending  => Manager.Store.Data.ShowWelcome;
 
     private bool WhatsNewPending
-        => Changelog.Latest is { } latest && Manager.Store.Data.LastSeenVersion is { } seen && seen != latest.Version;
+        => Changelog.Latest is { } latest
+           && (_forceWhatsNew || Manager.Store.Data.LastSeenVersion is { } seen && seen != latest.Version);
+
+    /// <summary>The footer button: opens the What's new card again, whether or not it was dismissed.</summary>
+    private void ShowWhatsNew()
+    {
+        _forceWhatsNew = true;
+        _selected      = null;
+        _selectedSignature = SelectedSignature();
+        foreach (var (_, _, row) in _rows) row.IsSelected = false;
+        _headerDirty = true;
+        RequestRebuild();
+    }
 
     private IEnumerable<Tweak> SortedTweaks()
         => Manager.Tweaks
@@ -626,6 +654,7 @@ internal sealed unsafe class MainAddon : SettingsPanelAddon
     private void Select(Tweak tweak)
     {
         if (_selected == tweak) return;
+        _forceWhatsNew = false;
         _selected    = tweak;
         _selectedSignature = SelectedSignature();
         _headerDirty = true;
@@ -651,6 +680,7 @@ internal sealed unsafe class MainAddon : SettingsPanelAddon
             _title.String     = Loc.Get(WhatsNewPending ? "Window.WhatsNew.Title" : "Window.Welcome.Title");
             _status.String    = string.Empty;
             foreach (var icon in _icons.Values) icon.IsVisible = false;
+            if (_newsIcon is not null) _newsIcon.IsVisible = WhatsNewPending;
             foreach (var node in _tagNodes) node.Dispose();
             _tagNodes.Clear();
             _tagCategory = null;
@@ -660,6 +690,7 @@ internal sealed unsafe class MainAddon : SettingsPanelAddon
         }
 
         foreach (var (owner, icon) in _icons) icon.IsVisible = owner == tweak;
+        if (_newsIcon is not null) _newsIcon.IsVisible = false;
 
         var (state, color) = tweak.State switch
         {
@@ -951,6 +982,7 @@ internal sealed unsafe class MainAddon : SettingsPanelAddon
             Button(Loc.Get("Window.WhatsNew.SeeAll"), null, Pad, OpenChangelog, 190f);
             Button(Loc.Get("Window.WhatsNew.Dismiss"), null, Pad + 198f, () =>
             {
+                _forceWhatsNew = false;
                 Manager.Store.Data.LastSeenVersion = latest.Version;
                 Manager.Store.Save();
                 GoToTweaks();

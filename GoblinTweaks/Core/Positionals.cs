@@ -50,7 +50,7 @@ internal static partial class Positionals
     [GeneratedRegex(@"potency of ([\d,]+)", RegexOptions.IgnoreCase)]
     private static partial Regex BasePattern();
 
-    [GeneratedRegex(@"([\d,]+) when executed from a target's (?:rear|flank|front)", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"([\d,]+) when executed (?:from a target's (?:rear|flank|front)|(?:in front of|behind|on the flank of) a target)", RegexOptions.IgnoreCase)]
     private static partial Regex PositionalPattern();
 
     [GeneratedRegex(@"^\s*Combo Potency: ([\d,]+)", RegexOptions.IgnoreCase | RegexOptions.Multiline)]
@@ -65,10 +65,14 @@ internal static partial class Positionals
     /// </summary>
     internal static Info? Read(string description, bool hasCombo)
     {
+        // Most actions say "from a target's rear"; Blue Mage ones say "in front of a target".
         Side side;
-        if (description.Contains("target's rear", StringComparison.OrdinalIgnoreCase))       side = Side.Rear;
-        else if (description.Contains("target's flank", StringComparison.OrdinalIgnoreCase)) side = Side.Flank;
-        else if (description.Contains("target's front", StringComparison.OrdinalIgnoreCase)) side = Side.Front;
+        if (description.Contains("target's rear", StringComparison.OrdinalIgnoreCase)
+            || description.Contains("behind a target", StringComparison.OrdinalIgnoreCase))        side = Side.Rear;
+        else if (description.Contains("target's flank", StringComparison.OrdinalIgnoreCase)
+            || description.Contains("flank of a target", StringComparison.OrdinalIgnoreCase))      side = Side.Flank;
+        else if (description.Contains("target's front", StringComparison.OrdinalIgnoreCase)
+            || description.Contains("front of a target", StringComparison.OrdinalIgnoreCase))      side = Side.Front;
         else return null;
 
         return new Info(side,

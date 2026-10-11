@@ -8,6 +8,17 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.2.0"] = (
+            "Nuevos Goblin Achievements y Goblin Damage Done; Crafting Materials ahora resalta ingredientes en bolsas y retainers.",
+            [
+                "New: Goblin Achievements (/gach) — un explorador nativo de todos los logros con búsqueda, filtros, progreso y recompensas, más un seguimiento en pantalla de los que fijes",
+                "New: Goblin Damage Done (/gdd) — una tabla de daño, curación y daño recibido de tu duty con barras por job, una tabla extra de críticos y golpes directos, muertes y dispels, y un historial de peleas; muestra un ejemplo mientras sus ajustes están abiertos",
+                "New: Crafting Materials marca los ingredientes de la receta elegida en tus bolsas, en las de tu retainer y en la alforja del chocobo: se apagan los demás slots y titilan las pestañas que los tienen",
+                "Change: el resaltado de Crafting Materials ahora es una sola opción para el cofre de la FC, bolsas, retainers y alforja; un ingrediente que cubrís con tus bolsas pero que también está en otro lado muestra \"Bolsas principales +\" con un tooltip de dónde",
+                "New: Goblin Battle Text muestra los escudos que das y recibís, avisa cuando hay un nivel de Limit Break listo (y lo muestra sobre la barra), puede juntar golpes por tiempo y mostrar el promedio, y puede delinear HP y MP y sumar tu escudo al HP",
+                "New: AutoGoblinRetainer avisa en el chat cada precio que cambia el pinch: el ítem, el precio anterior y el nuevo, y el porcentaje de bajada o subida",
+                "New: un botón Novedades en el pie de la ventana de GoblinTweaks abre de nuevo los últimos cambios",
+            ]),
         ["1.1.1"] = (
             "Crafting Materials recuerda el cofre de la FC entre sesiones y apaga los slots del cofre que no son de la receta elegida.",
             [

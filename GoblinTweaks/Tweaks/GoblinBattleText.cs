@@ -10,6 +10,8 @@ using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.Character;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
+using FFXIVClientStructs.FFXIV.Client.Game.Group;
+using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.Game.Object;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
 using FFXIVClientStructs.FFXIV.Client.UI.Misc;
@@ -52,8 +54,14 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     /// <summary>How the damage you take says how much of it was mitigated: not at all, "(-30%)" or "(-30% mitigated)".</summary>
     public enum BattleTextMitigation { Off, Percent, PercentAndWord }
 
+    /// <summary>The number a merged message shows: the sum of its hits, or their average.</summary>
+    public enum BattleTextMergeAmount { Total, Average }
+
+    /// <summary>What the player window says about your shield: nothing, HP plus shield, or the shield under the HP.</summary>
+    public enum BattleTextShieldMode { Off, AddToHp, Below }
+
     /// <summary>The scroll areas: right of the character, left of it, and centred under it.</summary>
-    public enum BattleTextArea { Outgoing, Incoming, Center }
+    public enum BattleTextArea { Outgoing, Incoming, Center, LimitBreak }
 
     /// <summary>The pieces a message is made of; the user chooses their order and which ones show.</summary>
     public enum BattleTextPart { Icon, Type, Name, Number }
@@ -86,6 +94,15 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         DamageTaken,
         HealDealt,
         HealTaken,
+
+        /// <summary>A shield you put on someone else (the amount is worked out from how much it raised their shield).</summary>
+        ShieldDealt,
+
+        /// <summary>A shield you receive, from yourself or from others.</summary>
+        ShieldTaken,
+
+        /// <summary>A bar of the Limit Break gauge of your party filled: a Limit Break of that level can be used.</summary>
+        LimitBreak,
         Mp,
         BuffOnMe,
         BuffOnOthers,
@@ -202,6 +219,9 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
         /// <summary>Color of the outline of every message, when <see cref="Options.OutlineEnabled"/> is on.</summary>
         public Vector4 Outline { get; set; } = DefaultColors.Outline;
+
+        /// <summary>Color of the outline of the HP and MP of the player window, when <see cref="Options.HpOutlineEnabled"/> is on.</summary>
+        public Vector4 HpOutline { get; set; } = DefaultColors.Outline;
     }
 
     public static class DefaultColors
@@ -259,6 +279,18 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         /// <summary>Merge the ticks of one damage or healing over time on several targets: "132 Higanbana x3".</summary>
         public bool MergeTicks { get; set; }
 
+        /// <summary>Seconds, in tenths, during which hits of the same action are merged into one message.</summary>
+        public int MergeWindowTenths { get; set; } = 10;
+
+        /// <summary>Whether a merged message shows the total of its hits or their average, rounded.</summary>
+        public BattleTextMergeAmount MergeAmount { get; set; } = BattleTextMergeAmount.Total;
+
+        /// <summary>What the HP of the player window shows while you have a shield.</summary>
+        public BattleTextShieldMode ShieldMode { get; set; } = BattleTextShieldMode.Off;
+
+        /// <summary>"LB Lv 2" over the Limit Break gauge while a Limit Break can be used.</summary>
+        public bool LimitBreakIndicator { get; set; } = true;
+
         /// <summary>Healing you give says who it heals. With <see cref="MergeHeals"/>, only where there is one target: the ticks.</summary>
         public bool ShowHealTargets { get; set; }
 
@@ -285,6 +317,9 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
         /// <summary>Draws a thicker outline of its own around the letters of every message, in <see cref="ColorOptions.Outline"/>.</summary>
         public bool OutlineEnabled { get; set; }
+
+        /// <summary>An outline for the numbers and labels of HP and MP in the player window, and for the shield under the HP.</summary>
+        public bool HpOutlineEnabled { get; set; }
 
         /// <summary>Width of that outline, in pixels.</summary>
         public int OutlineThickness { get; set; } = 2;
@@ -330,6 +365,10 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
         [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)]
         public AreaOptions Center { get; set; } = new() { OffsetY = 150, Height = 110, TextAnchor = 50, Style = BattleTextStyle.Static, MaxMessages = 5 };
+
+        /// <summary>The area of the Limit Break alert, and of nothing else. Its messages stay longer than the others.</summary>
+        [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)]
+        public AreaOptions LimitBreak { get; set; } = new() { OffsetY = -170, Height = 100, FontSize = 38, DurationTenths = 42, TextAnchor = 50, Style = BattleTextStyle.Static, MaxMessages = 2 };
     }
 
     private static readonly BattleTextPart[] DefaultOrder = [BattleTextPart.Icon, BattleTextPart.Type, BattleTextPart.Name, BattleTextPart.Number];
@@ -390,11 +429,11 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     private DateTime _nextCooldownPoll = DateTime.MinValue;
     private DateTime _cooldownsSettle = DateTime.MinValue;
 
-    private readonly BattleTextAreaNode?[] _areas = new BattleTextAreaNode?[3];
+    private readonly BattleTextAreaNode?[] _areas = new BattleTextAreaNode?[4];
 
     // While the settings window is open each area has a handle to drag it by, and where each one was last put.
-    private readonly BattleTextHandleNode?[] _handles = new BattleTextHandleNode?[3];
-    private readonly Vector2?[] _handlePlaced = new Vector2?[3];
+    private readonly BattleTextHandleNode?[] _handles = new BattleTextHandleNode?[4];
+    private readonly Vector2?[] _handlePlaced = new Vector2?[4];
     private BattleTextArea? _movedArea;
 
     private Hook<BattleLog.Delegates.AddToScreenLogWithScreenLogKind>? _hook;
@@ -533,7 +572,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             var applies = type switch
             {
                 BattleTextEvent.DamageDealt or BattleTextEvent.DamageTaken => true,
-                BattleTextEvent.HealDealt or BattleTextEvent.HealTaken     => part != BattleTextPart.Type,
+                BattleTextEvent.HealDealt or BattleTextEvent.HealTaken
+                    or BattleTextEvent.ShieldDealt or BattleTextEvent.ShieldTaken => part != BattleTextPart.Type,
                 BattleTextEvent.Mp                                         => part == BattleTextPart.Number,
                 _                                                          => part is BattleTextPart.Icon or BattleTextPart.Number,
             };
@@ -569,10 +609,11 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     /// <summary>Where each event goes until the user says otherwise.</summary>
     private static EventOptions DefaultEvent(BattleTextEvent type) => type switch
     {
-        BattleTextEvent.DamageDealt or BattleTextEvent.HealDealt => new() { Area = BattleTextArea.Outgoing, Motion = BattleTextMotion.Up },
-        BattleTextEvent.DamageTaken or BattleTextEvent.HealTaken or BattleTextEvent.Mp => new() { Area = BattleTextArea.Incoming, Motion = BattleTextMotion.Up },
+        BattleTextEvent.DamageDealt or BattleTextEvent.HealDealt or BattleTextEvent.ShieldDealt => new() { Area = BattleTextArea.Outgoing, Motion = BattleTextMotion.Up },
+        BattleTextEvent.DamageTaken or BattleTextEvent.HealTaken or BattleTextEvent.ShieldTaken or BattleTextEvent.Mp => new() { Area = BattleTextArea.Incoming, Motion = BattleTextMotion.Up },
         BattleTextEvent.Cooldown => new() { Area = BattleTextArea.Center, Motion = BattleTextMotion.Down, Enabled = false },
         BattleTextEvent.ActionUsed => new() { Area = BattleTextArea.Outgoing, Motion = BattleTextMotion.Up },
+        BattleTextEvent.LimitBreak => new() { Area = BattleTextArea.LimitBreak, Motion = BattleTextMotion.Down },
         _ => new() { Area = BattleTextArea.Center, Motion = BattleTextMotion.Down },
     };
 
@@ -587,8 +628,13 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     {
         BattleTextArea.Outgoing => Settings.Outgoing,
         BattleTextArea.Incoming => Settings.Incoming,
+        BattleTextArea.LimitBreak => Settings.LimitBreak,
         _                       => Settings.Center,
     };
+
+    private ShieldDisplay? _shield;
+    private LimitBreakDisplay? _limitBreak;
+    private int _limitBreakLevel = -1;
 
     protected internal override void Enable()
     {
@@ -645,12 +691,27 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             _tickHook.Enable();
         }
 
+        _shield = new ShieldDisplay(() => Settings.ShieldMode, () => Preview, () => Settings.HpOutlineEnabled ? Settings.Colors.HpOutline : null, ReportFailure);
+        _shield.Start();
+
+        _limitBreak = new LimitBreakDisplay(() => Settings.LimitBreakIndicator, () => Settings.OutlineEnabled ? Settings.Colors.Outline : null, level => string.Format(T("LimitBreak.Indicator"), level), ReportFailure);
+        _limitBreak.Start();
+        _limitBreakLevel = -1;
+
         Svc.Framework.Update += OnUpdate;
     }
 
     protected internal override void Disable()
     {
         Svc.Framework.Update -= OnUpdate;
+
+        _shield?.Stop();
+        _shield = null;
+        _limitBreak?.Stop();
+        _limitBreak = null;
+        _shieldSeen.Clear();
+        _shieldPending.Clear();
+        _myCasts.Clear();
 
         _hook?.Dispose();
         _hook = null;
@@ -690,7 +751,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         InternalName = "GtkBattleText",
         Title        = T("Title"),
         Subtitle     = _characterId == 0 ? null : Svc.PlayerState.CharacterName,
-        Size         = new Vector2(900f, 736f),
+        Size         = new Vector2(900f, 800f),
         Tweak        = this,
     };
 
@@ -742,6 +803,10 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                 Settings.MergeDefended = defaults.MergeDefended;
                 Settings.MergeNoEffect = defaults.MergeNoEffect;
                 Settings.MergeTicks  = defaults.MergeTicks;
+                Settings.MergeWindowTenths = defaults.MergeWindowTenths;
+                Settings.MergeAmount = defaults.MergeAmount;
+                Settings.ShieldMode = defaults.ShieldMode;
+                Settings.LimitBreakIndicator = defaults.LimitBreakIndicator;
                 Settings.ShowHealTargets = defaults.ShowHealTargets;
                 Settings.Abbreviate  = defaults.Abbreviate;
                 Settings.IncludePets = defaults.IncludePets;
@@ -751,6 +816,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                 Settings.OutlineEnabled   = defaults.OutlineEnabled;
                 Settings.OutlineThickness = defaults.OutlineThickness;
                 colors.Outline            = DefaultColors.Outline;
+                Settings.HpOutlineEnabled = defaults.HpOutlineEnabled;
+                colors.HpOutline          = DefaultColors.Outline;
 
                 colors.OutgoingDamage = DefaultColors.OutgoingDamage;
                 colors.IncomingDamage = DefaultColors.IncomingDamage;
@@ -769,6 +836,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                 {
                     BattleTextArea.Outgoing => defaults.Outgoing,
                     BattleTextArea.Incoming => defaults.Incoming,
+                    BattleTextArea.LimitBreak => defaults.LimitBreak,
                     _                       => defaults.Center,
                 }, Area(area));
                 break;
@@ -874,7 +942,9 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         colors.Cooldown       = Kept(colors.Cooldown,       source.Cooldown,       DefaultColors.Cooldown);
         colors.Action         = Kept(colors.Action,         source.Action,         DefaultColors.Action);
         colors.Outline        = Kept(colors.Outline,        source.Outline,        DefaultColors.Outline);
+        colors.HpOutline      = Kept(colors.HpOutline,      source.HpOutline,      DefaultColors.Outline);
         Settings.OutlineThickness = Math.Clamp(Settings.OutlineThickness, 1, BattleTextAreaNode.MaxOutline);
+        Settings.MergeWindowTenths = Math.Clamp(Settings.MergeWindowTenths, 1, BattleTextAreaNode.MaxMergeWindowTenths);
 
         foreach (var kind in Enum.GetValues<BattleTextHighlight>())
         {
@@ -1473,6 +1543,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         var player = (GameObject*)Control.GetLocalPlayer();
         if (player == null || player->EntityId != casterEntityId) return;
 
+        RecordCast(header, targetEntityIds);
         CapturePositional(player, header, effects, targetEntityIds);
 
         // An action that did not take is said by the text the game makes of that, not here.
@@ -1609,7 +1680,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         {
             Label  = (fading ? "- " : "+ ") + status.Name,
             IconId = status.IconId,
-            Color  = EffectColor(buff, fading),
+            Color  = new Vector4(0.72f, 0.72f, 0.72f, 1f), // the grey of the icon of Sprint
             IconIsStatus = true,
         });
     }
@@ -1994,7 +2065,9 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         if (message.Label is not null)
             return message.Hits > 1 ? $"{message.Label} x{message.Hits}" : message.Label;
 
-        var amount = message.Amount;
+        var amount = Settings.MergeAmount == BattleTextMergeAmount.Average && message.Hits > 1
+            ? (long)Math.Round((double)message.Amount / message.Hits, MidpointRounding.AwayFromZero)
+            : message.Amount;
         var number = !Settings.Abbreviate || amount < 10_000 ? amount.ToString("#,0", CultureInfo.InvariantCulture)
                    : amount < 1_000_000                      ? (amount / 1_000d).ToString("0.#", CultureInfo.InvariantCulture) + "K"
                    :                                           (amount / 1_000_000d).ToString("0.##", CultureInfo.InvariantCulture) + "M";
@@ -2112,6 +2185,171 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
     // ── Every frame ─────────────────────────────────────────────────────────────
 
+    // ── Shields ─────────────────────────────────────────────────────────────────
+    // The game makes no text for a shield and gives no amount: it only says how much of the maximum HP of each
+    // character the shield is, in percent. A rise of that number, on you or on someone in your party, is a shield
+    // given; it is yours when you used an action on them a moment before.
+
+    private static readonly Vector4 ShieldBlue = ShieldDisplay.Color;
+    private static readonly TimeSpan ShieldSettle = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan CastWindow   = TimeSpan.FromSeconds(2);
+
+    private readonly Dictionary<uint, int> _shieldSeen = [];
+    private readonly List<(uint Entity, int Amount, DateTime At)> _shieldPending = [];
+    private readonly List<(uint ActionId, uint[] Targets, DateTime At)> _myCasts = [];
+    private readonly List<uint> _shieldWatched = [];
+
+    private bool ShieldsWanted => Event(BattleTextEvent.ShieldDealt).Enabled || Event(BattleTextEvent.ShieldTaken).Enabled;
+
+    /// <summary>Remembers an action of yours and who it was used on, to tell later who a shield is from.</summary>
+    private void RecordCast(ActionEffectHandler.Header* header, GameObjectId* targetEntityIds)
+    {
+        if (!ShieldsWanted || targetEntityIds == null) return;
+
+        var targets = new uint[Math.Min((int)header->NumTargets, 32)];
+        for (var i = 0; i < targets.Length; i++)
+            targets[i] = targetEntityIds[i].ObjectId;
+
+        _myCasts.RemoveAll(cast => DateTime.UtcNow - cast.At > CastWindow);
+        _myCasts.Add((header->ActionId, targets, DateTime.UtcNow));
+    }
+
+    /// <summary>Says "Limit Break Lv 2 ready!" each time a bar of the gauge fills.</summary>
+    private void TrackLimitBreak()
+    {
+        var level = LimitBreak.Level();
+        var before = _limitBreakLevel;
+        _limitBreakLevel = level;
+
+        // The first reading, or a gauge that cannot be read, only sets where we are.
+        if (before < 0 || level <= before) return;
+
+        // The Limit Break of your job at that level gives the icon of the alert.
+        Queue(BattleTextEvent.LimitBreak, LimitBreakMessage(level, LimitBreakActionOf(level - 1)));
+    }
+
+    /// <summary>The Limit Break of your job at a level (0 is the first), 0 when there is none.</summary>
+    private static uint LimitBreakActionOf(int index)
+    {
+        var player = (Character*)Control.GetLocalPlayer();
+        var gauge  = LimitBreakController.Instance();
+        return player == null || gauge == null ? 0 : gauge->GetActionId(player, (byte)index);
+    }
+
+    private BattleTextMessage LimitBreakMessage(int level, uint actionId)
+    {
+        var action = LookupAction(actionId);
+        return new()
+        {
+            Label  = string.Format(T("Label.LimitBreak"), level),
+            IconId = action.IconId,
+            Color  = Settings.Colors.Cooldown,
+        };
+    }
+
+    private void TrackShields()
+    {
+        var player  = (Character*)Control.GetLocalPlayer();
+        var manager = GameObjectManager.Instance();
+        if (player == null || manager == null || !ShieldsWanted)
+        {
+            _shieldSeen.Clear();
+            _shieldPending.Clear();
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+
+        _shieldWatched.Clear();
+        _shieldWatched.Add(player->EntityId);
+        var group = GroupManager.Instance()->GetGroup();
+        if (group != null)
+        {
+            for (var i = 0; i < group->MemberCount && i < group->PartyMembers.Length; i++)
+            {
+                var id = group->PartyMembers[i].EntityId;
+                if (id != 0 && id != player->EntityId) _shieldWatched.Add(id);
+            }
+        }
+
+        foreach (var id in _shieldWatched)
+        {
+            var who = (Character*)manager->Objects.GetObjectByEntityId(id);
+            if (who == null) continue;
+
+            var percent = (int)who->CharacterData.ShieldValue;
+            var max     = (int)who->CharacterData.MaxHealth;
+            if (_shieldSeen.TryGetValue(id, out var before) && percent > before && max > 0)
+                _shieldPending.Add((id, (int)((long)(percent - before) * max / 100), now));
+            _shieldSeen[id] = percent;
+        }
+
+        // A moment later, when the action that gave it has had time to be recorded.
+        for (var i = 0; i < _shieldPending.Count; i++)
+        {
+            var (entity, amount, at) = _shieldPending[i];
+            if (now - at < ShieldSettle) continue;
+
+            _shieldPending.RemoveAt(i--);
+            if (amount > 0) QueueShield(player, entity, amount, at);
+        }
+    }
+
+    private void QueueShield(Character* player, uint entity, int amount, DateTime at)
+    {
+        var self = entity == player->EntityId;
+
+        uint actionId = 0;
+        var  matched  = false;
+        for (var i = _myCasts.Count - 1; i >= 0 && !matched; i--)
+        {
+            var cast = _myCasts[i];
+            if (cast.At > at + ShieldSettle || at - cast.At > CastWindow || Array.IndexOf(cast.Targets, entity) < 0) continue;
+            (actionId, matched) = (cast.ActionId, true);
+        }
+
+        // Someone else's shield on someone else says nothing; one on you always does.
+        if (!self && !matched) return;
+
+        var type    = self ? BattleTextEvent.ShieldTaken : BattleTextEvent.ShieldDealt;
+        var options = Event(type);
+        var area    = Area(options.Area);
+        if (!options.Enabled || !area.Enabled || amount < area.MinAmount) return;
+
+        var action = actionId != 0 ? LookupAction(actionId) : default;
+
+        // Who it is for, like the healing of ShowHealTargets: merged shields have several targets and name none.
+        string? target = null;
+        if (!self && Settings.ShowHealTargets && !Settings.MergeHeals)
+        {
+            var who = GameObjectManager.Instance()->Objects.GetObjectByEntityId(entity);
+            target = who == null ? null : who->NameString;
+            if (string.IsNullOrEmpty(target)) target = null;
+        }
+
+        var mergeable = Settings.MergeHeals && !(Settings.ShowHealTargets && !self);
+        var message   = ShieldMessage(amount, action, target, area);
+        if (mergeable)
+            message.MergeKey = (1UL << 60) | ((ulong)actionId << 4) | (self ? 2UL : 0UL) | 1UL;
+        Queue(type, message);
+    }
+
+    /// <summary>"+2,000 Haima (Alisaie)": the shield in its blue, with who it is for after the action name or the amount.</summary>
+    private BattleTextMessage ShieldMessage(int amount, (string? Name, uint IconId) action, string? target, AreaOptions area)
+    {
+        var name  = action.Name ?? T("Label.Shield");
+        var after = target is not null && !area.Hidden.Contains(BattleTextPart.Name);
+        return new BattleTextMessage
+        {
+            Amount     = amount,
+            ActionName = after ? $"{name} ({target})" : name,
+            IconId     = action.IconId,
+            Prefix     = "+",
+            Suffix     = target is not null && !after ? $" ({target})" : string.Empty,
+            Color      = ShieldBlue,
+        };
+    }
+
     private void OnUpdate(IFramework _)
     {
         if (_failure is { } failure)
@@ -2137,6 +2375,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             }
 
             PollCooldowns();
+            TrackShields();
+            TrackLimitBreak();
             ConfirmDebuffs();
             WatchDebuffs();
 
@@ -2249,11 +2489,13 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         var action = LookupAction(9);  // Fast Blade: any action with a name and an icon
         var status = LookupStatus(50); // Sprint: any status with a name and an icon
 
-        BattleTextMessage Hit(bool outgoing, bool crit, bool auto, bool directHit = false)
+        BattleTextMessage Hit(bool outgoing, bool crit, bool auto, bool directHit = false, string suffix = "", int hits = 1)
         {
             var message = new BattleTextMessage
             {
-                Amount     = crit ? 31_870 : directHit ? 15_900 : 12_345,
+                Amount     = (crit ? 31_870 : directHit ? 15_900 : 12_345) * hits,
+                Hits       = hits,
+                Suffix     = suffix,
                 ActionName = action.Name,
                 IconId     = auto ? 0 : action.IconId,
                 TypeIconId = DamageTypeIconBase + (uint)(outgoing ? 1 : 2),
@@ -2277,6 +2519,35 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             MarkHit(message, crit, directHit: false, HitSource.Heal);
             return message;
         }
+
+        // Misses and dodges with their action, and what did not take, which has its own look like the game's text.
+        BattleTextMessage Miss(string labelKey, bool noEffect = false, int hits = 1) => new()
+        {
+            Label      = T(labelKey),
+            Hits       = hits,
+            ActionName = action.Name,
+            IconId     = action.IconId,
+            Color      = colors.Miss,
+            Order      = noEffect ? DefaultCooldownOrder : null,
+            Hidden     = noEffect ? [] : null,
+        };
+
+        BattleTextMessage Shield(bool outgoing)
+        {
+            var who = outgoing && Settings.ShowHealTargets ? $" ({Svc.PlayerState.CharacterName})" : string.Empty;
+            return new BattleTextMessage
+            {
+                Amount     = 2_000,
+                ActionName = action.Name,
+                IconId     = action.IconId,
+                Prefix     = "+",
+                Suffix     = who,
+                Color      = ShieldBlue,
+            };
+        }
+
+        var mitigation = Settings.Mitigation == BattleTextMitigation.Off ? string.Empty
+                       : string.Format(T(Settings.Mitigation == BattleTextMitigation.Percent ? "Suffix.MitigatedPercent" : "Suffix.Mitigated"), 30);
 
         BattleTextMessage Effect(bool buff, bool fading) => new()
         {
@@ -2313,7 +2584,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             return;
         }
 
-        switch (_previewStep++ % 6)
+        switch (_previewStep++ % 12)
         {
             case 0:
                 Queue(BattleTextEvent.DamageDealt, Hit(outgoing: true, crit: false, auto: false));
@@ -2328,7 +2599,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             case 2:
                 Queue(BattleTextEvent.DamageDealt, Hit(outgoing: true, crit: true, auto: false));
                 Queue(BattleTextEvent.DamageTaken, Hit(outgoing: false, crit: true, auto: false));
-                Queue(BattleTextEvent.DebuffOnEnemy, Effect(buff: false, fading: false));
+                Queue(BattleTextEvent.BuffOnMe, Effect(buff: true, fading: true));
                 break;
             case 3:
                 Queue(BattleTextEvent.HealDealt, Heal());
@@ -2336,15 +2607,38 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                 break;
             case 4:
                 Queue(BattleTextEvent.DamageDealt, Hit(outgoing: true, crit: false, auto: false, directHit: true));
-                Queue(BattleTextEvent.DebuffOnMe, Effect(buff: false, fading: false));
                 Queue(BattleTextEvent.Cooldown, CooldownMessage(action));
                 break;
-            default:
+            case 5:
                 Queue(BattleTextEvent.DamageDealt, Hit(outgoing: true, crit: true, auto: false, directHit: true));
                 Queue(BattleTextEvent.DamageTaken, Hit(outgoing: false, crit: false, auto: true));
-                Queue(BattleTextEvent.BuffOnOthers, Effect(buff: true, fading: false));
-                if (Settings.ShowFading)
-                    Queue(BattleTextEvent.BuffOnMe, Effect(buff: true, fading: true));
+                break;
+            case 6:
+                // Merged: one action on three targets.
+                Queue(BattleTextEvent.DamageDealt, Hit(outgoing: true, crit: false, auto: false, hits: 3));
+                Queue(BattleTextEvent.DamageTaken, Hit(outgoing: false, crit: false, auto: false, suffix: mitigation));
+                break;
+            case 7:
+                Queue(BattleTextEvent.DamageDealt, Miss("Label.Miss"));
+                Queue(BattleTextEvent.DamageDealt, Miss("Label.Miss", hits: 3));
+                Queue(BattleTextEvent.DamageTaken, Miss("Label.Dodge"));
+                break;
+            case 8:
+                Queue(BattleTextEvent.DamageTaken, Hit(outgoing: false, crit: false, auto: false, suffix: T("Suffix.Blocked")));
+                Queue(BattleTextEvent.DamageTaken, Hit(outgoing: false, crit: false, auto: false, suffix: T("Suffix.Parried")));
+                Queue(BattleTextEvent.DamageTaken, Hit(outgoing: false, crit: false, auto: false, suffix: T("Suffix.Resisted")));
+                break;
+            case 9:
+                Queue(BattleTextEvent.ActionUsed, Miss("Label.Immune", noEffect: true));
+                Queue(BattleTextEvent.ActionUsed, Miss("Label.FullResist", noEffect: true));
+                Queue(BattleTextEvent.DamageDealt, Miss("Label.Invulnerable"));
+                break;
+            case 10:
+                Queue(BattleTextEvent.ShieldDealt, Shield(outgoing: true));
+                Queue(BattleTextEvent.ShieldTaken, Shield(outgoing: false));
+                break;
+            default:
+                Queue(BattleTextEvent.LimitBreak, LimitBreakMessage(2, LimitBreakActionOf(1)));
                 break;
         }
     }

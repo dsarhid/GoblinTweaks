@@ -259,6 +259,18 @@ internal unsafe class BattleTextAddon : NativeAddon
         AddCheckCell(1, "MergeTicks",    () => options.MergeTicks,    value => options.MergeTicks = value);
         _y += RowH;
 
+        AddSliderCell(0, "MergeWindow", 1, BattleTextAreaNode.MaxMergeWindowTenths, 1, () => options.MergeWindowTenths, value => options.MergeWindowTenths = value);
+        AddDropDownCell(1, "MergeAmount", "MergeAmount", () => options.MergeAmount, value => options.MergeAmount = value);
+        _y += RowH;
+
+        AddDropDownCell(0, "ShieldMode", "ShieldMode", () => options.ShieldMode, value => options.ShieldMode = value);
+        AddCheckCell(1, "LimitBreakIndicator", () => options.LimitBreakIndicator, value => options.LimitBreakIndicator = value);
+        _y += RowH;
+
+        AddCheckCell(0, "HpOutlineEnabled", () => options.HpOutlineEnabled, value => options.HpOutlineEnabled = value);
+        AddColorCell(1, "Color.HpOutline", () => colors.HpOutline, GoblinBattleText.DefaultColors.Outline, value => colors.HpOutline = value);
+        _y += RowH;
+
         AddCheckCell(0, "ShowHealTargets", () => options.ShowHealTargets, value => options.ShowHealTargets = value);
         AddCheckCell(1, "Abbreviate",      () => options.Abbreviate,      value => options.Abbreviate = value);
         _y += RowH;
@@ -520,7 +532,7 @@ internal unsafe class BattleTextAddon : NativeAddon
         foreach (var type in Enum.GetValues<GoblinBattleText.BattleTextEvent>())
         {
             // Cooldown alerts have their own tab.
-            if (type != GoblinBattleText.BattleTextEvent.Cooldown)
+            if (type is not (GoblinBattleText.BattleTextEvent.Cooldown or GoblinBattleText.BattleTextEvent.LimitBreak))
                 AddEventRow(type);
         }
 
@@ -777,17 +789,17 @@ internal unsafe class BattleTextAddon : NativeAddon
         return slider;
     }
 
-    private void AddDropDownAt<T>(Vector2 position, float width, string key, string labelKey, Func<T> get, Action<T> set) where T : struct, Enum
+    private void AddDropDownAt<T>(Vector2 position, float width, string key, string labelKey, Func<T> get, Action<T> set, Func<T, bool>? allow = null) where T : struct, Enum
     {
         var dropDown = new EnumDropDownNode<T>
         {
             Position         = position,
             Size             = new Vector2(width, 24f),
-            MaxListOptions   = Math.Min(Enum.GetValues<T>().Length, 12),
+            MaxListOptions   = Math.Min(Enum.GetValues<T>().Count(option => allow?.Invoke(option) ?? true), 12),
 
             // Before the options: the text of the selected one is taken when it is set.
             GetLabelFunction = option => Tweak.Text($"{labelKey}.{option}"),
-            Options          = [.. Enum.GetValues<T>()],
+            Options          = [.. Enum.GetValues<T>().Where(option => allow?.Invoke(option) ?? true)],
             SelectedOption   = get(),
             TextTooltip      = Tweak.Text(key + ".Help"),
         };
@@ -806,7 +818,8 @@ internal unsafe class BattleTextAddon : NativeAddon
         AddCheckAt(new Vector2(8f, _y + 7f), nameW - 16f, $"Event.{type}",
             () => options.Enabled, value => options.Enabled = value);
         AddDropDownAt(new Vector2(nameW, _y + 6f), choiceW - 12f, "Event.Area", "AreaName",
-            () => options.Area, value => options.Area = value);
+            () => options.Area, value => options.Area = value,
+            area => area != GoblinBattleText.BattleTextArea.LimitBreak);
         AddDropDownAt(new Vector2(nameW + choiceW, _y + 6f), choiceW - 12f, "Event.Motion", "Motion",
             () => options.Motion ?? GoblinBattleText.BattleTextMotion.Up, value => options.Motion = value);
 

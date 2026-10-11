@@ -149,6 +149,14 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         return marks;
     }
 
+    /// <summary>Ids of the visible ingredients of the selected recipe, for marking them in the bags, retainers and saddlebag.</summary>
+    public IReadOnlyCollection<uint> IngredientItemIds()
+    {
+        if (_selectedEntry is null || _ingById.Count == 0) return [];
+
+        return _ingById.Values.Select(node => node.Check.ItemId).ToHashSet();
+    }
+
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     protected override void OnSetup(AtkUnitBase* addon, Span<AtkValue> atkValues)
@@ -234,6 +242,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
 
     protected override void OnFinalize(AtkUnitBase* addon)
     {
+        Svc.Log.Information("CraftingMaterials: window finalizing.");
         _statusItems.Clear();
         _searchInput    = null;
         _refreshBtn     = null;

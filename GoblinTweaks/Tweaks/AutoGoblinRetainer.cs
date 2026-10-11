@@ -306,9 +306,25 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
             "problem"       => "  - " + (parts.Length > 1 ? parts[1] : string.Empty) + ": " + (parts.Length > 2 ? T("Problem." + parts[2]) : string.Empty),
             "cycleDone"     => string.Format(T("Msg.CycleDone"), Part(parts, 1), Part(parts, 2), Part(parts, 3), Part(parts, 4)),
             "visiting"      => string.Format(T("Msg.Visiting"), parts.Length > 1 ? parts[1] : "?"),
+            "repriced"      => RepricedText(parts),
             _               => code,
         };
         Svc.Chat.Print($"[AutoGoblinRetainer] {text}");
+    }
+
+    /// <summary>"Item: 1,200 → 1,150 gil, down 4.2%". The code is "repriced|name|hq|old|new".</summary>
+    private string RepricedText(string[] parts)
+    {
+        var name = parts.Length > 1 ? parts[1] : "?";
+        if (parts.Length > 2 && parts[2] == "1") name += " (HQ)";
+
+        long.TryParse(Part(parts, 3), out var before);
+        long.TryParse(Part(parts, 4), out var after);
+
+        var change  = before > 0 ? Math.Abs(after - before) * 100d / before : 0d;
+        var percent = change.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+        var key     = after < before ? "Msg.PriceDown" : "Msg.PriceUp";
+        return string.Format(T(key), name, before.ToString("N0"), after.ToString("N0"), percent);
     }
 
     /// <summary>The retainer a message is about, when a tour of several retainers is running.</summary>

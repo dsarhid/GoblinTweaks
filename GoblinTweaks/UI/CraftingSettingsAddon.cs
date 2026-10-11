@@ -33,7 +33,7 @@ internal sealed class CraftingSettingsAddon : SettingsPanelAddon
             on => { options.IncludeRetainers = on; Tweak.SaveCurrent(); });
         Toggle(Tweak.Text("IncludeFCChest"), Tweak.Text("IncludeFCChest.Help"), options.IncludeFCChest,
             on => { options.IncludeFCChest = on; Tweak.SaveCurrent(); });
-        Toggle(Tweak.Text("HighlightFCChest"), Tweak.Text("HighlightFCChest.Help"), options.HighlightFCChest,
-            on => { options.HighlightFCChest = on; Tweak.SaveCurrent(); });
+        Toggle(Tweak.Text("Highlight"), Tweak.Text("Highlight.Help"), options.Highlight,
+            on => { options.Highlight = on; Tweak.SaveCurrent(); });
     }
 }

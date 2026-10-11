@@ -17,6 +17,27 @@ internal static class ClipboardHelper
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GlobalUnlock(nint memory);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern nint GlobalFree(nint memory);
 
+    [DllImport("user32.dll", SetLastError = true)] private static extern nint GetClipboardData(uint format);
+
+    /// <summary>The text on the clipboard, or an empty string when there is none.</summary>
+    public static string GetText()
+    {
+        if (!OpenClipboard(0)) return string.Empty;
+
+        try
+        {
+            var memory = GetClipboardData(CfUnicodeText);
+            if (memory == 0) return string.Empty;
+
+            var source = GlobalLock(memory);
+            if (source == 0) return string.Empty;
+
+            try { return Marshal.PtrToStringUni(source) ?? string.Empty; }
+            finally { GlobalUnlock(memory); }
+        }
+        finally { CloseClipboard(); }
+    }
+
     public static bool SetText(string text)
     {
         var bytes  = (text.Length + 1) * 2;

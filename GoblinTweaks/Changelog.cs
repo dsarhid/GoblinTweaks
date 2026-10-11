@@ -34,6 +34,17 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.2.0", "2026-10-10",
+            "New Goblin Achievements and Goblin Damage Done; Crafting Materials now highlights ingredients in bags and retainers.",
+            [
+                "New: Goblin Achievements (/gach) — a native browser of every achievement with search, filters, progress and rewards, plus a tracker on screen for the ones you pin",
+                "New: Goblin Damage Done (/gdd) — a damage, healing and damage-taken table of your duty with job bars, an extra table of critical and direct hit rates, deaths and dispels, and a history of fights; it shows an example while its settings are open",
+                "New: Crafting Materials marks the ingredients of the selected recipe in your bags, your retainer's bags and the chocobo saddlebag: every other slot is dimmed and the tabs that hold them pulse",
+                "Change: the Crafting Materials highlight is now one option for the FC chest, bags, retainers and saddlebag; an ingredient your bags cover but that is also elsewhere shows \"Main bags +\" with a tooltip of where",
+                "New: Goblin Battle Text shows the shields you give and receive, alerts when a Limit Break level is ready (and shows it over the gauge), can merge hits by time and show the average, and can outline HP and MP and add your shield to the HP",
+                "New: AutoGoblinRetainer tells in chat every price the pinch changes: the item, the old and new price and the percentage it went up or down",
+                "New: a What's new button in the footer of the GoblinTweaks window opens the latest changes again",
+            ]),
         new("1.1.1", "2026-10-09",
             "Crafting Materials remembers your FC chest between sessions, and dims the chest slots that aren't part of the selected recipe.",
             [
