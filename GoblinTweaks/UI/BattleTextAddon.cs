@@ -264,7 +264,6 @@ internal unsafe class BattleTextAddon : NativeAddon
         _y += RowH;
 
         AddDropDownCell(0, "ShieldMode", "ShieldMode", () => options.ShieldMode, value => options.ShieldMode = value);
-        AddCheckCell(1, "LimitBreakIndicator", () => options.LimitBreakIndicator, value => options.LimitBreakIndicator = value);
         _y += RowH;
 
         AddCheckCell(0, "HpOutlineEnabled", () => options.HpOutlineEnabled, value => options.HpOutlineEnabled = value);

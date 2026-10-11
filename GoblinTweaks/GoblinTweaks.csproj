@@ -1,10 +1,10 @@
 <!--
   The Dalamud.NET.Sdk version is the Dalamud API level.
-  Change it ONLY when Dalamud releases a new API level (see docs/MAINTENANCE.md).
+  Change it ONLY when Dalamud releases a new API level.
 -->
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
-    <Version>1.2.1</Version>
+    <Version>1.2.2</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>

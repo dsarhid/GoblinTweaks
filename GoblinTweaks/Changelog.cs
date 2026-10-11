@@ -34,6 +34,11 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.2.2", "2026-10-11",
+            "Goblin Battle Text no longer writes the Limit Break level over its gauge.",
+            [
+                "Change: Goblin Battle Text no longer writes \"LB Lv N\" over the Limit Break gauge, and its option is gone",
+            ]),
         new("1.2.1", "2026-10-11",
             "Goblin Damage Done shows the Limit Break and counts adds; Battle Text can hide what your Trust NPCs deal.",
             [

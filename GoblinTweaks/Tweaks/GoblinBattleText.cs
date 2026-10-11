@@ -288,9 +288,6 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         /// <summary>What the HP of the player window shows while you have a shield.</summary>
         public BattleTextShieldMode ShieldMode { get; set; } = BattleTextShieldMode.Off;
 
-        /// <summary>"LB Lv 2" over the Limit Break gauge while a Limit Break can be used.</summary>
-        public bool LimitBreakIndicator { get; set; } = true;
-
         /// <summary>Healing you give says who it heals. With <see cref="MergeHeals"/>, only where there is one target: the ticks.</summary>
         public bool ShowHealTargets { get; set; }
 
@@ -639,7 +636,6 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     };
 
     private ShieldDisplay? _shield;
-    private LimitBreakDisplay? _limitBreak;
     private int _limitBreakLevel = -1;
 
     protected internal override void Enable()
@@ -700,8 +696,6 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         _shield = new ShieldDisplay(() => Settings.ShieldMode, () => Preview, () => Settings.HpOutlineEnabled ? Settings.Colors.HpOutline : null, ReportFailure);
         _shield.Start();
 
-        _limitBreak = new LimitBreakDisplay(() => Settings.LimitBreakIndicator, () => Settings.OutlineEnabled ? Settings.Colors.Outline : null, level => string.Format(T("LimitBreak.Indicator"), level), ReportFailure);
-        _limitBreak.Start();
         _limitBreakLevel = -1;
 
         Svc.Framework.Update += OnUpdate;
@@ -713,8 +707,6 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
         _shield?.Stop();
         _shield = null;
-        _limitBreak?.Stop();
-        _limitBreak = null;
         _shieldSeen.Clear();
         _shieldPending.Clear();
         _myCasts.Clear();
@@ -812,7 +804,6 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                 Settings.MergeWindowTenths = defaults.MergeWindowTenths;
                 Settings.MergeAmount = defaults.MergeAmount;
                 Settings.ShieldMode = defaults.ShieldMode;
-                Settings.LimitBreakIndicator = defaults.LimitBreakIndicator;
                 Settings.ShowHealTargets = defaults.ShowHealTargets;
                 Settings.Abbreviate  = defaults.Abbreviate;
                 Settings.IncludePets = defaults.IncludePets;

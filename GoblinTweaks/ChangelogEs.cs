@@ -8,6 +8,11 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.2.2"] = (
+            "Goblin Battle Text ya no escribe el nivel del Limit Break sobre su barra.",
+            [
+                "Change: Goblin Battle Text ya no escribe \"LB Nv N\" sobre la barra del Limit Break, y se quitó su opción",
+            ]),
         ["1.2.1"] = (
             "Goblin Damage Done muestra el Limit Break y cuenta los adds; Battle Text puede ocultar lo que hacen tus NPC Trust.",
             [
