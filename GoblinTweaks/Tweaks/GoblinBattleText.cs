@@ -299,6 +299,12 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         /// <summary>Count what your pet or chocobo deals as yours.</summary>
         public bool IncludePets { get; set; } = true;
 
+        /// <summary>
+        /// Show what the NPCs that fight beside you in a duty (Trust, Duty Support, story companions) deal, as outgoing.
+        /// They are not your pet, so by default it is off.
+        /// </summary>
+        public bool IncludeNpcs { get; set; }
+
         /// <summary>Whether damage you take says how much of it your damage reduction effects took off, and how.</summary>
         public BattleTextMitigation Mitigation { get; set; } = BattleTextMitigation.PercentAndWord;
 
@@ -810,6 +816,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                 Settings.ShowHealTargets = defaults.ShowHealTargets;
                 Settings.Abbreviate  = defaults.Abbreviate;
                 Settings.IncludePets = defaults.IncludePets;
+                Settings.IncludeNpcs = defaults.IncludeNpcs;
                 Settings.Mitigation  = defaults.Mitigation;
                 Settings.ShowDefended = defaults.ShowDefended;
                 Settings.Font       = defaults.Font;
@@ -1158,6 +1165,10 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                 estimated = true;
             }
         }
+
+        // A healing tick on you that no status could be named for: to see what it came from, what you have on you is written.
+        if (healTick && to == player && over.Name is null)
+            LogUnnamedHealTick(player, ticking);
 
         var mine    = from == player || ownTick || healTick || IsMyPet(player, from);
 
@@ -2013,8 +2024,30 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         return buff ? (fading ? colors.BuffEnd : colors.Buff) : (fading ? colors.DebuffEnd : colors.Debuff);
     }
 
+    /// <summary>
+    /// Whether an object is something of yours that fights for you. The NPCs that go with you in a duty (Trust, Duty
+    /// Support) are told apart by their kind: they are not pets, and they are shown only if the option for NPCs is on.
+    /// </summary>
     private bool IsMyPet(GameObject* player, GameObject* other)
-        => Settings.IncludePets && other != null && other->ObjectKind == ObjectKind.BattleNpc && other->OwnerId == player->EntityId;
+    {
+        if (other == null || other->ObjectKind != ObjectKind.BattleNpc) return false;
+        if (other->SubKind == (byte)BattleNpcSubKind.NpcPartyMember) return Settings.IncludeNpcs;
+
+        var owned = other->OwnerId == player->EntityId;
+
+        // Anything of yours that is neither a pet nor a chocobo is told once in the log, with its kind: it may be a kind of
+        // NPC that is not told apart yet.
+        if (owned && other->SubKind is not ((byte)BattleNpcSubKind.Pet or (byte)BattleNpcSubKind.Buddy or (byte)BattleNpcSubKind.RaceChocobo))
+        {
+            var key = $"{other->SubKind}:{((Character*)other)->NameString}";
+            if (_ownedKindsLogged.Add(key))
+                Svc.Log.Information($"GoblinBattleText: an object of yours that is not a pet: {((Character*)other)->NameString}, kind {other->SubKind} ({(BattleNpcSubKind)other->SubKind}).");
+        }
+
+        return Settings.IncludePets && owned;
+    }
+
+    private readonly HashSet<string> _ownedKindsLogged = [];
 
     /// <summary>Sends a message to the area chosen for its event. Returns false when the event or the area is turned off.</summary>
     private bool Queue(BattleTextEvent type, BattleTextMessage message)
@@ -2042,6 +2075,35 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         }
 
         return (action.Name.Length == 0 ? null : action.Name, action.IconId);
+    }
+
+    private readonly HashSet<string> _unnamedTicksLogged = [];
+
+    /// <summary>
+    /// Writes to the log the statuses you have when a healing tick comes that could not be named: their ids, names and who put
+    /// them. Once for each different set, so a long fight does not fill the log. It names nothing in the game: it is to see
+    /// which status the tick belongs to, if any.
+    /// </summary>
+    private void LogUnnamedHealTick(GameObject* player, (uint StatusId, uint SourceId)? ticking)
+    {
+        var statuses = ((BattleChara*)player)->GetStatusManager();
+        if (statuses == null) return;
+
+        var sheet = Svc.Data.GetExcelSheet<LuminaStatus>(Dalamud.Game.ClientLanguage.English);
+        var parts = new List<string>();
+        foreach (ref readonly var status in statuses->Status)
+        {
+            uint id = status.StatusId;
+            if (id == 0) continue;
+
+            var name = sheet != null && sheet.TryGetRow(id, out var row) ? row.Name.ExtractText() : "?";
+            parts.Add($"{id} {name} (from {status.SourceObject.ObjectId:X})");
+        }
+
+        var told = ticking is { } t ? $"the tick says status {t.StatusId}, source {t.SourceId:X}" : "the tick says nothing";
+        var list = string.Join("; ", parts);
+        if (_unnamedTicksLogged.Add(list))
+            Svc.Log.Information($"GoblinBattleText: healing over time on you with no name; {told}. Statuses on you: {list}.");
     }
 
     private (string? Name, uint IconId) LookupStatus(uint statusId)

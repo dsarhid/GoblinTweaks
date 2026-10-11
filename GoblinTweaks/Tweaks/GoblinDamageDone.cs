@@ -15,6 +15,7 @@ using GoblinTweaks.UI.Nodes;
 using KamiToolKit.UiOverlay;
 using Lumina.Excel;
 using LuminaClassJob = Lumina.Excel.Sheets.ClassJob;
+using LuminaAction = Lumina.Excel.Sheets.Action;
 using LuminaStatus = Lumina.Excel.Sheets.Status;
 
 namespace GoblinTweaks.Tweaks;
@@ -85,6 +86,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
     private sealed class Stat
     {
         public required string Name { get; init; }
+        public bool IsLimitBreak { get; init; }
         public uint JobId { get; set; }
         public long Damage { get; set; }
         public long Heal { get; set; }
@@ -95,6 +97,9 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         public int CritDirectHits { get; set; }
         public int Deaths { get; set; }
         public int Dispels { get; set; }
+
+        /// <summary>Damage and hits by action (0xFFFFFF00 for damage over time), to compare with another meter.</summary>
+        public Dictionary<uint, (long Damage, int Hits)> Actions { get; } = [];
         public bool Dead { get; set; }
     }
 
@@ -133,6 +138,16 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
     private const byte DetrimentalStatus = 2;   // StatusCategory of debuffs
     private const uint NoEntity = 0xE0000000;
 
+    /// <summary>Entity id of the "player" that stands for every Limit Break of the fight: it is not a person, so it has its own.</summary>
+    private const uint LimitBreakId = 0xFFFFFFF0;
+    private const uint TickAction   = 0xFFFFFF00;   // stands for "damage over time" in the breakdown by action
+
+    /// <summary>The action whose effects are being recorded (0 outside of them).</summary>
+    private uint _actionId;
+    private const uint LimitBreakCategory = 9;     // ActionCategory row of Limit Break actions
+    private const byte ActionKindAction   = 1;     // Header.ActionType of an action (as opposed to an item, a mount...)
+    private const uint LimitBreakIconAction = 200; // Braver: its icon stands for the Limit Break in the table
+
     /// <summary>The most players that can be in a duty: an alliance raid.</summary>
     internal const int MaxRows = DamageMeterNode.MaxRows;
 
@@ -152,7 +167,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
 
     private readonly Dictionary<uint, Vector4> _jobColors = [];
     private readonly Dictionary<uint, OverTime> _overTime = [];
-    private readonly List<nint> _tickSources = [];
+    private readonly Dictionary<(uint Source, uint Status), double> _tickWeights = [];
 
     // Ticks arrive one per status when two different statuses tick on the same target within moments; seen once, it is kept.
     private readonly Dictionary<nint, (DateTime At, uint Status, OverTime Kind)> _lastTick = [];
@@ -302,6 +317,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         new("Player 2",      24, 'C',   780_000,   930_000,   420_000, ["24.1%", "33.0%",  "8.0%", "1", "2"]),   // white mage
         new("Player 3",     34, 'A', 1_980_000,    52_000,   380_000, ["31.2%", "38.5%", "12.1%", "0", "0"]),   // samurai
         new("Player 4",     25, 'A', 1_820_000,    14_000,   310_000, ["26.4%", "41.3%", "10.9%", "0", "0"]),   // black mage
+        new("Limit Break",  0, (char)0,    28_000,         0,         0, ["0%", "0%", "0%", "0", "0"]),   // limit break
     ];
 
     private static readonly TimeSpan SampleLength = TimeSpan.FromSeconds(150);
@@ -320,7 +336,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
 
     /// <summary>The players of the example that the table lists with the current options, best first.</summary>
     private List<Sample> SamplePlayers(Meter mode)
-        => Samples.Where(sample => !Settings.OnlyMyGroup || sample.Group == 'A')
+        => Samples.Where(sample => !Settings.OnlyMyGroup || sample.Group == (char)0 || sample.Group == 'A')
                   .Where(sample => SampleAmount(sample, mode) > 0)
                   .OrderByDescending(sample => SampleAmount(sample, mode))
                   .Take(Math.Clamp(Settings.Rows, 1, MaxRows))
@@ -339,9 +355,12 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         {
             var sample = players[i];
             var amount = SampleAmount(sample, mode);
-            var name   = Settings.ShowGroup ? $"{i + 1}. [{sample.Group}] {sample.Name}" : $"{i + 1}. {sample.Name}";
+            var isLb   = sample.Group == (char)0;
+            var label  = isLb ? T("LimitBreak") : sample.Name;
+            var name   = Settings.ShowGroup && !isLb ? $"{i + 1}. [{sample.Group}] {label}" : $"{i + 1}. {label}";
             var value  = $"{Short(amount)} ({Short(amount / seconds)}, {(amount * 100d / total).ToString("0.0", CultureInfo.InvariantCulture)}%)";
-            rows.Add(new DamageMeterRow(name, sample.JobId, value, (float)((double)amount / top), ColorOf(sample.JobId)));
+            rows.Add(new DamageMeterRow(name, sample.JobId, value, (float)((double)amount / top), ColorOf(sample.JobId),
+                IconId: isLb ? LimitBreakIcon : 0));
         }
 
         return rows;
@@ -505,6 +524,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
     {
         try
         {
+            _actionId = header != null ? header->ActionId : 0;
             Record(casterEntityId, header, effects, targetEntityIds);
         }
         catch (Exception ex)
@@ -513,6 +533,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
             _failure ??= ex;
         }
 
+        _actionId = 0;
         _hook!.Original(casterEntityId, caster, targetPos, header, effects, targetEntityIds);
     }
 
@@ -524,22 +545,42 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         if (manager == null) return;
 
         var caster = manager->Objects.GetObjectByEntityId(casterEntityId);
-        if (caster == null) return;
 
         // What an enemy does to the players is damage taken.
-        if (IsEnemy(caster))
+        if (caster != null && IsHostile(manager, caster))
         {
             RecordTaken(manager, header, effects, targetEntityIds);
             return;
         }
 
+        // A Limit Break is not the doing of whoever pressed it: like the other meters, it is a line of its own.
+        if (header->ActionType == ActionKindAction && IsLimitBreak(header->ActionId))
+        {
+            RecordLimitBreak(manager, header, effects, targetEntityIds);
+            return;
+        }
+
+        if (caster == null)
+        {
+            _skipped.NoCaster++;
+            return;
+        }
+
         var credit = CreditedPlayer(manager, casterEntityId);
-        if (credit == null) return;
+        if (credit == null)
+        {
+            _skipped.NotOfTheDuty++;
+            return;
+        }
 
         for (var target = 0; target < header->NumTargets; target++)
         {
             var enemy = manager->Objects.GetObjectByEntityId(targetEntityIds[target].ObjectId);
-            if (enemy == null) continue;
+            if (enemy == null)
+            {
+                _skipped.NoTarget++;
+                continue;
+            }
 
             // The game says what each heal did, overheal included; the health before it lands says how much of it was real.
             var missing = Settings.IncludeOverheal ? long.MaxValue : MissingHealth(enemy);
@@ -569,7 +610,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
                 else
                 {
                     AddDamage(credit, enemy, amount);
-                    if (IsEnemy(enemy)) AddHit(credit, effect.Param0);
+                    if (IsHostile(manager, enemy)) AddHit(credit, effect.Param0);
                 }
             }
         }
@@ -593,7 +634,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
                     amount += (long)effect.Param3 << 16;
                 if (amount <= 0) continue;
 
-                var fight = ActiveFight();
+                var fight = ActiveFight(damage: true);
                 if (fight == null) return;
 
                 fight.Last = DateTime.UtcNow;
@@ -602,6 +643,114 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
             }
         }
     }
+
+    // ── Limit Break ─────────────────────────────────────────────────────────────
+
+    private readonly Dictionary<uint, bool> _limitBreakActions = [];
+    private uint? _limitBreakIcon;
+
+    /// <summary>Whether an action is a Limit Break (its category says so).</summary>
+    private bool IsLimitBreak(uint actionId)
+    {
+        if (_limitBreakActions.TryGetValue(actionId, out var known)) return known;
+
+        var sheet = Svc.Data.GetExcelSheet<LuminaAction>();
+        var is_   = sheet != null && sheet.TryGetRow(actionId, out var row) && row.ActionCategory.RowId == LimitBreakCategory;
+        return _limitBreakActions[actionId] = is_;
+    }
+
+    /// <summary>The icon the Limit Break line is drawn with.</summary>
+    private uint LimitBreakIcon
+        => _limitBreakIcon ??= Svc.Data.GetExcelSheet<LuminaAction>()?.GetRowOrDefault(LimitBreakIconAction)?.Icon ?? 0u;
+
+    private static Stat LimitBreakStat(Fight fight)
+    {
+        if (!fight.Players.TryGetValue(LimitBreakId, out var stat))
+            fight.Players[LimitBreakId] = stat = new Stat { Name = "Limit Break", IsLimitBreak = true };
+        return stat;
+    }
+
+    /// <summary>Adds damage to the breakdown by action of a player: what is being recorded is the action of the effect, or a tick.</summary>
+    private void AddToBreakdown(Stat stat, long amount)
+    {
+        var entry = stat.Actions.GetValueOrDefault(_actionId);
+        stat.Actions[_actionId] = (entry.Damage + amount, entry.Hits + 1);
+    }
+
+    /// <summary>The name of an action for the log, with "auto" when it is an auto-attack.</summary>
+    private string ActionLabel(uint actionId)
+    {
+        if (actionId == TickAction) return "damage over time";
+        if (actionId == 0) return "?";
+
+        var row = Svc.Data.GetExcelSheet<LuminaAction>()?.GetRowOrDefault(actionId);
+        var name = row?.Name.ExtractText();
+        if (string.IsNullOrWhiteSpace(name)) name = actionId.ToString();
+        return row?.ActionCategory.RowId == 1 ? $"{name} (auto)" : name;
+    }
+
+    /// <summary>The effects of a Limit Break: its damage and healing go to the Limit Break line, whoever pressed it.</summary>
+    private void RecordLimitBreak(GameObjectManager* manager, ActionEffectHandler.Header* header, ActionEffectHandler.TargetEffects* effects, GameObjectId* targetEntityIds)
+    {
+        for (var target = 0; target < header->NumTargets; target++)
+        {
+            var victim = manager->Objects.GetObjectByEntityId(targetEntityIds[target].ObjectId);
+            if (victim == null)
+            {
+                _skipped.NoTarget++;
+                continue;
+            }
+
+            var missing = Settings.IncludeOverheal ? long.MaxValue : MissingHealth(victim);
+            foreach (ref readonly var effect in effects[target].Effects)
+            {
+                var heal = effect.Type == HealEffect;
+                if (!heal && effect.Type is not (DamageEffect or BlockedEffect or ParriedEffect)) continue;
+
+                long amount = effect.Value;
+                if ((effect.Param4 & 0x40) != 0)
+                    amount += (long)effect.Param3 << 16;
+                if (amount <= 0) continue;
+
+                var fight = ActiveFight(damage: true);
+                if (fight == null) return;
+
+                fight.Last = DateTime.UtcNow;
+                var stat = LimitBreakStat(fight);
+                if (heal)
+                {
+                    var restored = Math.Min(amount, missing);
+                    if (missing != long.MaxValue) missing -= restored;
+                    stat.Heal += restored;
+                }
+                else if (IsHostile(manager, victim))
+                {
+                    stat.Damage += amount;
+                    AddToBreakdown(stat, amount);
+                    var name = ((Character*)victim)->NameString;
+                    fight.Targets[name] = fight.Targets.GetValueOrDefault(name) + amount;
+
+                    stat.Hits++;
+                    if ((effect.Param0 & CriticalFlag) != 0) stat.Crits++;
+                    if ((effect.Param0 & DirectHitFlag) != 0) stat.DirectHits++;
+                    if ((effect.Param0 & (CriticalFlag | DirectHitFlag)) == (CriticalFlag | DirectHitFlag)) stat.CritDirectHits++;
+                }
+
+                _dirty = true;
+            }
+        }
+    }
+
+    // ── What was left out, for the log ──────────────────────────────────────────
+
+    /// <summary>What the capture could not use during the fight, to compare with another meter: logged when it ends.</summary>
+    private struct Skipped
+    {
+        public int NoCaster, NotOfTheDuty, NoTarget, NotEnemy;
+        public long TickLost, TickCounted;
+    }
+
+    private Skipped _skipped;
 
     /// <summary>One hit of an action: the game says in a flag of the effect whether it was critical and a direct hit.</summary>
     private void AddHit(Character* credit, byte flags)
@@ -683,13 +832,20 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
 
     private void AddDamage(Character* credit, GameObject* enemy, long amount)
     {
-        if (amount <= 0 || !IsEnemy(enemy)) return;
+        if (amount <= 0) return;
+        if (!IsHostile(GameObjectManager.Instance(), enemy))
+        {
+            _skipped.NotEnemy++;
+            return;
+        }
 
-        var fight = ActiveFight();
+        var fight = ActiveFight(damage: true);
         if (fight == null) return;
 
         fight.Last = DateTime.UtcNow;
-        Credit(fight, credit).Damage += amount;
+        var stat = Credit(fight, credit);
+        stat.Damage += amount;
+        AddToBreakdown(stat, amount);
 
         var name = ((Character*)enemy)->NameString;
         fight.Targets[name] = fight.Targets.GetValueOrDefault(name) + amount;
@@ -703,6 +859,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
     {
         try
         {
+            _actionId = TickAction;
             RecordTick(target, statusId, tickMode, value, sourceEntityId);
         }
         catch (Exception ex)
@@ -710,6 +867,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
             _failure ??= ex;
         }
 
+        _actionId = 0;
         _tickHook!.Original(statuses, target, statusId, tickMode, value, sourceEntityId, damageType);
     }
 
@@ -732,7 +890,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         if (manager == null) return;
 
         // What the status says it does comes first; then the kind of effect the game reports; then who the target is.
-        var onEnemy = IsEnemy((GameObject*)target);
+        var onEnemy = IsHostile(manager, (GameObject*)target);
         var kind    = statusKind;
         if (kind == OverTime.None)
             kind = tickMode == HealEffect ? OverTime.Healing : tickMode == DamageEffect ? OverTime.Damage : onEnemy ? OverTime.Damage : OverTime.Healing;
@@ -749,12 +907,23 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         {
             var source = CreditedPlayer(manager, sourceEntityId);
             if (source != null)
+            {
                 AddTick(source, (GameObject*)target, kind, value);
+                if (kind == OverTime.Damage) _skipped.TickCounted += value;
+            }
+            else if (kind == OverTime.Damage)
+            {
+                _skipped.TickLost += value;
+            }
             return;
         }
 
         var list = target->GetStatusManager();
-        if (list == null) return;
+        if (list == null)
+        {
+            if (kind == OverTime.Damage) _skipped.TickLost += value;
+            return;
+        }
 
         // One tick per status: the status that ticked is the one that did it, and the tick is all its own.
         if (_perStatusTicks && statusId != 0)
@@ -769,32 +938,61 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
                 if (player == null) continue;
 
                 AddTick(player, (GameObject*)target, kind, value);
+                if (kind == OverTime.Damage) _skipped.TickCounted += value;
                 return;
             }
 
-            if (found) return;
+            if (found)
+            {
+                if (kind == OverTime.Damage) _skipped.TickLost += value;
+                return;
+            }
         }
 
-        // Otherwise the game adds up all the ticks in one number: they are shared out among the statuses that cause them.
-        // A status of someone who is not of the duty (an enemy) still takes its share, so it does not go to the players.
-        _tickSources.Clear();
-        var total = 0;
+        // Otherwise the game adds up the ticks of every status of the target in one number. It is shared out among the
+        // statuses that cause it in proportion to what each is worth, as other meters do with the potency of each. Here
+        // that is learned: a tick that has a single status on the target is exactly that status's, and it is kept as its
+        // weight for when others are on the same target. Until it is known, a status weighs what the known ones do on
+        // average. A status of someone who is not of the duty (an enemy) takes its share too, so it does not go to a player.
+        var parts = new List<(nint Player, uint Source, uint Status)>();
         foreach (ref readonly var status in list->Status)
         {
             uint id = status.StatusId;
             if (id == 0 || OverTimeOf(id) != kind) continue;
 
-            total++;
-            var player = CreditedPlayer(manager, status.SourceObject.ObjectId);
-            if (player != null)
-                _tickSources.Add((nint)player);
+            var sourceId = status.SourceObject.ObjectId;
+            parts.Add(((nint)CreditedPlayer(manager, sourceId), sourceId, id));
         }
 
-        if (total == 0) return;
+        if (parts.Count == 0)
+        {
+            if (kind == OverTime.Damage) _skipped.TickLost += value;
+            return;
+        }
 
-        var share = value / (long)total;
-        foreach (var credit in _tickSources)
-            AddTick((Character*)credit, (GameObject*)target, kind, share);
+        if (parts.Count == 1 && parts[0].Source is not (0 or NoEntity))
+            _tickWeights[(parts[0].Source, parts[0].Status)] = value;
+
+        var known    = parts.Select(part => _tickWeights.TryGetValue((part.Source, part.Status), out var weight) ? weight : 0d).ToList();
+        var average  = known.Where(weight => weight > 0d).DefaultIfEmpty(0d).Average();
+        var weights  = known.Select(weight => weight > 0d ? weight : average > 0d ? average : 1d).ToList();
+        var sum      = weights.Sum();
+
+        long credited = 0;
+        for (var i = 0; i < parts.Count; i++)
+        {
+            if (parts[i].Player == 0) continue;
+
+            var amount = (long)(value * weights[i] / sum);
+            AddTick((Character*)parts[i].Player, (GameObject*)target, kind, amount);
+            credited += amount;
+        }
+
+        if (kind == OverTime.Damage)
+        {
+            _skipped.TickCounted += credited;
+            _skipped.TickLost    += value - credited;
+        }
     }
 
     /// <summary>A tick of damage over time on a player: counted as damage taken, in a duty or on yourself.</summary>
@@ -805,7 +1003,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         var me = Control.GetLocalPlayer();
         if (!InDuty() && (me == null || target->EntityId != me->EntityId)) return;
 
-        var fight = ActiveFight();
+        var fight = ActiveFight(damage: true);
         if (fight == null) return;
 
         fight.Last = DateTime.UtcNow;
@@ -871,8 +1069,21 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
     private static bool InDuty()
         => Svc.Condition[ConditionFlag.BoundByDuty] || Svc.Condition[ConditionFlag.BoundByDuty56];
 
-    private static bool IsEnemy(GameObject* target)
-        => target->ObjectKind == ObjectKind.BattleNpc && target->SubKind == (byte)BattleNpcSubKind.Combatant;
+    /// <summary>
+    /// Whether an object is on the other side: a combatant, or what an enemy summoned (the adds of a boss are not
+    /// "combatants" of their own, they belong to the boss). What belongs to a player (a pet, a chocobo) or is an ally is not.
+    /// </summary>
+    private static bool IsHostile(GameObjectManager* manager, GameObject* target)
+    {
+        if (target == null || target->ObjectKind != ObjectKind.BattleNpc) return false;
+        if (target->SubKind == (byte)BattleNpcSubKind.Combatant) return true;
+
+        var owner = target->OwnerId;
+        if (manager == null || owner is 0 or NoEntity) return false;
+
+        var parent = manager->Objects.GetObjectByEntityId(owner);
+        return parent != null && parent->ObjectKind != ObjectKind.Pc;
+    }
 
     private static Stat Credit(Fight fight, Character* player)
     {
@@ -887,10 +1098,12 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
     }
 
     /// <summary>The fight damage counts for: the one in progress, or a new one if you are in combat and the last one ended.</summary>
-    private Fight? ActiveFight()
+    private Fight? ActiveFight(bool damage = false)
     {
         if (_fight is { Ended: false }) return _fight;
-        if (!Svc.Condition[ConditionFlag.InCombat]) return null;
+        // A fight starts with the first damage to an enemy in a duty even if your own combat flag is not up: the flag
+        // is yours, and the others may be fighting. Out of a duty, or for anything but damage, it needs the flag.
+        if (!Svc.Condition[ConditionFlag.InCombat] && !(damage && InDuty())) return null;
 
         var now = DateTime.UtcNow;
         _outOfCombatSince = DateTime.MinValue;
@@ -909,6 +1122,8 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         var fight = _fight = new Fight { Number = ++_fightCount, Start = now, Last = now, Territory = territory };
         _history.Add(fight);
         if (_history.Count > HistoryLimit) _history.RemoveAt(0);
+        _skipped = default;
+        Svc.Log.Information($"GoblinDamageDone: fight #{fight.Number} started.");
         return fight;
     }
 
@@ -976,8 +1191,29 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         if (_outOfCombatSince == DateTime.MinValue) _outOfCombatSince = now;
         if (now - _outOfCombatSince < EndGrace) return;
 
+        // Being out of combat is only about you: dead (or raised and not yet back in it), you are out while the
+        // fight goes on. It is over when nobody has done or taken anything for a moment either, like other meters.
+        if (now - fight.Last < EndGrace) return;
+
         fight.Ended = true;
         _dirty = true;
+        LogFight(fight);
+    }
+
+    /// <summary>
+    /// What the fight added up to and what the capture left out, written once when it ends: the lines to compare with
+    /// another meter (the same fight length, the same totals per player) and see where a difference comes from.
+    /// </summary>
+    private void LogFight(Fight fight)
+    {
+        var players = string.Join(" | ", fight.Players.Values
+            .OrderByDescending(stat => stat.Damage)
+            .Select(stat => $"{stat.Name} dmg {stat.Damage:N0} heal {stat.Heal:N0} taken {stat.Taken:N0} hits {stat.Hits} (crit {stat.Crits}, direct {stat.DirectHits}) "
+                + $"by action [{string.Join("; ", stat.Actions.OrderByDescending(pair => pair.Value.Damage).Take(12).Select(pair => $"{ActionLabel(pair.Key)} {pair.Value.Damage:N0} x{pair.Value.Hits}"))}]"));
+        Svc.Log.Information($"GoblinDamageDone: fight #{fight.Number} ended after {fight.Length:m\\:ss} against {(fight.Boss.Length > 0 ? fight.Boss : "-")}; "
+            + $"{players}. Left out: effects with no caster {_skipped.NoCaster}, caster not of the duty {_skipped.NotOfTheDuty}, "
+            + $"target not found {_skipped.NoTarget}, target not an enemy {_skipped.NotEnemy}; "
+            + $"damage over time counted {_skipped.TickCounted:N0}, not credited {_skipped.TickLost:N0}.");
     }
 
     /// <summary>Puts the panel where it was left, and takes its new place when the user has dragged it.</summary>
@@ -1126,7 +1362,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         var myGroup = (char)0;
         var letters = Settings.ShowGroup || Settings.OnlyMyGroup ? GroupLetters(out myGroup) : null;
         var ranked = fight.Players.Where(pair => AmountOf(pair.Value, mode) > 0)
-                                  .Where(pair => letters is null || !Settings.OnlyMyGroup
+                                  .Where(pair => letters is null || !Settings.OnlyMyGroup || pair.Value.IsLimitBreak
                                                  || (letters.TryGetValue(pair.Key, out var letter) && letter == myGroup))
                                   .OrderByDescending(pair => AmountOf(pair.Value, mode))
                                   .ToList();
@@ -1160,14 +1396,16 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
                 ? $"{Short(amount)} ({Short(rate)}, {(amount * 100d / total).ToString("0.0", CultureInfo.InvariantCulture)}%)"
                 : $"{Short(amount)} ({Short(rate)}) {Delta(rate, oldRate.GetValueOrDefault(id))}";
 
+            var label = stat.IsLimitBreak ? T("LimitBreak") : stat.Name;
             rows.Add(new DamageMeterRow(
                 letters is not null && Settings.ShowGroup && letters.TryGetValue(id, out var group)
-                    ? $"{shown + 1}. [{group}] {stat.Name}"
-                    : $"{shown + 1}. {stat.Name}",
+                    ? $"{shown + 1}. [{group}] {label}"
+                    : $"{shown + 1}. {label}",
                 stat.JobId,
                 value,
                 (float)((double)amount / top),
-                ColorOf(stat.JobId)));
+                ColorOf(stat.JobId),
+                IconId: stat.IsLimitBreak ? LimitBreakIcon : 0));
         }
 
         return rows;
@@ -1229,8 +1467,9 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
                 ? [.. Samples.OrderByDescending(sample => sample.Damage)]
                 : SamplePlayers(Settings.Mode);
             foreach (var sample in players)
-                rows.Add(new DamageMeterRow(free ? sample.Name : string.Empty, free ? sample.JobId : 0,
-                    string.Empty, 0f, ColorOf(sample.JobId) with { W = 0f }, sample.Hits));
+                rows.Add(new DamageMeterRow(free ? (sample.Group == (char)0 ? T("LimitBreak") : sample.Name) : string.Empty, free ? sample.JobId : 0,
+                    string.Empty, 0f, ColorOf(sample.JobId) with { W = 0f }, sample.Hits,
+                    free && sample.Group == (char)0 ? LimitBreakIcon : 0));
         }
         else if (_fight is { } current)
         {
@@ -1239,9 +1478,10 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
                 : _mainIds.Where(current.Players.ContainsKey).Select(id => current.Players[id]);
 
             foreach (var stat in stats)
-                rows.Add(new DamageMeterRow(free ? stat.Name : string.Empty, free ? stat.JobId : 0,
+                rows.Add(new DamageMeterRow(free ? (stat.IsLimitBreak ? T("LimitBreak") : stat.Name) : string.Empty, free ? stat.JobId : 0,
                     string.Empty, 0f, ColorOf(stat.JobId) with { W = 0f },
-                    [Percent(stat.Crits, stat.Hits), Percent(stat.DirectHits, stat.Hits), Percent(stat.CritDirectHits, stat.Hits), stat.Deaths.ToString(), stat.Dispels.ToString()]));
+                    [Percent(stat.Crits, stat.Hits), Percent(stat.DirectHits, stat.Hits), Percent(stat.CritDirectHits, stat.Hits), stat.Deaths.ToString(), stat.Dispels.ToString()],
+                    free && stat.IsLimitBreak ? LimitBreakIcon : 0));
         }
 
         panel.SetRows(rows, false);

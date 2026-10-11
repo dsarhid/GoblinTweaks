@@ -279,6 +279,9 @@ internal unsafe class BattleTextAddon : NativeAddon
         AddCheckCell(1, "ShowDefended", () => options.ShowDefended, value => options.ShowDefended = value);
         _y += RowH;
 
+        AddCheckCell(0, "IncludeNpcs", () => options.IncludeNpcs, value => options.IncludeNpcs = value);
+        _y += RowH;
+
         AddDropDownCell(0, "Mitigation", "Mitigation", () => options.Mitigation, value => options.Mitigation = value);
         AddDropDownCell(1, "Font", "Font", () => options.Font, value => options.Font = value);
         _y += RowH;

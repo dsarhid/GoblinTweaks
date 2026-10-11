@@ -7,7 +7,7 @@ using KamiToolKit.UiOverlay;
 namespace GoblinTweaks.UI.Nodes;
 
 /// <summary>One line of the damage meter: who, what job, how much, and how much of the largest.</summary>
-internal readonly record struct DamageMeterRow(string Name, uint JobId, string Value, float Fraction, Vector4 Color, string[]? Cells = null);
+internal readonly record struct DamageMeterRow(string Name, uint JobId, string Value, float Fraction, Vector4 Color, string[]? Cells = null, uint IconId = 0);
 
 /// <summary>
 /// The part of the table that is dragged: the title, on its own overlay node so that only the title moves the table

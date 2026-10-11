@@ -142,8 +142,8 @@ internal static unsafe class MeterRows
 
     public static void Fill(MeterRow row, DamageMeterRow data, float width, bool names)
     {
-        row.Icon.IconId    = data.JobId == 0 ? 0 : 62100 + data.JobId;
-        row.Icon.IsVisible = names && data.JobId != 0;
+        row.Icon.IconId    = data.IconId != 0 ? data.IconId : data.JobId == 0 ? 0 : 62100 + data.JobId;
+        row.Icon.IsVisible = names && (data.JobId != 0 || data.IconId != 0);
         row.Name.IsVisible = names;
         row.Name.String    = data.Name;
         row.Value.String   = data.Value;

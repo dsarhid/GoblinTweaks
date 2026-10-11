@@ -8,6 +8,16 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.2.1"] = (
+            "Goblin Damage Done muestra el Limit Break y cuenta los adds; Battle Text puede ocultar lo que hacen tus NPC Trust.",
+            [
+                "New: Goblin Damage Done lista el Limit Break como una línea propia, con su ícono, en la tabla, en la tabla extra y en el ejemplo",
+                "Fix: Goblin Damage Done dejaba afuera el daño a los enemigos que invoca un jefe (adds); ahora cuenta todo enemigo, y lo que te hacen cuenta como daño recibido",
+                "Fix: Goblin Damage Done terminaba una pelea, y perdía el resto, cuando se apagaba tu propia bandera de combate; ahora termina solo cuando nadie hizo ni recibió daño por un momento",
+                "Change: Goblin Damage Done reparte el daño con el tiempo de un objetivo entre sus estados en proporción a lo que hizo cada uno cuando estaba solo, y no en partes iguales",
+                "New: Goblin Damage Done escribe en el log, al terminar una pelea, su duración y los totales de cada jugador por acción, para comparar con otros medidores",
+                "New: Goblin Battle Text tiene una opción para mostrar u ocultar lo que hacen los NPC que pelean a tu lado (Trust, Soporte de deberes); se mostraban como si fueran tus mascotas, y ahora viene desactivada",
+            ]),
         ["1.2.0"] = (
             "Nuevos Goblin Achievements y Goblin Damage Done; Crafting Materials ahora resalta ingredientes en bolsas y retainers.",
             [

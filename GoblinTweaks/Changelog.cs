@@ -34,6 +34,16 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.2.1", "2026-10-11",
+            "Goblin Damage Done shows the Limit Break and counts adds; Battle Text can hide what your Trust NPCs deal.",
+            [
+                "New: Goblin Damage Done lists the Limit Break as a line of its own, with its icon, in the table, the extra table and the example",
+                "Fix: Goblin Damage Done left out the damage dealt to the enemies a boss summons (adds); now every enemy counts, and what they deal to you counts as damage taken",
+                "Fix: Goblin Damage Done ended a fight, and lost the rest of it, when your own combat flag dropped; now it ends only when nobody has dealt or taken damage for a moment",
+                "Change: Goblin Damage Done shares the damage over time of a target among its statuses in proportion to what each did when it was alone, instead of in equal parts",
+                "New: Goblin Damage Done writes to the log, when a fight ends, its length and each player's totals by action, to compare with other meters",
+                "New: Goblin Battle Text has an option to show or hide what the NPCs that fight beside you (Trust, Duty Support) deal; they were shown as if they were your pets, and now it is off by default",
+            ]),
         new("1.2.0", "2026-10-10",
             "New Goblin Achievements and Goblin Damage Done; Crafting Materials now highlights ingredients in bags and retainers.",
             [
