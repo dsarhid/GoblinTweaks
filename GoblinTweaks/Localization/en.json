@@ -334,6 +334,8 @@
   "Tweaks.GoblinBattleText.IncludePets.Help": "What your pet or chocobo deals is shown as outgoing.",
   "Tweaks.GoblinBattleText.IncludeNpcs": "Include allied NPCs (Trust)",
   "Tweaks.GoblinBattleText.IncludeNpcs.Help": "What the NPCs that fight beside you in a duty (Trust, Duty Support, story companions) deal is shown as outgoing, as if it were yours. Off by default: they are not your pet.",
+  "Tweaks.GoblinBattleText.IncludeNpcHealing": "Include allied NPC healing",
+  "Tweaks.GoblinBattleText.IncludeNpcHealing.Help": "Also show the healing of those NPCs (and their healing over time) as yours. Needs the option above. Off by default: it is theirs, not yours.",
   "Tweaks.GoblinBattleText.ShowDefended": "Show blocked, parried and resisted",
   "Tweaks.GoblinBattleText.ShowDefended.Help": "Damage that was blocked, parried or resisted says so after the number, like -270 (parried). Off: only the number shows.",
   "Tweaks.GoblinBattleText.Mitigation": "Mitigated",

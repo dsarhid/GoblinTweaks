@@ -279,6 +279,7 @@ internal unsafe class BattleTextAddon : NativeAddon
         _y += RowH;
 
         AddCheckCell(0, "IncludeNpcs", () => options.IncludeNpcs, value => options.IncludeNpcs = value);
+        AddCheckCell(1, "IncludeNpcHealing", () => options.IncludeNpcHealing, value => options.IncludeNpcHealing = value);
         _y += RowH;
 
         AddDropDownCell(0, "Mitigation", "Mitigation", () => options.Mitigation, value => options.Mitigation = value);

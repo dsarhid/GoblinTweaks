@@ -34,7 +34,12 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
-        new("1.2.3", "2026-10-19",
+        new("1.2.4", "2026-10-19",
+            "Goblin Battle Text can show the healing of your allied NPCs as yours again, with a new option.",
+            [
+                "New: Goblin Battle Text has an option to include the healing of allied NPCs (Trust), off by default",
+            ]),
+        new("1.2.3","2026-10-19",
             "Faster market selling that retries stuck items; Battle Text shows fall damage and clearer buff colors.",
             [
                 "Fix: Market selling sometimes skipped items when the item menu or Armoury Chest was slow to open — it now waits longer and retries once",

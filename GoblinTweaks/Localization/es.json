@@ -334,6 +334,8 @@
   "Tweaks.GoblinBattleText.IncludePets.Help": "Lo que hace tu mascota o chocobo se muestra como saliente.",
   "Tweaks.GoblinBattleText.IncludeNpcs": "Incluir NPC aliados (Trust)",
   "Tweaks.GoblinBattleText.IncludeNpcs.Help": "Lo que hacen los NPC que pelean a tu lado en una duty (Trust, Soporte de deberes, compañeros de la historia) se muestra como saliente, como si fuera tuyo. Desactivado por defecto: no son tu mascota.",
+  "Tweaks.GoblinBattleText.IncludeNpcHealing": "Incluir curación de NPC aliados",
+  "Tweaks.GoblinBattleText.IncludeNpcHealing.Help": "Muestra también la curación de esos NPC (y su curación en el tiempo) como tuya. Requiere la opción de arriba. Desactivado por defecto: es de ellos, no tuya.",
   "Tweaks.GoblinBattleText.ShowDefended": "Mostrar bloqueado, parado y resistido",
   "Tweaks.GoblinBattleText.ShowDefended.Help": "El daño bloqueado, parado o resistido lo dice después del número, como -270 (parado). Desactivado: solo sale el número.",
   "Tweaks.GoblinBattleText.Mitigation": "Mitigado",

@@ -301,6 +301,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         /// They are not your pet, so by default it is off.
         /// </summary>
         public bool IncludeNpcs { get; set; }
+        public bool IncludeNpcHealing { get; set; }
 
         /// <summary>Whether damage you take says how much of it your damage reduction effects took off, and how.</summary>
         public BattleTextMitigation Mitigation { get; set; } = BattleTextMitigation.PercentAndWord;
@@ -810,6 +811,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                 Settings.Abbreviate  = defaults.Abbreviate;
                 Settings.IncludePets = defaults.IncludePets;
                 Settings.IncludeNpcs = defaults.IncludeNpcs;
+                Settings.IncludeNpcHealing = defaults.IncludeNpcHealing;
                 Settings.Mitigation  = defaults.Mitigation;
                 Settings.ShowDefended = defaults.ShowDefended;
                 Settings.Font       = defaults.Font;
@@ -1122,7 +1124,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             // The game says whose tick it is: no guessing, and no sharing it out.
             var manager = GameObjectManager.Instance();
             var yours   = told.SourceId == player->EntityId
-                          || IsMyPet(player, manager == null ? null : manager->Objects.GetObjectByEntityId(told.SourceId), npcs: !healTick);
+                          || IsMyPet(player, manager == null ? null : manager->Objects.GetObjectByEntityId(told.SourceId), healing: healTick);
             if (to != player && !yours)
             {
                 if (healTick) return false;
@@ -1171,7 +1173,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         if (healTick && to != player)
             LogHealTickOnOther(to, ticking, over);
 
-        var mine    = from == player || ownTick || healTick || IsMyPet(player, from, npcs: !heal);
+        var mine    = from == player || ownTick || healTick || IsMyPet(player, from, healing: heal);
 
         bool outgoing;
         if (to == player) outgoing = false;
@@ -1886,7 +1888,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             if (!isMine)
             {
                 var manager = GameObjectManager.Instance();
-                isMine = IsMyPet(player, manager == null ? null : manager->Objects.GetObjectByEntityId(sourceId), npcs: kind != OverTime.Healing);
+                isMine = IsMyPet(player, manager == null ? null : manager->Objects.GetObjectByEntityId(sourceId), healing: kind == OverTime.Healing);
             }
 
             total++;
@@ -2042,10 +2044,10 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     /// Whether an object is something of yours that fights for you. The NPCs that go with you in a duty (Trust, Duty
     /// Support) are told apart by their kind: they are not pets, and they are shown only if the option for NPCs is on, and never for healing: that is theirs, not yours.
     /// </summary>
-    private bool IsMyPet(GameObject* player, GameObject* other, bool npcs = true)
+    private bool IsMyPet(GameObject* player, GameObject* other, bool healing = false)
     {
         if (other == null || other->ObjectKind != ObjectKind.BattleNpc) return false;
-        if (other->SubKind == (byte)BattleNpcSubKind.NpcPartyMember) return npcs && Settings.IncludeNpcs;
+        if (other->SubKind == (byte)BattleNpcSubKind.NpcPartyMember) return healing ? Settings.IncludeNpcHealing : Settings.IncludeNpcs;
 
         var owned = other->OwnerId == player->EntityId;
 

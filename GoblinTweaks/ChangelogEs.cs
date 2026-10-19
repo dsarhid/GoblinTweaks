@@ -8,6 +8,11 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.2.4"] = (
+            "Goblin Battle Text puede volver a mostrar como tuya la curación de tus NPC aliados, con una opción nueva.",
+            [
+                "New: Goblin Battle Text tiene una opción para incluir la curación de los NPC aliados (Trust), desactivada por defecto",
+            ]),
         ["1.2.3"] = (
             "Venta más rápida en el mercado que reintenta los ítems trabados; Battle Text muestra daño por caída y colores más claros.",
             [
