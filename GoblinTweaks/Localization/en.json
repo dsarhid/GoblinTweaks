@@ -385,6 +385,7 @@
   "Tweaks.GoblinBattleText.Color.Mp": "MP gained",
   "Tweaks.GoblinBattleText.Color.Cooldown": "Color of the action name",
   "Tweaks.GoblinBattleText.Label.Miss": "Miss",
+  "Tweaks.GoblinBattleText.Label.FallDamage": "FALL DAMAGE",
   "Tweaks.GoblinBattleText.Label.Dodge": "Dodge",
   "Tweaks.GoblinBattleText.Label.Invulnerable": "Invulnerable",
   "Tweaks.GoblinBattleText.Label.Mp": "MP",

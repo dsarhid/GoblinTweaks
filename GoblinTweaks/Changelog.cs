@@ -34,6 +34,16 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.2.3", "2026-10-19",
+            "Faster market selling that retries stuck items; Battle Text shows fall damage and clearer buff colors.",
+            [
+                "Fix: Market selling sometimes skipped items when the item menu or Armoury Chest was slow to open — it now waits longer and retries once",
+                "Change: Market selling runs faster, with shorter waits between steps",
+                "New: Goblin Battle Text labels fall damage as \"FALL DAMAGE\"",
+                "New: Goblin Battle Text shows the Living Shadow icon on the hits of a Dark Knight's shadow",
+                "Change: Goblin Battle Text colors gains in green and fades in red, and wears the same colors for the effects on the status line",
+                "Fix: Goblin Battle Text no longer shows healing from Trust NPCs as yours, and recognizes more regeneration effects from duties",
+            ]),
         new("1.2.2", "2026-10-11",
             "Goblin Battle Text no longer writes the Limit Break level over its gauge.",
             [

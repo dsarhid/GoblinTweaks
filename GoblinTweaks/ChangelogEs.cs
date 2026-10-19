@@ -8,6 +8,16 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.2.3"] = (
+            "Venta más rápida en el mercado que reintenta los ítems trabados; Battle Text muestra daño por caída y colores más claros.",
+            [
+                "Fix: Al vender en el mercado a veces se salteaban ítems cuando el menú del ítem o el Armoury Chest tardaba en abrir; ahora espera más y reintenta una vez",
+                "Change: Vender en el mercado va más rápido, con esperas más cortas entre pasos",
+                "New: Goblin Battle Text rotula el daño por caída como \"DAÑO POR CAÍDA\"",
+                "New: Goblin Battle Text muestra el ícono de Living Shadow en los golpes de la sombra del Caballero Oscuro",
+                "Change: Goblin Battle Text pinta las ganancias en verde y los fines en rojo, y usa los mismos colores en los efectos de la línea de estado",
+                "Fix: Goblin Battle Text ya no muestra como tuya la curación de los NPC Trust, y reconoce más efectos de regeneración de los duties",
+            ]),
         ["1.2.2"] = (
             "Goblin Battle Text ya no escribe el nivel del Limit Break sobre su barra.",
             [

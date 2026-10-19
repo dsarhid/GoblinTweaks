@@ -55,7 +55,8 @@ internal sealed unsafe class SellRunner
 
     private static readonly TimeSpan StepTimeout    = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ResultsTimeout = TimeSpan.FromSeconds(12);
-    private static readonly TimeSpan StepGap        = TimeSpan.FromMilliseconds(300);
+    private static readonly TimeSpan ItemTimeout    = TimeSpan.FromSeconds(15); // the Armoury Chest and the item menu can be slow to show
+    private static readonly TimeSpan StepGap        = TimeSpan.FromMilliseconds(150);
 
     private readonly AutoPincher         _pincher;
     private readonly Func<PinchRules>    _rules;
@@ -74,6 +75,7 @@ internal sealed unsafe class SellRunner
     private Queue<ListingTask> _queue = new();
     private ListingTask?      _task;
     private bool              _armouryAsked;
+    private bool              _retried;
     private ushort            _menuOwner;      // window the item menu is opened from: the sell list, or the Armoury Chest for armoury stacks
     private DateTime          _verifySeen = DateTime.MinValue;
     private ushort            _windowId;
@@ -209,6 +211,16 @@ internal sealed unsafe class SellRunner
             // The game ignoring "Put Up for Sale" for one stack (for example Market Prohibited items) must not stop the whole run.
             if (_step is Step.OpenArmoury or Step.WaitItemMenu or Step.WaitPriceWindow && _task is not null)
             {
+                // The menu sometimes just fails to open the first time (stale Armoury Chest tab, slow window), so retry once.
+                if (!_retried && _step != Step.WaitPriceWindow)
+                {
+                    _retried = true;
+                    if (AddonCallback.Ready(ContextAddon, out var stale)) stale->Close(true);
+                    Enter(SellInventory.IsArmoury(_task.Type) ? Step.OpenArmoury : Step.OpenItemMenu, ItemTimeout);
+                    return;
+                }
+
+                Svc.Log.Warning($"SellRunner: {_task.Name} ({_task.Type} slot {_task.Slot}) timed out at {_step}");
                 Skip("WouldNot");
                 return;
             }
@@ -268,7 +280,8 @@ internal sealed unsafe class SellRunner
                 _task = _queue.Dequeue();
                 _menuOwner    = _windowId;
                 _armouryAsked = false;
-                Enter(SellInventory.IsArmoury(_task.Type) ? Step.OpenArmoury : Step.OpenItemMenu);
+                _retried      = false;
+                Enter(SellInventory.IsArmoury(_task.Type) ? Step.OpenArmoury : Step.OpenItemMenu, ItemTimeout);
                 break;
 
             case Step.OpenArmoury:
@@ -288,7 +301,7 @@ internal sealed unsafe class SellRunner
                 }
 
                 _menuOwner = board->Id;
-                Enter(Step.OpenItemMenu);
+                Enter(Step.OpenItemMenu, ItemTimeout);
                 break;
             }
 
@@ -303,7 +316,7 @@ internal sealed unsafe class SellRunner
                     return;
                 if (agent->IsContextItemDisabled(PutUpForSale)) { Skip("NotAllowed"); return; }
                 AddonCallback.Fire(context, 0, PutUpForSale, 0u, null, null);
-                Enter(Step.WaitPriceWindow);
+                Enter(Step.WaitPriceWindow, ItemTimeout);
                 break;
 
             case Step.WaitPriceWindow:
@@ -364,7 +377,7 @@ internal sealed unsafe class SellRunner
                 if (ListingsNow() > _listingsBefore)
                 {
                     if (_verifySeen == DateTime.MinValue) { _verifySeen = DateTime.UtcNow; return; }
-                    if (DateTime.UtcNow - _verifySeen < TimeSpan.FromSeconds(3)) return;
+                    if (DateTime.UtcNow - _verifySeen < TimeSpan.FromSeconds(2)) return;
 
                     _listed++;
                     _say($"listedOne|{_task!.Name}|{_task.Quantity}|{_pricePaid}");
@@ -481,7 +494,7 @@ internal sealed unsafe class SellRunner
         if (agent == null) { Stop("error"); return; }
 
         agent->OpenForItemSlot(task.Type, task.Slot, 0, _menuOwner);
-        Enter(Step.WaitItemMenu);
+        Enter(Step.WaitItemMenu, ItemTimeout);
     }
 
     /// <summary>Checks the price window is for the expected item and sets the quantity (the whole stack unless edited).</summary>

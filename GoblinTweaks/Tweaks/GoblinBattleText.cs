@@ -234,9 +234,9 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         public static readonly Vector4 Heal              = new(0.50f, 1f, 0.55f, 1f);
         public static readonly Vector4 Miss              = new(0.80f, 0.80f, 0.80f, 1f);
         public static readonly Vector4 Mp                = new(0.45f, 0.70f, 1f, 1f);
-        public static readonly Vector4 Buff              = new(0.95f, 0.90f, 0.55f, 1f);
+        public static readonly Vector4 Buff              = new(0.45f, 0.95f, 0.50f, 1f);
         public static readonly Vector4 Debuff            = new(0.45f, 0.85f, 0.90f, 1f);
-        public static readonly Vector4 BuffEnd           = new(0.72f, 0.66f, 0.50f, 1f);
+        public static readonly Vector4 BuffEnd           = new(1f, 0.36f, 0.30f, 1f);
         public static readonly Vector4 DebuffEnd         = new(0.50f, 0.62f, 0.68f, 1f);
         public static readonly Vector4 Cooldown          = new(1f, 0.30f, 0.25f, 1f);
         public static readonly Vector4 CooldownText      = new(1f, 1f, 1f, 1f);
@@ -384,6 +384,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
     private const byte ActionKindAction = 1;
     private const uint AutoAttackCategory = 1;      // ActionCategory row of auto-attacks
+    private const uint LivingShadowAction = 25801;   // the Dark Knight's shadow has no actions of its own to show
+    private const uint DarkKnightJob = 32;
     private const uint AttackAction = 7;            // the auto-attack of a melee job
     private const uint ShotAction   = 8;            // and that of a ranged one
     private const uint DamageTypeIconBase = 60010;  // + 1 physical, + 2 magical, + 3 unique: the icons of the game's own fly text
@@ -1120,7 +1122,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             // The game says whose tick it is: no guessing, and no sharing it out.
             var manager = GameObjectManager.Instance();
             var yours   = told.SourceId == player->EntityId
-                          || IsMyPet(player, manager == null ? null : manager->Objects.GetObjectByEntityId(told.SourceId));
+                          || IsMyPet(player, manager == null ? null : manager->Objects.GetObjectByEntityId(told.SourceId), npcs: !healTick);
             if (to != player && !yours)
             {
                 if (healTick) return false;
@@ -1161,7 +1163,15 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         if (healTick && to == player && over.Name is null)
             LogUnnamedHealTick(player, ticking);
 
-        var mine    = from == player || ownTick || healTick || IsMyPet(player, from);
+        // Likewise a damage tick of yours on an enemy that no status could be named for: the statuses on them are written.
+        if (tick && !ownTick && over.Name is null && to != player)
+            LogUnnamedTick(to, ticking);
+
+        // A healing tick on someone else that is taken as yours: what the game said and what they have, to see why.
+        if (healTick && to != player)
+            LogHealTickOnOther(to, ticking, over);
+
+        var mine    = from == player || ownTick || healTick || IsMyPet(player, from, npcs: !heal);
 
         bool outgoing;
         if (to == player) outgoing = false;
@@ -1233,6 +1243,10 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         // What a monster, a boss or any other NPC does to you shows no action icon; what another player does (PvP) does.
         var fromNpc = !outgoing && !mine && from != null && from->ObjectKind != ObjectKind.Pc;
 
+        // Fall damage comes as a plain hit on you with no action and no one behind it (or you as your own source).
+        var fall = damage && !outgoing && !tick && actionKind == 0 && actionId == 0 && (from == null || from == player)
+                   && over.Name is null && label is null;
+
         var suffix = !Settings.ShowDefended ? string.Empty : (ScreenLogOption)option switch
         {
             ScreenLogOption.Blocked  => T("Suffix.Blocked"),
@@ -1264,6 +1278,10 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                         && (label is null ? (actionId != 0 || tickId != 0) && (defendedKind == 0 || Settings.MergeDefended) : Settings.MergeMisses)
                         && (attacker is null || !auto) && verdict is null;
         var colors  = Settings.Colors;
+        // The hits of the shadow of a Dark Knight wear the icon of the action that summons it, whatever it does.
+        var shadowIcon = byPet && damage && Svc.PlayerState.ClassJob.RowId == DarkKnightJob
+                         && from->SubKind is not ((byte)BattleNpcSubKind.Buddy or (byte)BattleNpcSubKind.RaceChocobo)
+            ? LookupAction(LivingShadowAction).IconId : 0u;
         var message = new BattleTextMessage
         {
             Amount     = amount,
@@ -1272,7 +1290,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                        : attacker is null     ? action.Name ?? over.Name
                        : action.Name is null  ? petAttack ?? attacker
                        : $"{action.Name} {attacker}",
-            IconId     = over.IconId != 0 ? over.IconId : (autoAttack && countering == 0) || fromNpc ? 0 : action.IconId,
+            IconId     = over.IconId != 0 ? over.IconId : shadowIcon != 0 ? shadowIcon : (autoAttack && countering == 0) || fromNpc ? 0 : action.IconId,
             IconIsStatus = over.IconId != 0,
             TypeIconId = damage && damageType is >= 1 and <= DamageTypeCount ? DamageTypeIconBase + (uint)damageType : 0,
             Prefix     = (estimated ? "~" : string.Empty) + (heal ? "+" : damage && !outgoing ? "-" : string.Empty),
@@ -1282,6 +1300,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                        : tick                  ? suffix + T("Suffix.Dot")
                        : healTick              ? suffix + T("Suffix.Hot")
                        : suffix)
+                       + (fall ? " " + T("Label.FallDamage") : string.Empty)
                        + (healed is not null && !healedAfterName ? $" ({healed})" : string.Empty)
                        + (verdict is not null && !verdictAfterName ? $" {verdict}" : string.Empty),
             Verdict    = verdictAfterName ? verdict : null,
@@ -1682,7 +1701,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         {
             Label  = (fading ? "- " : "+ ") + status.Name,
             IconId = status.IconId,
-            Color  = new Vector4(0.72f, 0.72f, 0.72f, 1f), // the grey of the icon of Sprint
+            Color  = EffectColor(buff, fading),
             IconIsStatus = true,
         });
     }
@@ -1831,7 +1850,11 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                 && (description.Contains("damage over time", StringComparison.OrdinalIgnoreCase) || description.Contains("bleeding HP over time", StringComparison.OrdinalIgnoreCase)
                     || description.Contains("draining HP", StringComparison.OrdinalIgnoreCase)))
                 kind = OverTime.Damage;
-            else if (row.StatusCategory == BeneficialStatus && description.Contains("HP over time", StringComparison.OrdinalIgnoreCase))
+            // Duty effects like Brilliant Conviction say it their own way: "regenerates HP", "recovers HP over time".
+            else if (row.StatusCategory == BeneficialStatus
+                     && (description.Contains("HP over time", StringComparison.OrdinalIgnoreCase)
+                         || description.Contains("regenerat", StringComparison.OrdinalIgnoreCase)
+                         || (description.Contains("over time", StringComparison.OrdinalIgnoreCase) && description.Contains("HP", StringComparison.Ordinal))))
                 kind = OverTime.Healing;
         }
 
@@ -1863,7 +1886,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             if (!isMine)
             {
                 var manager = GameObjectManager.Instance();
-                isMine = IsMyPet(player, manager == null ? null : manager->Objects.GetObjectByEntityId(sourceId));
+                isMine = IsMyPet(player, manager == null ? null : manager->Objects.GetObjectByEntityId(sourceId), npcs: kind != OverTime.Healing);
             }
 
             total++;
@@ -2017,12 +2040,12 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
     /// <summary>
     /// Whether an object is something of yours that fights for you. The NPCs that go with you in a duty (Trust, Duty
-    /// Support) are told apart by their kind: they are not pets, and they are shown only if the option for NPCs is on.
+    /// Support) are told apart by their kind: they are not pets, and they are shown only if the option for NPCs is on, and never for healing: that is theirs, not yours.
     /// </summary>
-    private bool IsMyPet(GameObject* player, GameObject* other)
+    private bool IsMyPet(GameObject* player, GameObject* other, bool npcs = true)
     {
         if (other == null || other->ObjectKind != ObjectKind.BattleNpc) return false;
-        if (other->SubKind == (byte)BattleNpcSubKind.NpcPartyMember) return Settings.IncludeNpcs;
+        if (other->SubKind == (byte)BattleNpcSubKind.NpcPartyMember) return npcs && Settings.IncludeNpcs;
 
         var owned = other->OwnerId == player->EntityId;
 
@@ -2095,6 +2118,51 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         var list = string.Join("; ", parts);
         if (_unnamedTicksLogged.Add(list))
             Svc.Log.Information($"GoblinBattleText: healing over time on you with no name; {told}. Statuses on you: {list}.");
+    }
+
+    /// <summary>The same for a damage tick on an enemy: its statuses, with ids, names and who put them. Once for each different set.</summary>
+    private void LogUnnamedTick(GameObject* target, (uint StatusId, uint SourceId)? ticking)
+    {
+        var statuses = ((BattleChara*)target)->GetStatusManager();
+        if (statuses == null) return;
+
+        var sheet = Svc.Data.GetExcelSheet<LuminaStatus>(Dalamud.Game.ClientLanguage.English);
+        var parts = new List<string>();
+        foreach (ref readonly var status in statuses->Status)
+        {
+            uint id = status.StatusId;
+            if (id == 0) continue;
+
+            var name = sheet != null && sheet.TryGetRow(id, out var row) ? row.Name.ExtractText() : "?";
+            parts.Add($"{id} {name} (from {status.SourceObject.ObjectId:X})");
+        }
+
+        var told = ticking is { } t ? $"the tick says status {t.StatusId}, source {t.SourceId:X}" : "the tick says nothing";
+        var list = string.Join("; ", parts);
+        if (_unnamedTicksLogged.Add("dot:" + list))
+            Svc.Log.Information($"GoblinBattleText: damage over time with no name on {((Character*)target)->NameString}; {told}. Statuses on it: {list}.");
+    }
+
+    private void LogHealTickOnOther(GameObject* target, (uint StatusId, uint SourceId)? ticking, (string? Name, uint IconId, int Mine, int Total) over)
+    {
+        var statuses = ((BattleChara*)target)->GetStatusManager();
+        if (statuses == null) return;
+
+        var sheet = Svc.Data.GetExcelSheet<LuminaStatus>(Dalamud.Game.ClientLanguage.English);
+        var parts = new List<string>();
+        foreach (ref readonly var status in statuses->Status)
+        {
+            uint id = status.StatusId;
+            if (id == 0) continue;
+
+            var name = sheet != null && sheet.TryGetRow(id, out var row) ? row.Name.ExtractText() : "?";
+            parts.Add($"{id} {name} [{OverTimeOf(id)}] (from {status.SourceObject.ObjectId:X})");
+        }
+
+        var told = ticking is { } t ? $"status {t.StatusId}, source {t.SourceId:X}" : "nothing";
+        var list = string.Join("; ", parts);
+        if (_unnamedTicksLogged.Add("other:" + told + list))
+            Svc.Log.Information($"GoblinBattleText: healing tick shown on {((Character*)target)->NameString}; the tick says {told}; yours {over.Mine} of {over.Total}; you are {((GameObject*)Control.GetLocalPlayer())->EntityId:X}. Statuses on them: {list}.");
     }
 
     private (string? Name, uint IconId) LookupStatus(uint statusId)
