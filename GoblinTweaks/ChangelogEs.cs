@@ -8,6 +8,11 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.2.7"] = (
+            "Goblin Battle Text ya no dibuja un signo raro delante de los montos estimados de daño y curación en el tiempo.",
+            [
+                "Fix: Goblin Battle Text marcaba con \"~\" tu parte estimada del daño o la curación en el tiempo, y las fuentes del juego la dibujan como otro signo — ahora el monto se muestra sin marca",
+            ]),
         ["1.2.6"] = (
             "Arregla cierres del juego con la ventana de GoblinTweaks abierta; el Timer de encomiendas aparece sin pasar por un timbre.",
             [

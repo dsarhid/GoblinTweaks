@@ -34,6 +34,11 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.2.7", "2026-10-26",
+            "Goblin Battle Text no longer draws a stray sign before the estimated amounts of damage and healing over time.",
+            [
+                "Fix: Goblin Battle Text marked an estimated share of damage or healing over time with \"~\", which the game's fonts draw as another sign — the amount now shows without a mark",
+            ]),
         new("1.2.6", "2026-10-26",
             "Fixes game crashes with the GoblinTweaks window open; Retainer Venture Timer shows up without a summoning bell.",
             [

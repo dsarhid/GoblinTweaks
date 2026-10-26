@@ -1128,8 +1128,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         // The game sends one tick per target with the sum of everyone's: there is no telling yours apart.
         // On someone else, a tick is not yours when none of what ticks is; and when others have theirs there
         // too, your share is taken as one part per status, which is exact only if they are all as strong.
-        var estimated = false;
-        var ticking   = tick || healTick ? _tickSource : null;
+        var ticking = tick || healTick ? _tickSource : null;
 
         // Only a tick that names its status says whose it is; one with no status is the sum of everyone's.
         if (ticking is { StatusId: not 0, SourceId: not (0 or NoEntity) } told)
@@ -1188,10 +1187,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             }
 
             if (over.Mine > 0 && over.Total > over.Mine)
-            {
-                amount    = (int)((long)amount * over.Mine / over.Total);
-                estimated = true;
-            }
+                amount = (int)((long)amount * over.Mine / over.Total);
         }
 
         // A healing tick on you that no status could be named for: to see what it came from, what you have on you is written.
@@ -1303,8 +1299,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             _                                           => 1UL,
         };
 
-        // A tick has no action: the effect that ticks, by its name and icon, is what makes ticks alike. Estimated ones
-        // (with ~) do not merge with exact ones.
+        // A tick has no action: the effect that ticks, by its name and icon, is what makes ticks alike.
         var tickId = (tick || healTick) && Settings.MergeTicks && healed is null && over.Name is { } tickName
             ? (uint)tickName.GetHashCode() ^ over.IconId * 31u | 1u
             : 0u;
@@ -1328,7 +1323,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             IconId     = over.IconId != 0 ? over.IconId : shadowIcon != 0 ? shadowIcon : (autoAttack && countering == 0) || fromNpc ? 0 : action.IconId,
             IconIsStatus = over.IconId != 0,
             TypeIconId = damage && damageType is >= 1 and <= DamageTypeCount ? DamageTypeIconBase + (uint)damageType : 0,
-            Prefix     = (estimated ? "~" : string.Empty) + (heal ? "+" : damage && !outgoing ? "-" : string.Empty),
+            // An estimated share carries no mark: the game's fonts have no "~", and draw another sign in its place.
+            Prefix     = heal ? "+" : damage && !outgoing ? "-" : string.Empty,
 
             // With no status to show for it, a tick at least says what it is.
             Suffix     = (over.Name is not null ? suffix
@@ -1349,7 +1345,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
             MergeKey   = mergeable
                        ? ((ulong)(countering != 0 ? countering : actionId != 0 ? actionId : tickId) << 4) | (crit ? 8u : 0u) | (directHit ? 4u : 0u) | (heal ? 2u : 0u) | 1u
-                         | ((defendedKind | (ulong)mitigated << 3 | labelKind << 12 | (estimated ? 1UL << 14 : 0UL)) << 40)
+                         | ((defendedKind | (ulong)mitigated << 3 | labelKind << 12) << 40)
                          | (tickId != 0 && actionId == 0 ? 1UL << 61 : 0UL)
                        : 0,
         };
