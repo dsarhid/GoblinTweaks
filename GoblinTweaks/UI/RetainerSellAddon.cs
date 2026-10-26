@@ -174,6 +174,7 @@ internal sealed unsafe class RetainerSellAddon : NativeAddon
 
     private void RebuildTabBar()
     {
+        NativeFocus.Release(InternalAddon);
         foreach (var button in _tabButtons) button.Dispose();
         _tabButtons.Clear();
         if (_tabs.Count == 0) return;

@@ -159,6 +159,7 @@ internal unsafe class CraftingHelpAddon : NativeAddon
 
     private void RenderContent(Line[] lines)
     {
+        NativeFocus.Release(InternalAddon);
         foreach (var node in _contentNodes)
             node.Dispose();
         _contentNodes.Clear();

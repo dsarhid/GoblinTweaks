@@ -436,6 +436,7 @@ internal sealed unsafe class MainAddon : SettingsPanelAddon
 
         _tabsSignature = TabsSignature();
 
+        NativeFocus.Release(InternalAddon);
         _tabs.Clear();
         string? current = null;
         foreach (var (key, text, count) in TabDefinitions())
@@ -483,6 +484,7 @@ internal sealed unsafe class MainAddon : SettingsPanelAddon
     {
         if (_list is null) return;
 
+        NativeFocus.Release(InternalAddon);
         foreach (var node in _rowNodes) node.Dispose();
         _rowNodes.Clear();
         _rows.Clear();

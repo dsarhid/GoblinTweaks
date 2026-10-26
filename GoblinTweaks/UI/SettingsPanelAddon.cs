@@ -90,6 +90,7 @@ internal abstract unsafe class SettingsPanelAddon : NativeAddon
         if (!_rebuild || _scroll is null) return;
 
         _rebuild = false;
+        NativeFocus.Release(addon);
         _scroll.Dispose();
         CreateScroll();
         BuildContent();

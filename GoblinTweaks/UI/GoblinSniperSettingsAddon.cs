@@ -146,6 +146,7 @@ internal sealed unsafe class GoblinSniperSettingsAddon : SettingsPanelAddon
     {
         if (Tweak is null) return;
 
+        NativeFocus.Release(InternalAddon);
         foreach (var row in _rows) row.Dispose();
         _rows.Clear();
 

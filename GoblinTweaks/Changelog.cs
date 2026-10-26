@@ -34,6 +34,13 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.2.6", "2026-10-26",
+            "Fixes game crashes with the GoblinTweaks window open; Retainer Venture Timer shows up without a summoning bell.",
+            [
+                "Fix: the game could crash after switching tweaks or turning one on and off in the GoblinTweaks window — the window now lets go of the game's focus before it redraws",
+                "Fix: the game could crash when a Yes/No of the game (a party invite) closed in front of the GoblinTweaks window",
+                "Change: Retainer Venture Timer asks for your retainers right after you log in, as the game's Timers window does, so it shows up without going to a summoning bell",
+            ]),
         new("1.2.5", "2026-10-26",
             "New Goblin Loot; Battle Text credits DoTs and shields right in a party; Damage Done counts your party anywhere.",
             [

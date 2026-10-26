@@ -8,6 +8,13 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.2.6"] = (
+            "Arregla cierres del juego con la ventana de GoblinTweaks abierta; el Timer de encomiendas aparece sin pasar por un timbre.",
+            [
+                "Fix: el juego podía cerrarse después de cambiar de tweak o de prender y apagar uno en la ventana de GoblinTweaks — ahora la ventana suelta el foco del juego antes de redibujarse",
+                "Fix: el juego podía cerrarse cuando un Sí/No del juego (una invitación a party) se cerraba delante de la ventana de GoblinTweaks",
+                "Change: el Timer de encomiendas de retainer pide tus retainers apenas entrás con el personaje, como hace la ventana Timers del juego, así aparece sin pasar por un timbre",
+            ]),
         ["1.2.5"] = (
             "Nuevo Goblin Loot; Battle Text asigna bien los DoT y los escudos en party; Damage Done cuenta a tu party en todos lados.",
             [
