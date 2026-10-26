@@ -8,6 +8,7 @@ using FFXIVClientStructs.FFXIV.Client.Game.Character;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.Game.Group;
 using FFXIVClientStructs.FFXIV.Client.Game.Object;
+using FFXIVClientStructs.FFXIV.Client.UI.Info;
 using GoblinTweaks.Core;
 using GoblinTweaks.Localization;
 using GoblinTweaks.UI;
@@ -618,12 +619,11 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
 
     private void RecordTaken(GameObjectManager* manager, ActionEffectHandler.Header* header, ActionEffectHandler.TargetEffects* effects, GameObjectId* targetEntityIds)
     {
-        var me = Control.GetLocalPlayer();
         for (var target = 0; target < header->NumTargets; target++)
         {
             var victim = manager->Objects.GetObjectByEntityId(targetEntityIds[target].ObjectId);
             if (victim == null || victim->ObjectKind != ObjectKind.Pc) continue;
-            if (!InDuty() && (me == null || victim->EntityId != me->EntityId)) continue;
+            if (!Counts(victim->EntityId)) continue;
 
             foreach (ref readonly var effect in effects[target].Effects)
             {
@@ -775,7 +775,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         _dirty = true;
     }
 
-    /// <summary>Counts the deaths: each time someone of the duty goes from alive to dead.</summary>
+    /// <summary>Counts the deaths: each time someone of the duty or of your party goes from alive to dead.</summary>
     private void PollDeaths(Fight fight)
     {
         var manager = GameObjectManager.Instance();
@@ -786,11 +786,20 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         if (me != null) ids.Add(me->EntityId);
 
         var groups = GroupManager.Instance();
-        if (groups != null && InDuty())
+        if (groups != null)
         {
             var group = &groups->MainGroup;
             for (var i = 0; i < group->PartyMembers.Length; i++) ids.Add(group->PartyMembers[i].EntityId);
-            for (var i = 0; i < group->AllianceMembers.Length; i++) ids.Add(group->AllianceMembers[i].EntityId);
+            if (InDuty())
+                for (var i = 0; i < group->AllianceMembers.Length; i++) ids.Add(group->AllianceMembers[i].EntityId);
+        }
+
+        // Out of a duty, a cross-world party is only in the cross-world list.
+        var crossRealm = InfoProxyCrossRealm.Instance();
+        if (crossRealm != null && InfoProxyCrossRealm.IsCrossRealmParty() && crossRealm->LocalPlayerGroupIndex < crossRealm->CrossRealmGroups.Length)
+        {
+            ref var party = ref crossRealm->CrossRealmGroups[crossRealm->LocalPlayerGroupIndex];
+            for (var i = 0; i < party.GroupMemberCount && i < party.GroupMembers.Length; i++) ids.Add(party.GroupMembers[i].EntityId);
         }
 
         foreach (var id in ids)
@@ -1000,8 +1009,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
     {
         if (target->ObjectKind != ObjectKind.Pc) return;
 
-        var me = Control.GetLocalPlayer();
-        if (!InDuty() && (me == null || target->EntityId != me->EntityId)) return;
+        if (!Counts(target->EntityId)) return;
 
         var fight = ActiveFight(damage: true);
         if (fight == null) return;
@@ -1049,7 +1057,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         return _overTime[statusId] = kind;
     }
 
-    /// <summary>The player an action counts for: its caster, or the owner of the pet or chocobo that cast it. Null when it is nobody of the duty.</summary>
+    /// <summary>The player an action counts for: its caster, or the owner of the pet or chocobo that cast it. Null when it is nobody of the duty or of your party.</summary>
     private static Character* CreditedPlayer(GameObjectManager* manager, uint casterEntityId)
     {
         var caster = manager->Objects.GetObjectByEntityId(casterEntityId);
@@ -1059,15 +1067,39 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
             caster = manager->Objects.GetObjectByEntityId(caster->OwnerId);
         if (caster == null || caster->ObjectKind != ObjectKind.Pc) return null;
 
-        // In a duty everyone around is in it; out of one, only you count.
-        if (InDuty()) return (Character*)caster;
-
-        var player = Control.GetLocalPlayer();
-        return player != null && caster->EntityId == player->EntityId ? (Character*)caster : null;
+        return Counts(caster->EntityId) ? (Character*)caster : null;
     }
 
     private static bool InDuty()
         => Svc.Condition[ConditionFlag.BoundByDuty] || Svc.Condition[ConditionFlag.BoundByDuty56];
+
+    /// <summary>
+    /// Whether a player counts: in a duty everyone around is in it; out of one, only you and your party, so the
+    /// strangers fighting nearby stay out.
+    /// </summary>
+    private static bool Counts(uint entityId)
+    {
+        if (InDuty()) return true;
+
+        var player = Control.GetLocalPlayer();
+        if (player != null && entityId == player->EntityId) return true;
+
+        return InParty(entityId);
+    }
+
+    /// <summary>
+    /// Whether a player is in your party. A party of your own world is in the group; out of a duty, a cross-world
+    /// one (Party Finder) is only in the cross-world list.
+    /// </summary>
+    private static bool InParty(uint entityId)
+    {
+        if (entityId is 0 or NoEntity) return false;
+
+        var groups = GroupManager.Instance();
+        if (groups != null && groups->MainGroup.IsEntityIdInParty(entityId)) return true;
+
+        return InfoProxyCrossRealm.IsCrossRealmParty() && InfoProxyCrossRealm.GetMemberByEntityId(entityId) != null;
+    }
 
     /// <summary>
     /// Whether an object is on the other side: a combatant, or what an enemy summoned (the adds of a boss are not
@@ -1101,9 +1133,9 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
     private Fight? ActiveFight(bool damage = false)
     {
         if (_fight is { Ended: false }) return _fight;
-        // A fight starts with the first damage to an enemy in a duty even if your own combat flag is not up: the flag
-        // is yours, and the others may be fighting. Out of a duty, or for anything but damage, it needs the flag.
-        if (!Svc.Condition[ConditionFlag.InCombat] && !(damage && InDuty())) return null;
+        // A fight starts with the first damage even if your own combat flag is not up: the flag is yours, and the
+        // others of the duty or of your party may be fighting (only theirs comes this far). Anything else needs the flag.
+        if (!Svc.Condition[ConditionFlag.InCombat] && !damage) return null;
 
         var now = DateTime.UtcNow;
         _outOfCombatSince = DateTime.MinValue;

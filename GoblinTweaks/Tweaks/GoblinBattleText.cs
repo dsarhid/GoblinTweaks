@@ -14,6 +14,7 @@ using FFXIVClientStructs.FFXIV.Client.Game.Group;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.Game.Object;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Kernel;
+using FFXIVClientStructs.FFXIV.Client.UI.Info;
 using FFXIVClientStructs.FFXIV.Client.UI.Misc;
 using GoblinTweaks.Core;
 using GoblinTweaks.UI;
@@ -421,9 +422,11 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     private int _effectsLevel = -1;
 
     // Debuffs of yours on enemies, as (enemy, status): each enemy's list of statuses says who put each one,
-    // so they are watched there until they go. "Seen" is false until the list shows the debuff.
-    // And the ones that arrived before that list could say whose they were.
-    private readonly Dictionary<ulong, (bool Seen, DateTime Since)> _myDebuffs = [];
+    // so they are watched there until they go. "Seen" is false until the list shows the debuff. With the seconds
+    // each had left when last looked at, and when it was last put again, to tell yours being put again from a job
+    // mate's starting. And the ones that arrived before that list could say whose they were.
+    private readonly Dictionary<ulong, (bool Seen, DateTime Since, float Left, DateTime Refreshed)> _myDebuffs = [];
+    private static readonly TimeSpan RefreshWindow = TimeSpan.FromMilliseconds(600);
     private readonly List<ulong> _debuffKeys = [];
     private readonly List<(uint Target, uint StatusId, DateTime Until)> _unconfirmed = [];
     private DateTime _nextDebuffWatch = DateTime.MinValue;
@@ -448,8 +451,13 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
     // The tick the game is working out right now, while it does: the status it is of and who put it there,
     // when the game says so. It does for what ticks from the ground (Doton, Salted Earth...), which is on no
-    // list of statuses of the enemy; for the rest it sends one sum with no status and no source.
+    // list of statuses of the enemy. For the rest it sends one sum with no status, and the source that comes
+    // with it is not whose it is: an enemy's Windburn on a party member comes as yours, or as your chocobo's.
     private (uint StatusId, uint SourceId)? _tickSource;
+
+    // The damage over time last seen on each enemy: how many were yours of how many, and when.
+    private readonly Dictionary<uint, (int Mine, int Total, DateTime At)> _lastOverTime = [];
+    private static readonly TimeSpan LastTickWindow = TimeSpan.FromSeconds(5);
 
     private const uint NoEntity = 0xE0000000;
     private readonly Dictionary<uint, bool> _playerActions = [];
@@ -713,6 +721,10 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         _shieldSeen.Clear();
         _shieldPending.Clear();
         _myCasts.Clear();
+        _statusSeen.Clear();
+        _statusEntitiesSeen.Clear();
+        _statusStarted.Clear();
+        _lastOverTime.Clear();
 
         _hook?.Dispose();
         _hook = null;
@@ -1119,7 +1131,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         var estimated = false;
         var ticking   = tick || healTick ? _tickSource : null;
 
-        if (ticking is { SourceId: not (0 or NoEntity) } told)
+        // Only a tick that names its status says whose it is; one with no status is the sum of everyone's.
+        if (ticking is { StatusId: not 0, SourceId: not (0 or NoEntity) } told)
         {
             // The game says whose tick it is: no guessing, and no sharing it out.
             var manager = GameObjectManager.Instance();
@@ -1133,20 +1146,40 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                 return dealt.Enabled && Area(dealt.Area).Enabled;
             }
 
-            var named = told.StatusId != 0 ? LookupStatus(told.StatusId) : default;
+            var named = LookupStatus(told.StatusId);
             over = (named.Name ?? over.Name, named.Name is null ? over.IconId : named.IconId, 1, 1);
         }
         else if ((tick || healTick) && to != player)
         {
-            // Healing that is not yours is left to the game. Damage over time that is not yours is not shown at
-            // all, here or by the game, as long as this tweak is the one showing the damage you deal.
-            if (over.Mine == 0 && healTick) return false;
+            // How many of the damage over time on an enemy are yours, for the tick that kills it: that one shows
+            // after its list is empty.
+            if (ownTick && over.Total > 0)
+            {
+                if (_lastOverTime.Count >= MaxTrackedDebuffs) _lastOverTime.Clear();
+                _lastOverTime[to->EntityId] = (over.Mine, over.Total, DateTime.UtcNow);
+            }
+
+            // A healing that ticks from an effect on you (Improvisation) is on no list of whoever it heals: with
+            // none on them, it is yours when the game says so and you have one such effect of your own.
+            if (healTick && over.Total == 0 && ticking is { SourceId: var healer } && healer == player->EntityId
+                && FindOverTime(player, player, OverTime.Healing, mineOnly: true) is { Mine: > 0 } aura)
+                over = (aura.Name, aura.IconId, 1, 1);
+
+            // Healing that is not yours is left to the game, and so is damage over time on someone who is not an
+            // enemy. On an enemy, damage over time that is not yours is not shown at all, here or by the game, as
+            // long as this tweak is the one showing the damage you deal.
+            if (over.Mine == 0 && (healTick || !ownTick)) return false;
 
             // With nothing ticking in their list, it may be that the list is already empty: a tick that kills
             // shows after the statuses of the dead are gone. Then it is yours only if you had something
             // ticking there a moment ago; a tick is never taken as yours for want of knowing whose it is.
+            // What ticked there last says how many of them were yours; without it, all of what you had is taken.
             if (over.Mine == 0 && over.Total == 0)
+            {
                 over = TrackedOverTime(to);
+                if (over.Mine > 0 && _lastOverTime.TryGetValue(to->EntityId, out var last) && DateTime.UtcNow - last.At < LastTickWindow)
+                    over = (over.Name, over.IconId, last.Mine, last.Total);
+            }
 
             if (over.Mine == 0)
             {
@@ -1714,14 +1747,36 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     {
         if (_myDebuffs.Count >= MaxTrackedDebuffs)
             _myDebuffs.Clear();
-        _myDebuffs[DebuffKey(target->EntityId, statusId)] = (seen, DateTime.UtcNow);
+
+        var player = (GameObject*)Control.GetLocalPlayer();
+        var left   = player == null ? null : MyStatusLeft(player, target, statusId);
+        _myDebuffs[DebuffKey(target->EntityId, statusId)] = (seen, DateTime.UtcNow, left ?? 0f, DateTime.UtcNow);
     }
 
     /// <summary>Whether someone has a status that you put on them: each status in their list names its source.</summary>
     private static bool HasMyStatus(GameObject* player, GameObject* target, uint statusId)
+        => MyStatusLeft(player, target, statusId) is not null;
+
+    /// <summary>The seconds left of a status you put on someone; null when they have none of yours.</summary>
+    private static float? MyStatusLeft(GameObject* player, GameObject* target, uint statusId)
     {
         var statuses = ((BattleChara*)target)->GetStatusManager();
-        return statuses != null && statuses->GetStatusIndex(statusId, player->EntityId) >= 0;
+        if (statuses == null) return null;
+
+        var index = statuses->GetStatusIndex(statusId, player->EntityId);
+        return index >= 0 && index < statuses->Status.Length ? statuses->Status[index].RemainingTime : null;
+    }
+
+    /// <summary>
+    /// Whether a debuff that just started on an enemy is yours: one of yours is on it, and it is new or was put again
+    /// just now. A job mate putting theirs while yours is already there starts one that is not.
+    /// </summary>
+    private bool IsNewOfMine(GameObject* player, GameObject* target, uint statusId)
+    {
+        if (MyStatusLeft(player, target, statusId) is not { } left) return false;
+        if (!_myDebuffs.TryGetValue(DebuffKey(target->EntityId, statusId), out var known) || !known.Seen) return true;
+
+        return left > known.Left + 1f || DateTime.UtcNow - known.Refreshed < RefreshWindow;
     }
 
     /// <summary>
@@ -1730,7 +1785,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     /// </summary>
     private bool ConfirmDebuff(GameObject* player, GameObject* target, uint statusId)
     {
-        if (!HasMyStatus(player, target, statusId))
+        if (!IsNewOfMine(player, target, statusId))
         {
             _unconfirmed.Add((target->EntityId, statusId, DateTime.UtcNow + ConfirmWindow));
             return false;
@@ -1761,7 +1816,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         _debuffKeys.AddRange(_myDebuffs.Keys);
         foreach (var key in _debuffKeys)
         {
-            var (seen, since) = _myDebuffs[key];
+            var (seen, since, before, refreshed) = _myDebuffs[key];
             var statusId = (uint)key;
             var target   = manager->Objects.GetObjectByEntityId((uint)(key >> 32));
 
@@ -1772,9 +1827,11 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                 continue;
             }
 
-            if (HasMyStatus(player, target, statusId))
+            if (MyStatusLeft(player, target, statusId) is { } left)
             {
-                if (!seen) _myDebuffs[key] = (true, since);
+                // More time left than a moment ago: you put it again.
+                if (seen && left > before + 1f) refreshed = DateTime.UtcNow;
+                _myDebuffs[key] = (true, since, left, refreshed);
                 continue;
             }
 
@@ -1812,7 +1869,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         {
             var (targetId, statusId, until) = _unconfirmed[i];
             var target = player == null || manager == null ? null : manager->Objects.GetObjectByEntityId(targetId);
-            var mine   = target != null && target->ObjectKind == ObjectKind.BattleNpc && HasMyStatus(player, target, statusId);
+            var mine   = target != null && target->ObjectKind == ObjectKind.BattleNpc && IsNewOfMine(player, target, statusId);
 
             if (!mine && target != null && DateTime.UtcNow < until) continue;
 
@@ -1918,7 +1975,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         var fromPlayer = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var action in Svc.Data.GetExcelSheet<LuminaAction>(Dalamud.Game.ClientLanguage.English))
         {
-            if (action.IsPvP || action.ClassJobLevel == 0 || action.ClassJobCategory.RowId == 0) continue;
+            // The PvP actions (Guard...) have no level; they only fill in the effects no other action says.
+            if (action.ClassJobCategory.RowId == 0 || (!action.IsPvP && action.ClassJobLevel == 0)) continue;
             if (!texts.TryGetRow(action.RowId, out var text)) continue;
 
             var name = action.Name.ExtractText();
@@ -1937,10 +1995,10 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             // Two actions can give an effect of the same name: the one a player has in their list is the one meant.
             foreach (var (status, effect) in ActionEffects.Read(action.RowId, name, description))
             {
-                if (_effects.ContainsKey(status) && (!action.IsPlayerAction || fromPlayer.Contains(status))) continue;
+                if (_effects.ContainsKey(status) && (action.IsPvP || !action.IsPlayerAction || fromPlayer.Contains(status))) continue;
 
                 _effects[status] = effect;
-                if (action.IsPlayerAction) fromPlayer.Add(status);
+                if (action.IsPlayerAction && !action.IsPvP) fromPlayer.Add(status);
             }
         }
     }
@@ -2094,6 +2152,14 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     }
 
     private readonly HashSet<string> _unnamedTicksLogged = [];
+    private const int MaxLoggedTicks = 256;
+
+    /// <summary>Whether a line of the log has not been written yet. The ones written are forgotten after a while, not to grow for ever.</summary>
+    private bool FirstTime(string line)
+    {
+        if (_unnamedTicksLogged.Count >= MaxLoggedTicks) _unnamedTicksLogged.Clear();
+        return _unnamedTicksLogged.Add(line);
+    }
 
     /// <summary>
     /// Writes to the log the statuses you have when a healing tick comes that could not be named: their ids, names and who put
@@ -2118,7 +2184,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
         var told = ticking is { } t ? $"the tick says status {t.StatusId}, source {t.SourceId:X}" : "the tick says nothing";
         var list = string.Join("; ", parts);
-        if (_unnamedTicksLogged.Add(list))
+        if (FirstTime(list))
             Svc.Log.Information($"GoblinBattleText: healing over time on you with no name; {told}. Statuses on you: {list}.");
     }
 
@@ -2141,7 +2207,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
         var told = ticking is { } t ? $"the tick says status {t.StatusId}, source {t.SourceId:X}" : "the tick says nothing";
         var list = string.Join("; ", parts);
-        if (_unnamedTicksLogged.Add("dot:" + list))
+        if (FirstTime("dot:" + list))
             Svc.Log.Information($"GoblinBattleText: damage over time with no name on {((Character*)target)->NameString}; {told}. Statuses on it: {list}.");
     }
 
@@ -2163,7 +2229,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
         var told = ticking is { } t ? $"status {t.StatusId}, source {t.SourceId:X}" : "nothing";
         var list = string.Join("; ", parts);
-        if (_unnamedTicksLogged.Add("other:" + told + list))
+        if (FirstTime("other:" + told + list))
             Svc.Log.Information($"GoblinBattleText: healing tick shown on {((Character*)target)->NameString}; the tick says {told}; yours {over.Mine} of {over.Total}; you are {((GameObject*)Control.GetLocalPlayer())->EntityId:X}. Statuses on them: {list}.");
     }
 
@@ -2322,6 +2388,17 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     private readonly List<(uint ActionId, uint[] Targets, DateTime At)> _myCasts = [];
     private readonly List<uint> _shieldWatched = [];
 
+    // The statuses of the characters watched for shields, as (character, status, source) with the time they have
+    // left: in the last frame and in this one. And the ones that started or were put again a moment ago, which
+    // say whose a shield that rises with them is.
+    private static readonly TimeSpan StatusWindow = TimeSpan.FromMilliseconds(600);
+    private Dictionary<(uint Entity, uint StatusId, uint Source), float> _statusSeen = [];
+    private Dictionary<(uint Entity, uint StatusId, uint Source), float> _statusNow  = [];
+    private HashSet<uint> _statusEntitiesSeen = [];
+    private HashSet<uint> _statusEntitiesNow  = [];
+    private readonly List<(uint Entity, uint StatusId, uint Source, DateTime At)> _statusStarted = [];
+    private readonly Dictionary<uint, bool> _barriers = [];
+
     private bool ShieldsWanted => Event(BattleTextEvent.ShieldDealt).Enabled || Event(BattleTextEvent.ShieldTaken).Enabled;
 
     /// <summary>Remembers an action of yours and who it was used on, to tell later who a shield is from.</summary>
@@ -2378,6 +2455,9 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         {
             _shieldSeen.Clear();
             _shieldPending.Clear();
+            _statusSeen.Clear();
+            _statusEntitiesSeen.Clear();
+            _statusStarted.Clear();
             return;
         }
 
@@ -2385,14 +2465,21 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
         _shieldWatched.Clear();
         _shieldWatched.Add(player->EntityId);
-        var group = GroupManager.Instance()->GetGroup();
+        var groups = GroupManager.Instance();
+        var group  = groups == null ? null : groups->GetGroup();
         if (group != null)
         {
             for (var i = 0; i < group->MemberCount && i < group->PartyMembers.Length; i++)
-            {
-                var id = group->PartyMembers[i].EntityId;
-                if (id != 0 && id != player->EntityId) _shieldWatched.Add(id);
-            }
+                WatchShield(player, group->PartyMembers[i].EntityId);
+        }
+
+        // Out of a duty, a cross-world party is only in the cross-world list.
+        var crossRealm = InfoProxyCrossRealm.Instance();
+        if (crossRealm != null && InfoProxyCrossRealm.IsCrossRealmParty() && crossRealm->LocalPlayerGroupIndex < crossRealm->CrossRealmGroups.Length)
+        {
+            ref var party = ref crossRealm->CrossRealmGroups[crossRealm->LocalPlayerGroupIndex];
+            for (var i = 0; i < party.GroupMemberCount && i < party.GroupMembers.Length; i++)
+                WatchShield(player, party.GroupMembers[i].EntityId);
         }
 
         foreach (var id in _shieldWatched)
@@ -2400,12 +2487,21 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             var who = (Character*)manager->Objects.GetObjectByEntityId(id);
             if (who == null) continue;
 
+            RecordStatuses((GameObject*)who, id, now);
+
             var percent = (int)who->CharacterData.ShieldValue;
             var max     = (int)who->CharacterData.MaxHealth;
             if (_shieldSeen.TryGetValue(id, out var before) && percent > before && max > 0)
                 _shieldPending.Add((id, (int)((long)(percent - before) * max / 100), now));
             _shieldSeen[id] = percent;
         }
+
+        // What was read this frame is what the next one compares with.
+        (_statusSeen, _statusNow) = (_statusNow, _statusSeen);
+        _statusNow.Clear();
+        (_statusEntitiesSeen, _statusEntitiesNow) = (_statusEntitiesNow, _statusEntitiesSeen);
+        _statusEntitiesNow.Clear();
+        _statusStarted.RemoveAll(started => now - started.At > StatusWindow + StatusWindow);
 
         // A moment later, when the action that gave it has had time to be recorded.
         for (var i = 0; i < _shieldPending.Count; i++)
@@ -2416,6 +2512,82 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             _shieldPending.RemoveAt(i--);
             if (amount > 0) QueueShield(player, entity, amount, at);
         }
+    }
+
+    private void WatchShield(Character* player, uint entity)
+    {
+        if (entity is not (0 or NoEntity) && entity != player->EntityId && !_shieldWatched.Contains(entity))
+            _shieldWatched.Add(entity);
+    }
+
+    /// <summary>
+    /// Reads the statuses of a character and notes the ones that started, or were put again, since the last frame.
+    /// A character not read in the last frame only gets its statuses read: none of them is taken as new.
+    /// </summary>
+    private void RecordStatuses(GameObject* who, uint entity, DateTime now)
+    {
+        var statuses = ((BattleChara*)who)->GetStatusManager();
+        if (statuses == null) return;
+
+        var known = _statusEntitiesSeen.Contains(entity);
+        _statusEntitiesNow.Add(entity);
+        foreach (ref readonly var status in statuses->Status)
+        {
+            if (status.StatusId == 0) continue;
+
+            var key       = (entity, (uint)status.StatusId, status.SourceObject.ObjectId);
+            var remaining = status.RemainingTime;
+            _statusNow[key] = remaining;
+
+            if (known && (!_statusSeen.TryGetValue(key, out var before) || remaining > before + 1f))
+                _statusStarted.Add((entity, key.Item2, key.Item3, now));
+        }
+    }
+
+    /// <summary>Whether a status is a shield: the game's own description of every one of them says it is a barrier.</summary>
+    private bool IsBarrier(uint statusId)
+    {
+        if (_barriers.TryGetValue(statusId, out var barrier)) return barrier;
+
+        barrier = Svc.Data.GetExcelSheet<LuminaStatus>(Dalamud.Game.ClientLanguage.English).TryGetRow(statusId, out var row)
+                  && row.Description.ExtractText() is var description
+                  && (description.Contains("barrier", StringComparison.OrdinalIgnoreCase) || description.Contains("nullif", StringComparison.OrdinalIgnoreCase));
+        return _barriers[statusId] = barrier;
+    }
+
+    /// <summary>
+    /// The status a shield that rose on someone came with: one that started or was put again on them at the same
+    /// moment, a shield first. Its source is whose the shield is. Found is false when no status started then.
+    /// </summary>
+    private (bool Found, bool Mine, uint StatusId) ShieldStatusFor(Character* player, uint entity, DateTime at)
+    {
+        var manager = GameObjectManager.Instance();
+        bool found = false, mine = false, barrierFound = false;
+        uint statusId = 0;
+        foreach (var started in _statusStarted)
+        {
+            if (started.Entity != entity || (started.At - at).Duration() > StatusWindow) continue;
+
+            var barrier = IsBarrier(started.StatusId);
+            if (barrierFound && !barrier) continue;
+
+            var yours = started.Source == player->EntityId
+                        || IsMyPet((GameObject*)player, manager == null ? null : manager->Objects.GetObjectByEntityId(started.Source), healing: true);
+
+            // A shield that started outweighs any other status that did: from then on only shields count.
+            if (barrier && !barrierFound)
+            {
+                barrierFound = true;
+                mine         = false;
+                statusId     = 0;
+            }
+
+            found = true;
+            if (yours) mine = true;
+            if (barrier && (statusId == 0 || yours)) statusId = started.StatusId;
+        }
+
+        return (found, mine, statusId);
     }
 
     private void QueueShield(Character* player, uint entity, int amount, DateTime at)
@@ -2431,15 +2603,24 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             (actionId, matched) = (cast.ActionId, true);
         }
 
+        // Whose the shield is: the status it came with says. Only when none started with it does an action of
+        // yours on them a moment before decide, as it did before statuses were read.
+        var (found, mine, statusId) = ShieldStatusFor(player, entity, at);
+        var yours = found ? mine : matched;
+
         // Someone else's shield on someone else says nothing; one on you always does.
-        if (!self && !matched) return;
+        if (!self && !yours) return;
 
         var type    = self ? BattleTextEvent.ShieldTaken : BattleTextEvent.ShieldDealt;
         var options = Event(type);
         var area    = Area(options.Area);
         if (!options.Enabled || !area.Enabled || amount < area.MinAmount) return;
 
-        var action = actionId != 0 ? LookupAction(actionId) : default;
+        // Named by its status (Galvanize, Haima...), else by your action when it is yours.
+        var status = statusId != 0 ? LookupStatus(statusId) : default;
+        var action = status.Name is not null ? status
+                   : actionId != 0 && yours  ? LookupAction(actionId)
+                   : default;
 
         // Who it is for, like the healing of ShowHealTargets: merged shields have several targets and name none.
         string? target = null;
@@ -2451,14 +2632,19 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         }
 
         var mergeable = Settings.MergeHeals && !(Settings.ShowHealTargets && !self);
-        var message   = ShieldMessage(amount, action, target, area);
+        var named     = status.Name is not null;
+        var message   = ShieldMessage(amount, action, target, area, iconIsStatus: named);
         if (mergeable)
-            message.MergeKey = (1UL << 60) | ((ulong)actionId << 4) | (self ? 2UL : 0UL) | 1UL;
+        {
+            // Shields of one status merge, and those of one action; the two never mix.
+            var mergeId = named ? statusId | 1u << 31 : yours ? actionId : 0u;
+            message.MergeKey = (1UL << 60) | ((ulong)mergeId << 4) | (self ? 2UL : 0UL) | 1UL;
+        }
         Queue(type, message);
     }
 
     /// <summary>"+2,000 Haima (Alisaie)": the shield in its blue, with who it is for after the action name or the amount.</summary>
-    private BattleTextMessage ShieldMessage(int amount, (string? Name, uint IconId) action, string? target, AreaOptions area)
+    private BattleTextMessage ShieldMessage(int amount, (string? Name, uint IconId) action, string? target, AreaOptions area, bool iconIsStatus = false)
     {
         var name  = action.Name ?? T("Label.Shield");
         var after = target is not null && !area.Hidden.Contains(BattleTextPart.Name);
@@ -2467,6 +2653,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             Amount     = amount,
             ActionName = after ? $"{name} ({target})" : name,
             IconId     = action.IconId,
+            IconIsStatus = iconIsStatus,
             Prefix     = "+",
             Suffix     = target is not null && !after ? $" ({target})" : string.Empty,
             Color      = ShieldBlue,

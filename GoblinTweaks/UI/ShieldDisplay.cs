@@ -101,7 +101,7 @@ internal sealed unsafe class ShieldDisplay(Func<GoblinBattleText.BattleTextShiel
         {
             if (!_layoutWarningShown)
             {
-                Svc.Log.Warning("{addon}: the HP number was not found. The shield display is off until the window changes.", AddonName);
+                Svc.Log.Warning("{addon}: the HP number was not found. The shield display waits until it shows again.", AddonName);
                 _layoutWarningShown = true;
             }
             return;
@@ -152,9 +152,13 @@ internal sealed unsafe class ShieldDisplay(Func<GoblinBattleText.BattleTextShiel
     }
 
     /// <summary>The text node of the window that shows your HP: the leftmost one whose number is your HP (or the one we wrote).</summary>
+    /// <remarks>
+    /// Once found it is kept while it shows a number: when a hit takes some of the shield and none of the HP, it still
+    /// shows the HP plus the shield before the hit, which is neither of the numbers it is looked for by.
+    /// </remarks>
     private AtkTextNode* FindHpNode(AtkUnitBase* addon, int hp, int shown)
     {
-        if (_hpNode != null && IsHp(_hpNode, hp, shown)) return _hpNode;
+        if (_hpNode != null && NumberOf(_hpNode) >= 0) return _hpNode;
 
         AtkTextNode* best = null;
         Search(&addon->UldManager, hp, shown, ref best, 0);

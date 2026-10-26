@@ -376,13 +376,32 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
             var scanned  = new HashSet<uint>();
             var deals    = new List<SniperDeal>();
             var done     = 0;
+            var batches  = 0;
+            var failed   = 0;
+            Exception? lastFailure = null;
             foreach (var batch in ids.Chunk(UniversalisService.MarketBatchSize))
             {
                 token.ThrowIfCancellationRequested();
                 _status = _status with { Done = done, Total = ids.Length };
+                batches++;
+
+                List<MarketSnapshot> market;
+                try
+                {
+                    market = await UniversalisService.GetMarketAsync(request.Scope, request.HomeWorld, batch, request.WholeDataCenter, token).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (!token.IsCancellationRequested && UniversalisService.IsTransient(ex))
+                {
+                    // One batch Universalis cannot answer must not stop the rest: the scan goes on without it,
+                    // and its items keep the deals of the previous scan until they are looked at again.
+                    failed++;
+                    lastFailure = ex;
+                    done += batch.Length;
+                    continue;
+                }
 
                 var found = deals.Count;
-                foreach (var snapshot in await UniversalisService.GetMarketAsync(request.Scope, request.HomeWorld, batch, request.WholeDataCenter, token).ConfigureAwait(false))
+                foreach (var snapshot in market)
                 {
                     if (catalog.Items.TryGetValue(snapshot.ItemId, out var item) && Evaluate(item, snapshot, request) is { } deal)
                         deals.Add(deal);
@@ -398,8 +417,22 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
             }
 
             token.ThrowIfCancellationRequested();
-            Publish(deals);
-            _status = new SniperStatus(false, done, ids.Length, DateTime.UtcNow, SniperError.None);
+
+            // Not a single batch answered: Universalis is down or overloaded, handled as any failed scan.
+            if (lastFailure is not null && failed == batches)
+                throw lastFailure;
+
+            Publish([.. deals, .. previous.Where(deal => !scanned.Contains(deal.ItemId))]);
+            if (lastFailure is null)
+            {
+                _status = new SniperStatus(false, done, ids.Length, DateTime.UtcNow, SniperError.None);
+                return;
+            }
+
+            // Some batches were left out: the scan counts, and the next one comes as soon as after a failure.
+            Svc.Log.Warning(lastFailure, "{tweak}: market scan finished without {failed} of {batches} batches", Id, failed, batches);
+            _nextScan = DateTime.UtcNow + RetryDelay;
+            _status = new SniperStatus(false, done, ids.Length, DateTime.UtcNow, ErrorOf(lastFailure));
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
@@ -412,18 +445,16 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
 
             // Usually Universalis being overloaded: keep what is listed so far and try again soon.
             _nextScan = DateTime.UtcNow + RetryDelay;
-            _status = _status with
-            {
-                Scanning = false,
-                Error = ex switch
-                {
-                    HttpRequestException { StatusCode: not null } => SniperError.Busy,
-                    TaskCanceledException                         => SniperError.Timeout,
-                    _                                             => SniperError.Offline,
-                },
-            };
+            _status = _status with { Scanning = false, Error = ErrorOf(ex) };
         }
     }
+
+    private static SniperError ErrorOf(Exception ex) => ex switch
+    {
+        HttpRequestException { StatusCode: not null } => SniperError.Busy,
+        TaskCanceledException                         => SniperError.Timeout,
+        _                                             => SniperError.Offline,
+    };
 
     /// <summary>Replaces the list read by the window and the Server Info Bar.</summary>
     private void Publish(List<SniperDeal> deals)

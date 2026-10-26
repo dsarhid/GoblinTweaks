@@ -8,6 +8,21 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.2.5"] = (
+            "Nuevo Goblin Loot; Battle Text asigna bien los DoT y los escudos en party; Damage Done cuenta a tu party en todos lados.",
+            [
+                "New: Goblin Loot (/gloot) — una tabla de lo que hizo cada miembro de la party con el loot: Need, Greed o Pass, el número que sacó y quién se quedó con el ítem, en su propia ventana al lado de la ventana de loot",
+                "Fix: Goblin Battle Text tomaba como tuyo el daño con el tiempo de toda la party, o escondía el tuyo — ahora un tick se asigna por los estados del enemigo, y los compartidos muestran tu parte estimada con \"~\"",
+                "Fix: Goblin Battle Text ya no muestra como tuyo el daño con el tiempo de un enemigo sobre un compañero, y muestra como tuya la curación de Improvisation, con su nombre",
+                "Fix: Goblin Battle Text mostraba como tuyo el escudo de otro jugador cuando acababas de usar una acción sobre el mismo objetivo — ahora un escudo se asigna y se nombra por el estado con el que llega",
+                "Fix: Goblin Battle Text te daba entero el último tick sobre un enemigo que moría con daño con el tiempo de varios jugadores — ahora toma tu parte",
+                "Fix: Goblin Battle Text anunciaba como tuyo el debuff de un compañero del mismo job mientras el tuyo estaba sobre el mismo enemigo",
+                "Fix: Goblin Battle Text no mostraba los escudos de una party cross-world fuera de un duty",
+                "Fix: el escudo sumado al HP de la ventana del jugador quedaba en el número viejo cuando un golpe se llevaba solo parte del escudo",
+                "Fix: Goblin Damage Done contaba solo a vos fuera de un duty — ahora cuenta a toda tu party, cross-world incluida, y a nadie más",
+                "Fix: Goblin Sniper cortaba todo el escaneo cuando Universalis no podía responder un lote de ítems — ahora sigue con el resto",
+                "Change: Goblin Battle Text también lee los efectos de las acciones de PvP (Guard) para calcular la mitigación",
+            ]),
         ["1.2.4"] = (
             "Goblin Battle Text puede volver a mostrar como tuya la curación de tus NPC aliados, con una opción nueva.",
             [

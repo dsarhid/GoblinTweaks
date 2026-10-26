@@ -34,6 +34,21 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.2.5", "2026-10-26",
+            "New Goblin Loot; Battle Text credits DoTs and shields right in a party; Damage Done counts your party anywhere.",
+            [
+                "New: Goblin Loot (/gloot) — a table of what each party member did with the loot: Need, Greed or Pass, the number rolled and who got the item, in its own window next to the loot window",
+                "Fix: Goblin Battle Text took the damage over time of the whole party as yours, or hid yours — a tick is now credited by the statuses on the enemy, and shared ones show your estimated part with \"~\"",
+                "Fix: Goblin Battle Text no longer shows an enemy's damage over time on a party member as yours, and shows the healing of Improvisation as yours, by its name",
+                "Fix: Goblin Battle Text showed another player's shield as yours when you had just used an action on the same target — a shield is now credited and named by the status it comes with",
+                "Fix: Goblin Battle Text gave you the whole last tick on an enemy that died with several players' damage over time — it now takes your part of it",
+                "Fix: Goblin Battle Text announced a job mate's debuff as yours while yours was on the same enemy",
+                "Fix: Goblin Battle Text did not show the shields of a cross-world party outside a duty",
+                "Fix: the shield added to the HP of the player window stayed on the old number when a hit took only part of the shield",
+                "Fix: Goblin Damage Done counted only you outside a duty — it now counts your whole party, cross-world included, and nobody else",
+                "Fix: Goblin Sniper stopped the whole scan when Universalis could not answer one batch of items — it now goes on with the rest",
+                "Change: Goblin Battle Text also reads the effects of PvP actions (Guard) to work out mitigation",
+            ]),
         new("1.2.4", "2026-10-19",
             "Goblin Battle Text can show the healing of your allied NPCs as yours again, with a new option.",
             [
