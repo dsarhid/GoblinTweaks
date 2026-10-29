@@ -32,7 +32,11 @@ public sealed record MarketSales(long AverageNq, long AverageHq, double WorldSal
 public sealed record SaleEntry(long PricePerUnit, int Quantity, bool Hq, DateTime Time);
 
 /// <summary>Current listings (cheapest first) of one item and how it has been selling.</summary>
-public sealed record MarketSnapshot(uint ItemId, List<MarketListing> Listings, MarketSales Sales);
+/// <param name="Home">
+/// When a whole data center is scanned: the same item as seen from the home world alone (its own listings, sales
+/// figures of the home world first), so a deal there is not hidden by cheaper listings elsewhere. Null otherwise.
+/// </param>
+public sealed record MarketSnapshot(uint ItemId, List<MarketListing> Listings, MarketSales Sales, MarketSnapshot? Home = null);
 
 public sealed class UniversalisService : IDisposable
 {
@@ -50,7 +54,8 @@ public sealed class UniversalisService : IDisposable
     /// Fetches listings and normal sale prices for up to <see cref="MarketBatchSize"/> items.
     /// <paramref name="scope"/> is the world or data center whose listings are wanted; sales figures are
     /// always asked for <paramref name="homeWorld"/>, which also returns its data center and region.
-    /// Throws on network or parse errors.
+    /// With <paramref name="wholeDataCenter"/>, the listings of the home world are fetched too and come
+    /// back in <see cref="MarketSnapshot.Home"/>. Throws on network or parse errors.
     /// </summary>
     /// <remarks>
     /// Sale history is deliberately not requested: Universalis needs about a second per item for it and
@@ -60,33 +65,57 @@ public sealed class UniversalisService : IDisposable
     public static async Task<List<MarketSnapshot>> GetMarketAsync(string scope, string homeWorld, IReadOnlyCollection<uint> itemIds, bool wholeDataCenter, CancellationToken token)
     {
         var ids = string.Join(',', itemIds);
-        var listingsTask = GetJsonAsync($"https://universalis.app/api/v2/{Uri.EscapeDataString(scope)}/{ids}?listings=5&entries=0", token);
+        var listingsTask = GetJsonAsync(ListingsUrl(scope, ids), token);
         var averagesTask = GetJsonAsync($"https://universalis.app/api/v2/aggregated/{Uri.EscapeDataString(homeWorld)}/{ids}", token);
+
+        // The data center's five cheapest listings may all be on other worlds, and a home world deal is judged
+        // against the home world's own prices: its listings are asked for separately.
+        var homeTask = wholeDataCenter ? GetJsonAsync(ListingsUrl(homeWorld, ids), token) : null;
 
         using var listings = await listingsTask.ConfigureAwait(false);
         using var averages = await averagesTask.ConfigureAwait(false);
+        using var home     = homeTask is null ? null : await homeTask.ConfigureAwait(false);
 
         // Prefer the price of the area being scanned, then wider areas when it has no recent sales.
-        string[] areas = wholeDataCenter ? ["dc", "region", "world"] : ["world", "dc", "region"];
-        var sales = new Dictionary<uint, MarketSales>();
-        if (averages.RootElement.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var entry in results.EnumerateArray())
-            {
-                if (!entry.TryGetProperty("itemId", out var id) || !id.TryGetUInt32(out var itemId))
-                    continue;
+        var worldSales = ReadSales(averages, ["world", "dc", "region"]);
+        if (home is null)
+            return ParseSnapshots(listings, worldSales);
 
-                var lastNq = LastSale(entry, "nq", areas);
-                var lastHq = LastSale(entry, "hq", areas);
-                sales[itemId] = new MarketSales(
-                    NormalPrice(entry, "nq", areas),
-                    NormalPrice(entry, "hq", areas),
-                    SalesPerDay(entry, "nq", "world") + SalesPerDay(entry, "hq", "world"),
-                    SalesPerDay(entry, "nq", "dc") + SalesPerDay(entry, "hq", "dc"),
-                    lastNq > lastHq ? lastNq : lastHq);
-            }
+        var homeSnapshots = ParseSnapshots(home, worldSales).ToDictionary(snapshot => snapshot.ItemId);
+        return [.. ParseSnapshots(listings, ReadSales(averages, ["dc", "region", "world"]))
+            .Select(snapshot => snapshot with { Home = homeSnapshots.GetValueOrDefault(snapshot.ItemId) })];
+    }
+
+    private static string ListingsUrl(string scope, string ids)
+        => $"https://universalis.app/api/v2/{Uri.EscapeDataString(scope)}/{ids}?listings=5&entries=0";
+
+    /// <summary>Sales figures of each item in the "aggregated" answer, prices taken from the first of <paramref name="areas"/> that has them.</summary>
+    private static Dictionary<uint, MarketSales> ReadSales(JsonDocument averages, string[] areas)
+    {
+        var sales = new Dictionary<uint, MarketSales>();
+        if (!averages.RootElement.TryGetProperty("results", out var results) || results.ValueKind != JsonValueKind.Array)
+            return sales;
+
+        foreach (var entry in results.EnumerateArray())
+        {
+            if (!entry.TryGetProperty("itemId", out var id) || !id.TryGetUInt32(out var itemId))
+                continue;
+
+            var lastNq = LastSale(entry, "nq", areas);
+            var lastHq = LastSale(entry, "hq", areas);
+            sales[itemId] = new MarketSales(
+                NormalPrice(entry, "nq", areas),
+                NormalPrice(entry, "hq", areas),
+                SalesPerDay(entry, "nq", "world") + SalesPerDay(entry, "hq", "world"),
+                SalesPerDay(entry, "nq", "dc") + SalesPerDay(entry, "hq", "dc"),
+                lastNq > lastHq ? lastNq : lastHq);
         }
 
+        return sales;
+    }
+
+    private static List<MarketSnapshot> ParseSnapshots(JsonDocument listings, Dictionary<uint, MarketSales> sales)
+    {
         var result = new List<MarketSnapshot>();
         var root = listings.RootElement;
 

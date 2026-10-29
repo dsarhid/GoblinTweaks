@@ -75,7 +75,7 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         /// <summary>Show the entry with the number of deals found in the Server Info Bar.</summary>
         public bool Notify { get; set; } = true;
 
-        /// <summary>Scan every world of the home data center instead of only the home world.</summary>
+        /// <summary>Scan every world of the home data center as well as the home world.</summary>
         public bool WholeDataCenter { get; set; } = true;
 
         /// <summary>How far below the normal price a listing has to be, in percent.</summary>
@@ -579,8 +579,15 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
                 var found = deals.Count;
                 foreach (var snapshot in market)
                 {
-                    if (catalog.Items.TryGetValue(snapshot.ItemId, out var item) && Evaluate(item, snapshot, request) is { } deal)
-                        deals.Add(deal);
+                    if (!catalog.Items.TryGetValue(snapshot.ItemId, out var item)) continue;
+
+                    var deal = Evaluate(item, snapshot, request);
+                    if (deal != null) deals.Add(deal);
+
+                    // Scanning the data center must not hide what scanning only the home world finds: a listing that is
+                    // cheap for the home world can lose against cheaper listings or a lower average elsewhere.
+                    if (snapshot.Home is { } home && Evaluate(item, home, request) is { } homeDeal && homeDeal.Key != deal?.Key)
+                        deals.Add(homeDeal);
                 }
 
                 done += batch.Length;

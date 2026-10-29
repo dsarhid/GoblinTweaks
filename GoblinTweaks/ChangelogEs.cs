@@ -8,6 +8,11 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.3.1"] = (
+            "GoblinSniper: escanear todo el data center ya no oculta las ofertas de tu mundo.",
+            [
+                "Fix: GoblinSniper ocultaba las ofertas de tu mundo al escanear todo el data center — se comparaban con los precios del data center y con publicaciones más baratas de otros mundos; ahora se listan las dos",
+            ]),
         ["1.3.0"] = (
             "Nuevo Goblin Hotbar Icons: íconos redondos con efecto esfera. Y arreglos y opciones nuevas en casi todos los tweaks.",
             [

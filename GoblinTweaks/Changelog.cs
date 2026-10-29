@@ -34,6 +34,11 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.3.1", "2026-10-29",
+            "GoblinSniper: scanning the whole data center no longer hides the deals found on your home world.",
+            [
+                "Fix: GoblinSniper hid home world deals when scanning the whole data center — they were judged against data center prices and cheaper listings on other worlds; now both are listed",
+            ]),
         new("1.3.0", "2026-10-29",
             "New Goblin Hotbar Icons: round, sphere-like hotbar icons. Plus fixes and new options in almost every tweak.",
             [
