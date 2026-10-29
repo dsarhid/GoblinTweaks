@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Numerics;
+using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using GoblinTweaks.Tweaks;
 using KamiToolKit.BaseTypes;
@@ -11,7 +12,7 @@ namespace GoblinTweaks.UI;
 
 /// <summary>
 /// Native window listing every combat job with its level and the weapon-drawn pose saved for it,
-/// laid out like the Classes/Jobs tab of the Character window.
+/// laid out like the Classes/Jobs tab of the Character window. Its height follows the longest column.
 /// </summary>
 internal unsafe class WeaponPoseAddon : NativeAddon
 {
@@ -27,12 +28,17 @@ internal unsafe class WeaponPoseAddon : NativeAddon
     private const float IconSz   = 28f;
     private const float LevelW   = 34f;
     private const float BottomH  = 34f;
+    private const float Width    = 450f;
+    private const float MinHeight = 260f;
+
+    // Window frame around the content: title bar and borders above, padding below (KamiToolKit window).
+    private const float FrameH = 62f;
 
     // ClassJob.Role values, and the PrimaryStat that tells physical from magical ranged.
     private const byte RoleTank = 1, RoleMelee = 2, RoleRanged = 3, RoleHealer = 4;
     private const byte StatDexterity = 2;
 
-    private enum Group { Tank, Melee, Healer, PhysicalRanged, MagicalRanged }
+    internal enum Group { Tank, Melee, Healer, PhysicalRanged, MagicalRanged }
 
     private static readonly Group[][] Columns =
     [
@@ -43,11 +49,15 @@ internal unsafe class WeaponPoseAddon : NativeAddon
     private sealed record Row(ClassJobRow Job, TextNode Level, TextNode Name, TextNode Pose);
 
     private readonly List<Row> _rows = [];
-    private CircleButtonNode? _helpButton;
-    private TextHelpAddon? _helpAddon;
     private DateTime _nextRefresh = DateTime.MinValue;
 
     public required WeaponPosePerJob Tweak { get; init; }
+
+    /// <summary>The jobs to list, by group (from <see cref="JobsByGroup"/>).</summary>
+    public required Dictionary<Group, List<ClassJobRow>> Jobs { get; init; }
+
+    /// <summary>Which jobs this window lists, to tell when it has to be built again.</summary>
+    public string LayoutKey => KeyOf(Jobs);
 
     protected override void OnSetup(AtkUnitBase* addon, Span<AtkValue> atkValues)
     {
@@ -56,7 +66,6 @@ internal unsafe class WeaponPoseAddon : NativeAddon
         var c       = ContentStartPosition;
         var cs      = ContentSize;
         var columnW = cs.X / Columns.Length;
-        var jobs    = JobsByGroup();
 
         for (var column = 0; column < Columns.Length; column++)
         {
@@ -64,7 +73,7 @@ internal unsafe class WeaponPoseAddon : NativeAddon
             var y = c.Y;
             foreach (var group in Columns[column])
             {
-                if (!jobs.TryGetValue(group, out var groupJobs)) continue;
+                if (!Jobs.TryGetValue(group, out var groupJobs)) continue;
 
                 BuildHeader(new Vector2(x, y), columnW - 12f, Tweak.Text($"Group.{group}"));
                 y += HeaderH;
@@ -94,16 +103,14 @@ internal unsafe class WeaponPoseAddon : NativeAddon
     protected override void OnFinalize(AtkUnitBase* addon)
     {
         _rows.Clear();
-        _helpButton = null;
-
-        _helpAddon?.Dispose();
-        _helpAddon = null;
-
         base.OnFinalize(addon);
     }
 
-    /// <summary>Combat jobs by role, in the game's own order. Base classes only appear if a pose was saved on them.</summary>
-    private Dictionary<Group, List<ClassJobRow>> JobsByGroup()
+    /// <summary>
+    /// Combat jobs by role, in the game's own order. Base classes only appear if a pose was saved on them;
+    /// with <paramref name="onlyUnlocked"/>, jobs the character has not unlocked are left out.
+    /// </summary>
+    internal static Dictionary<Group, List<ClassJobRow>> JobsByGroup(IReadOnlyDictionary<uint, byte> saved, bool onlyUnlocked)
     {
         var sheet   = Svc.Data.GetExcelSheet<ClassJobRow>();
         var classes = sheet.Where(job => job.ClassJobParent.RowId != job.RowId).Select(job => job.ClassJobParent.RowId).ToHashSet();
@@ -111,7 +118,8 @@ internal unsafe class WeaponPoseAddon : NativeAddon
         var result = new Dictionary<Group, List<ClassJobRow>>();
         foreach (var job in sheet.OrderBy(job => job.UIPriority))
         {
-            if (classes.Contains(job.RowId) && !Tweak.SavedPoses.ContainsKey(job.RowId)) continue;
+            if (classes.Contains(job.RowId) && !saved.ContainsKey(job.RowId)) continue;
+            if (onlyUnlocked && Svc.PlayerState.GetClassJobLevel(job) <= 0) continue;
 
             Group group;
             switch (job.Role)
@@ -129,6 +137,21 @@ internal unsafe class WeaponPoseAddon : NativeAddon
         }
 
         return result;
+    }
+
+    /// <summary>Identifies the jobs of a layout, in order.</summary>
+    internal static string KeyOf(Dictionary<Group, List<ClassJobRow>> jobs)
+        => string.Join(",", Columns.SelectMany(column => column)
+            .Select(group => jobs.TryGetValue(group, out var list) ? string.Join(" ", list.Select(job => job.RowId)) : "-"));
+
+    /// <summary>Window size that fits the longest column and the bottom bar.</summary>
+    internal static Vector2 SizeFor(Dictionary<Group, List<ClassJobRow>> jobs)
+    {
+        var tallest = Columns.Max(column => column
+            .Where(jobs.ContainsKey)
+            .Sum(group => HeaderH + jobs[group].Count * RowH + GroupGap));
+
+        return new Vector2(Width, MathF.Max(MinHeight, tallest + BottomH + 8f + FrameH));
     }
 
     private void BuildHeader(Vector2 pos, float width, string text)
@@ -202,47 +225,51 @@ internal unsafe class WeaponPoseAddon : NativeAddon
             Size     = new Vector2(size.X, 2f),
         }.AttachNode(this);
 
-        _helpButton = new CircleButtonNode
+        var help = new CircleButtonNode
         {
             Icon        = CircleButtonIcon.QuestionMark,
             Position    = new Vector2(pos.X + 4f, pos.Y + (size.Y - 22f) / 2f),
             Size        = new Vector2(22f, 22f),
             TextTooltip = Tweak.Text("Help.Title"),
         };
-        _helpButton.OnClick = OpenHelp;
-        _helpButton.AttachNode(this);
+        help.OnClick = Tweak.ToggleHelp;
+        help.AttachNode(this);
 
-        TweakLanguageSelect.Add(this, Tweak, new Vector2(pos.X + size.X - TweakLanguageSelect.Width - 6f, pos.Y + (size.Y - 26f) / 2f));
+        var settings = new CircleButtonNode
+        {
+            Icon        = CircleButtonIcon.GearCog,
+            Position    = new Vector2(pos.X + size.X - 32f, pos.Y + (size.Y - 28f) / 2f),
+            Size        = new Vector2(28f, 28f),
+            TextTooltip = Tweak.Text("Settings.Title"),
+        };
+        settings.OnClick = Tweak.ToggleSettings;
+        settings.AttachNode(this);
     }
 
-    internal void OpenHelp()
+    /// <summary>Level cap of the expansions the account owns (50 for A Realm Reborn, +10 for each expansion).</summary>
+    private static int LevelCap()
     {
-        _helpAddon ??= new TextHelpAddon
-        {
-            InternalName = "GtkWeaponPoseHelp",
-            Title        = Tweak.Text("Help.Title"),
-            Size         = new Vector2(440f, 300f),
-            Pages        = [(Tweak.Text("Help.Title"), Tweak.Text("Help.Text"))],
-        };
-        _helpAddon.Toggle();
+        var playerState = PlayerState.Instance();
+        return playerState != null ? 50 + 10 * playerState->MaxExpansion : int.MaxValue;
     }
 
     private void Refresh()
     {
         _nextRefresh = DateTime.UtcNow.AddSeconds(1);
 
-        var loaded   = Svc.PlayerState.IsLoaded;
-        var levels   = _rows.Select(row => loaded ? (int)Svc.PlayerState.GetClassJobLevel(row.Job) : 0).ToArray();
-        var maxLevel = levels.DefaultIfEmpty(0).Max();
+        var loaded = Svc.PlayerState.IsLoaded;
+        var cap    = LevelCap();
+        var saved  = Tweak.SavedPoses;
 
-        foreach (var (row, level) in _rows.Zip(levels))
+        foreach (var row in _rows)
         {
+            var level    = loaded ? (int)Svc.PlayerState.GetClassJobLevel(row.Job) : 0;
             var unlocked = level > 0;
-            row.Level.String    = level.ToString();
-            row.Level.TextColor = !unlocked ? MutedGrey : level == maxLevel ? LevelMax : White;
+            row.Level.String    = unlocked ? level.ToString() : "-";
+            row.Level.TextColor = !unlocked ? MutedGrey : level >= cap ? LevelMax : White;
             row.Name.TextColor  = unlocked ? White : MutedGrey;
 
-            if (Tweak.SavedPoses.TryGetValue(row.Job.RowId, out var pose))
+            if (saved.TryGetValue(row.Job.RowId, out var pose))
             {
                 row.Pose.String    = string.Format(Tweak.Text("Pose"), pose + 1);
                 row.Pose.TextColor = TitleGold;
