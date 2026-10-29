@@ -9,8 +9,9 @@ using KamiToolKit.Nodes;
 namespace GoblinTweaks.UI;
 
 /// <summary>
-/// Native window of Goblin Loot: the items of the loot list on the left (the last rolls are kept), and on the right a
-/// table of the party for the selected item, with a column for Need, Greed and Pass.
+/// Native window of Goblin Loot: the items of the loot list on the left (the last rolls are kept, it scrolls when a
+/// big chest drops), and on the right a table of the party for the selected item, with a column for Need, Greed
+/// and Pass, and a row for a player of another party of the alliance when one got the item.
 /// </summary>
 internal unsafe class LootRollsAddon : NativeAddon
 {
@@ -21,10 +22,13 @@ internal unsafe class LootRollsAddon : NativeAddon
     private static readonly Vector4 Muted     = new(0.62f, 0.62f, 0.62f, 1f);
     private static readonly Vector4 Cross     = new(0.50f, 0.50f, 0.50f, 1f);
 
-    private const float SideW      = 210f;
+    private const uint  FramedJobIconBase = 62100;
+    private const float SideW      = 220f;
     private const float SideRowH   = 36f;
     private const float SideIcon   = 28f;
+    private const float JobMarkSz  = 16f;
     private const float StatusW    = 44f;
+    private const float ScrollBarW = 16f;
     private const float HeadH      = 48f;
     private const float ColumnsH   = 22f;
     private const float RowH       = 26f;
@@ -33,7 +37,10 @@ internal unsafe class LootRollsAddon : NativeAddon
     private const float BottomH    = 34f;
     private const int   MaxPlayers = 8;
 
-    private sealed record SideRow(SelectableTextNode Button, IconImageNode Icon, TextNode Status);
+    // Every item the game can list at once (16) and one more said before it was seen.
+    private const int SideRows = LootRolls.HistoryLimit + 1;
+
+    private sealed record SideRow(SelectableTextNode Button, IconImageNode Icon, IconImageNode JobMark, TextNode Status);
 
     private sealed record TableRow(TextNode Name, TextNode[] Cells);
 
@@ -41,15 +48,19 @@ internal unsafe class LootRollsAddon : NativeAddon
     private readonly List<TableRow> _table = [];
     private readonly TextNode[]     _columns = new TextNode[4];
 
+    private ScrollingNode<ResNode>? _sideScroll;
     private IconImageNode? _headIcon;
     private TextNode?      _headName;
     private TextNode?      _headStatus;
+    private TextNode?      _headJob;
     private TextNode?      _footer;
     private TextNode?      _empty;
 
     private int  _selectedId;
     private int  _shownVersion = -1;
     private int  _shownSeconds;
+    private int  _shownRows = -1;
+    private uint _shownJob;
     private bool _dirty = true;
 
     public required GoblinLoot Tweak { get; init; }
@@ -75,7 +86,7 @@ internal unsafe class LootRollsAddon : NativeAddon
         var c  = ContentStartPosition;
         var cs = ContentSize;
 
-        BuildSide(c);
+        BuildSide(c, cs.Y - BottomH - 4f);
 
         new VerticalLineNode { Position = new Vector2(c.X + SideW, c.Y), Height = cs.Y - BottomH, Width = 3f }
             .AttachNode(this);
@@ -84,29 +95,10 @@ internal unsafe class LootRollsAddon : NativeAddon
         var w = cs.X - SideW - 20f;
         BuildDetail(new Vector2(x, c.Y), w);
 
-        new HorizontalLineNode { Position = new Vector2(c.X, c.Y + cs.Y - BottomH), Size = new Vector2(cs.X, 2f) }
-            .AttachNode(this);
-        // Bottom left: the help and the settings.
-        var buttonY = c.Y + cs.Y - BottomH + (BottomH - 22f) / 2f;
-        new CircleButtonNode
-        {
-            Icon        = CircleButtonIcon.QuestionMark,
-            Position    = new Vector2(c.X + 4f, buttonY),
-            Size        = new Vector2(22f, 22f),
-            TextTooltip = Tweak.Text("Help.Tooltip"),
-            OnClick     = Tweak.OpenHelp,
-        }.AttachNode(this);
-
-        new CircleButtonNode
-        {
-            Icon        = CircleButtonIcon.GearCog,
-            Position    = new Vector2(c.X + 32f, buttonY),
-            Size        = new Vector2(22f, 22f),
-            TextTooltip = Tweak.Text("Window.Settings"),
-            OnClick     = Tweak.OpenSettings,
-        }.AttachNode(this);
+        BuildBottomBar(new Vector2(c.X, c.Y + cs.Y - BottomH), new Vector2(cs.X, BottomH));
 
         _shownVersion = -1;
+        _shownRows    = -1;
         _dirty        = true;
         Redraw();
     }
@@ -115,7 +107,7 @@ internal unsafe class LootRollsAddon : NativeAddon
     {
         base.OnUpdate(addon);
 
-        if (_dirty || _shownVersion != Tweak.Rolls.Version || _shownSeconds != SecondsSignature())
+        if (_dirty || _shownVersion != Tweak.Rolls.Version || _shownSeconds != SecondsSignature() || _shownJob != CurrentJob())
             Redraw();
     }
 
@@ -128,38 +120,63 @@ internal unsafe class LootRollsAddon : NativeAddon
         return sum;
     }
 
+    private static uint CurrentJob() => Svc.PlayerState.IsLoaded ? Svc.PlayerState.ClassJob.RowId : 0;
+
     protected override void OnFinalize(AtkUnitBase* addon)
     {
         _side.Clear();
         _table.Clear();
         Array.Clear(_columns);
-        _headIcon = null;
-        _headName = _headStatus = _footer = _empty = null;
+        _sideScroll = null;
+        _headIcon   = null;
+        _headName   = _headStatus = _headJob = _footer = _empty = null;
 
         base.OnFinalize(addon);
     }
 
     // ── Building ──────────────────────────────────────────────────────────────
 
-    private void BuildSide(Vector2 c)
+    private void BuildSide(Vector2 c, float height)
     {
-        for (var index = 0; index < LootRolls.HistoryLimit; index++)
+        _sideScroll = new ScrollingNode<ResNode>
         {
-            var y = c.Y + index * SideRowH;
+            Position          = c,
+            Size              = new Vector2(SideW - 4f, height),
+            AutoHideScrollBar = true,
+        };
+        _sideScroll.AttachNode(this);
+        var host = _sideScroll.ContentNode;
+
+        // Leaves room for the scroll bar when a big chest makes the list scroll.
+        var rowW = SideW - 4f - ScrollBarW;
+
+        for (var index = 0; index < SideRows; index++)
+        {
+            var y = index * SideRowH;
 
             var icon = new IconImageNode
             {
                 FitTexture = true,
-                Position   = new Vector2(c.X + 2f, y + (SideRowH - SideIcon) / 2f),
+                Position   = new Vector2(2f, y + (SideRowH - SideIcon) / 2f),
                 Size       = new Vector2(SideIcon, SideIcon),
                 IsVisible  = false,
             };
-            icon.AttachNode(this);
+            icon.AttachNode(host);
+
+            // The icon of your job over the corner of items your job can wear.
+            var jobMark = new IconImageNode
+            {
+                FitTexture = true,
+                Position   = new Vector2(2f + SideIcon - JobMarkSz + 4f, y + (SideRowH + SideIcon) / 2f - JobMarkSz + 4f),
+                Size       = new Vector2(JobMarkSz, JobMarkSz),
+                IsVisible  = false,
+            };
+            jobMark.AttachNode(host);
 
             var button = new SelectableTextNode
             {
-                Position  = new Vector2(c.X + SideIcon + 6f, y),
-                Size      = new Vector2(SideW - SideIcon - StatusW - 8f, SideRowH - 2f),
+                Position  = new Vector2(SideIcon + 6f, y),
+                Size      = new Vector2(rowW - SideIcon - StatusW - 8f, SideRowH - 2f),
                 IsVisible = false,
             };
             button.TextNode.FontSize = 13;
@@ -171,13 +188,13 @@ internal unsafe class LootRollsAddon : NativeAddon
                 var entries = Tweak.Rolls.Entries;
                 if (row < entries.Count) Select(entries[row].Id);
             };
-            button.AttachNode(this);
+            button.AttachNode(host);
             SetInteractive(button, false);
 
             // Two lines: how many have chosen, and the seconds left.
             var status = new TextNode
             {
-                Position      = new Vector2(c.X + SideW - StatusW - 14f, y + 2f),
+                Position      = new Vector2(rowW - StatusW - 4f, y + 2f),
                 Size          = new Vector2(StatusW, SideRowH - 4f),
                 FontSize      = 12,
                 LineSpacing   = 15,
@@ -185,9 +202,9 @@ internal unsafe class LootRollsAddon : NativeAddon
                 IsVisible     = false,
             };
             status.AddTextFlags(TextFlags.MultiLine);
-            status.AttachNode(this);
+            status.AttachNode(host);
 
-            _side.Add(new SideRow(button, icon, status));
+            _side.Add(new SideRow(button, icon, jobMark, status));
         }
     }
 
@@ -215,11 +232,23 @@ internal unsafe class LootRollsAddon : NativeAddon
         _headStatus = new TextNode
         {
             Position  = origin + new Vector2(48f, 25f),
-            Size      = new Vector2(width - 48f, 18f),
+            Size      = new Vector2(width - 48f - 110f, 18f),
             TextColor = Muted,
             FontSize  = 12,
         };
         _headStatus.AttachNode(this);
+
+        _headJob = new TextNode
+        {
+            Position      = origin + new Vector2(width - 110f, 25f),
+            Size          = new Vector2(110f, 18f),
+            TextColor     = Green,
+            FontSize      = 12,
+            AlignmentType = AlignmentType.Right,
+            String        = Tweak.Text("ForYourJob"),
+            IsVisible     = false,
+        };
+        _headJob.AttachNode(this);
 
         _empty = new TextNode
         {
@@ -251,7 +280,8 @@ internal unsafe class LootRollsAddon : NativeAddon
             _columns[column].AttachNode(this);
         }
 
-        for (var index = 0; index < MaxPlayers; index++)
+        // The party, and one more row for a player of another party that got the item.
+        for (var index = 0; index <= MaxPlayers; index++)
         {
             var y = headY + ColumnsH + index * RowH;
 
@@ -283,9 +313,10 @@ internal unsafe class LootRollsAddon : NativeAddon
             _table.Add(new TableRow(name, cells));
         }
 
+        // Under the last possible row, so it never covers a player.
         _footer = new TextNode
         {
-            Position      = new Vector2(origin.X + 4f, ContentSize.Y - BottomH - FooterH - 2f),
+            Position      = new Vector2(origin.X + 4f, headY + ColumnsH + (MaxPlayers + 1) * RowH + 6f),
             Size          = new Vector2(width - 8f, FooterH),
             FontSize      = 12,
             LineSpacing   = 16,
@@ -295,6 +326,55 @@ internal unsafe class LootRollsAddon : NativeAddon
         _footer.AttachNode(this);
     }
 
+    private void BuildBottomBar(Vector2 pos, Vector2 size)
+    {
+        new HorizontalLineNode { Position = pos, Size = new Vector2(size.X, 2f) }.AttachNode(this);
+
+        // Bottom left: the help and the settings.
+        var buttonY = pos.Y + (size.Y - 22f) / 2f;
+        new CircleButtonNode
+        {
+            Icon        = CircleButtonIcon.QuestionMark,
+            Position    = new Vector2(pos.X + 4f, buttonY),
+            Size        = new Vector2(22f, 22f),
+            TextTooltip = Tweak.Text("Help.Tooltip"),
+            OnClick     = Tweak.OpenHelp,
+        }.AttachNode(this);
+
+        new CircleButtonNode
+        {
+            Icon        = CircleButtonIcon.GearCog,
+            Position    = new Vector2(pos.X + 32f, buttonY),
+            Size        = new Vector2(22f, 22f),
+            TextTooltip = Tweak.Text("Window.Settings"),
+            OnClick     = Tweak.OpenSettings,
+        }.AttachNode(this);
+
+        // Bottom right: the summary of the duty and clearing what is kept.
+        const float buttonW = 120f;
+        var textY = pos.Y + (size.Y - 26f) / 2f + 1f;
+
+        var clear = new TextButtonNode
+        {
+            String      = Tweak.Text("Button.Clear"),
+            Position    = new Vector2(pos.X + size.X - buttonW, textY),
+            Size        = new Vector2(buttonW, 26f),
+            TextTooltip = Tweak.Text("Button.Clear.Help"),
+        };
+        clear.OnClick = Tweak.ClearHistory;
+        clear.AttachNode(this);
+
+        var summary = new TextButtonNode
+        {
+            String      = Tweak.Text("Button.Summary"),
+            Position    = new Vector2(pos.X + size.X - buttonW * 2f - 6f, textY),
+            Size        = new Vector2(buttonW, 26f),
+            TextTooltip = Tweak.Text("Button.Summary.Help"),
+        };
+        summary.OnClick = Tweak.OpenSummary;
+        summary.AttachNode(this);
+    }
+
     // ── Drawing ───────────────────────────────────────────────────────────────
 
     private void Redraw()
@@ -302,6 +382,7 @@ internal unsafe class LootRollsAddon : NativeAddon
         _dirty        = false;
         _shownVersion = Tweak.Rolls.Version;
         _shownSeconds = SecondsSignature();
+        _shownJob     = CurrentJob();
 
         var entries  = Tweak.Rolls.Entries;
         var selected = entries.FirstOrDefault(entry => entry.Id == _selectedId) ?? entries.FirstOrDefault();
@@ -309,6 +390,15 @@ internal unsafe class LootRollsAddon : NativeAddon
 
         for (var index = 0; index < _side.Count; index++)
             DrawSide(_side[index], index < entries.Count ? entries[index] : null, selected);
+
+        // The list scrolls exactly as far as there are items.
+        var rows = Math.Min(entries.Count, _side.Count);
+        if (rows != _shownRows && _sideScroll is not null)
+        {
+            _shownRows = rows;
+            _sideScroll.ContentNode.Height = MathF.Max(_sideScroll.Height, rows * SideRowH);
+            _sideScroll.RecalculateSizes();
+        }
 
         DrawDetail(selected);
     }
@@ -325,13 +415,22 @@ internal unsafe class LootRollsAddon : NativeAddon
     {
         row.Button.IsVisible = row.Icon.IsVisible = row.Status.IsVisible = entry is not null;
         SetInteractive(row.Button, entry is not null);
-        if (entry is null) return;
+        if (entry is null)
+        {
+            row.JobMark.IsVisible = false;
+            return;
+        }
 
         var on = entry == selected;
         row.Icon.IconId             = entry.IconId;
+        row.Icon.ItemTooltip        = GoblinLoot.PlainItemId(entry.ItemId);
         row.Button.String           = entry.Count > 1 ? $"{entry.ItemName} x{entry.Count}" : entry.ItemName;
         row.Button.IsSelected       = on;
         row.Button.TextNode.TextColor = on ? TitleGold : White;
+
+        var forMe = Tweak.ForMyJob(entry.ItemId);
+        row.JobMark.IsVisible = forMe;
+        if (forMe) row.JobMark.IconId = FramedJobIconBase + _shownJob;
 
         if (!entry.Resolved)
         {
@@ -359,26 +458,34 @@ internal unsafe class LootRollsAddon : NativeAddon
 
         if (entry is null)
         {
+            _headJob!.IsVisible = false;
             foreach (var row in _table) HideRow(row);
             return;
         }
 
-        _headIcon.IconId  = entry.IconId;
-        _headName.String  = entry.Count > 1 ? $"{entry.ItemName} x{entry.Count}" : entry.ItemName;
+        _headIcon.IconId      = entry.IconId;
+        _headIcon.ItemTooltip = GoblinLoot.PlainItemId(entry.ItemId);
+        _headName.String      = entry.Count > 1 ? $"{entry.ItemName} x{entry.Count}" : entry.ItemName;
+        _headJob!.IsVisible   = Tweak.ForMyJob(entry.ItemId);
 
         _headStatus.String = entry.Resolved
             ? Tweak.Text("Over")
             : string.Format(Tweak.Text("Chosen"), entry.Chosen, entry.Players.Count) + (entry.SecondsLeft > 0 ? $"  ·  {entry.SecondsLeft}s" : string.Empty);
         _headStatus.TextColor = entry.Resolved ? Muted : Orange;
 
+        // Your party, then the player of another party that got the item, if any.
+        var outside = entry.Others.FirstOrDefault(player => player.Winner);
+        var players = entry.Players.Take(MaxPlayers).ToList();
+        if (outside is not null) players.Add(outside);
+
         for (var index = 0; index < _table.Count; index++)
         {
             var row = _table[index];
-            if (index >= entry.Players.Count) { HideRow(row); continue; }
+            if (index >= players.Count) { HideRow(row); continue; }
 
-            var player = entry.Players[index];
+            var player = players[index];
             row.Name.IsVisible = true;
-            row.Name.String    = player.IsMe ? $"{player.Name} {Tweak.Text("You")}" : player.Name;
+            row.Name.String    = PlayerName(player);
             row.Name.TextColor = player.Winner ? Green : White;
 
             LootChoice[] columns = [LootChoice.Need, LootChoice.Greed, LootChoice.Pass];
@@ -401,7 +508,8 @@ internal unsafe class LootRollsAddon : NativeAddon
         }
         else if (entry.Winner is { } winner)
         {
-            _footer.String    = string.Format(Tweak.Text("Winner"), winner.Name, winner.Choice == LootChoice.Pass ? "-" : winner.Value.ToString());
+            var value = winner.Choice is LootChoice.Need or LootChoice.Greed ? winner.Value.ToString() : "-";
+            _footer.String    = string.Format(Tweak.Text("Winner"), PlayerName(winner), value);
             _footer.TextColor = Green;
         }
         else
@@ -411,20 +519,30 @@ internal unsafe class LootRollsAddon : NativeAddon
         }
     }
 
+    private string PlayerName(LootPlayer player)
+    {
+        if (player.IsMe)    return $"{player.Name} {Tweak.Text("You")}";
+        if (player.Outside) return $"{player.Name} {Tweak.Text("OtherParty")}";
+        return player.Name;
+    }
+
     private static void HideRow(TableRow row)
     {
         row.Name.IsVisible = false;
         foreach (var cell in row.Cells) cell.IsVisible = false;
     }
 
-    /// <summary>What a column of the table says for a player: a "?" while it is not known, and once it is, the number where they rolled and a cross in the others.</summary>
+    /// <summary>
+    /// What a column of the table says for a player: a "?" while it is not known, and once it is, the number where
+    /// they rolled and a cross in the others. A player that let the time run out shows "Auto" under Pass.
+    /// </summary>
     private (string Text, Vector4 Color) Cell(LootPlayer player, LootChoice column)
     {
         // Chosen, but the game does not say what until the roll is over.
         if (player.Choice == LootChoice.None) return ("?", player.Cast ? Muted : Orange);
 
         if (player.Choice != column) return ("X", Cross);
-        if (column == LootChoice.Pass) return (Tweak.Text("Passed"), Green);
+        if (column == LootChoice.Pass) return player.TimedOut ? (Tweak.Text("Auto"), Muted) : (Tweak.Text("Passed"), Green);
 
         // The highest roll is the one that got the item.
         return (player.Winner ? $"{player.Value} ↑" : player.Value.ToString(), Green);

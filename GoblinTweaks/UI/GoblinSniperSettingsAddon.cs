@@ -7,8 +7,8 @@ using KamiToolKit.Nodes;
 namespace GoblinTweaks.UI;
 
 /// <summary>
-/// Native settings window of GoblinSniper: language of the names, notification, scan rules, watched item types and
-/// the individual items to watch (a search box and the list of what is watched).
+/// Native settings window of GoblinSniper: language of its windows, Server Info Bar and alerts, scan rules, watched
+/// item types, the individual items to watch (a search box and the list of what is watched) and the ignored items.
 /// </summary>
 internal sealed unsafe class GoblinSniperSettingsAddon : SettingsPanelAddon
 {
@@ -24,16 +24,16 @@ internal sealed unsafe class GoblinSniperSettingsAddon : SettingsPanelAddon
     private bool           _itemsBuilt;
     private bool           _rowsDirty;
 
-    protected override float HeaderHeight => 86f;
+    protected override float HeaderHeight => 40f;
+
+    /// <summary>The watched or ignored items changed from elsewhere (the window): redraw their rows on the next frame.</summary>
+    internal void ItemsChanged() => _rowsDirty = _itemsBuilt;
 
     protected override void BuildHeader(Vector2 origin, float width)
     {
         if (Tweak is null) return;
-        var options = Tweak.Current;
 
-        LanguageSelect(origin, width, Tweak.Text("Language"), Tweak.Text("Language.Help"), Tweak.LanguageChoices,
-            () => options.DataLanguage,
-            code => Tweak.SetDataLanguage(code));
+        TweakLanguageSelect.Add(this, Tweak, origin + new Vector2(width - TweakLanguageSelect.Width - Pad, 6f));
     }
 
     protected override void Build()
@@ -45,6 +45,12 @@ internal sealed unsafe class GoblinSniperSettingsAddon : SettingsPanelAddon
             on => { options.Notify = on; Tweak.SaveCurrent(); });
         Toggle(Tweak.Text("WholeDataCenter"), Tweak.Text("WholeDataCenter.Help"), options.WholeDataCenter,
             on => { options.WholeDataCenter = on; Tweak.SaveCurrent(); });
+
+        Section(Tweak.Text("Alerts"));
+        Toggle(Tweak.Text("ChatAlert"), Tweak.Text("ChatAlert.Help"), options.ChatAlert,
+            on => { options.ChatAlert = on; Tweak.SaveCurrent(); });
+        Toggle(Tweak.Text("SoundAlert"), Tweak.Text("SoundAlert.Help"), options.SoundAlert,
+            on => { options.SoundAlert = on; Tweak.SaveCurrent(); });
 
         Section(Tweak.Text("Rules"));
         Number(Tweak.Text("Discount"), Tweak.Text("Discount.Help"), 10, 95, 1, options.DiscountPercent,
@@ -221,6 +227,60 @@ internal sealed unsafe class GoblinSniperSettingsAddon : SettingsPanelAddon
             }
         }
 
+        IgnoredRows(options);
         FinishLayout();
+    }
+
+    /// <summary>The items ignored from the window (right click on a deal), each with a button to list it again.</summary>
+    private void IgnoredRows(GoblinSniper.Options options)
+    {
+        if (Tweak is null) return;
+
+        Y += 14f;
+        var title = new TextNode
+        {
+            String    = Tweak.Text("Ignored"),
+            Position  = new Vector2(Pad, Y),
+            Size      = new Vector2(ContentW, 20f),
+            TextColor = Gold,
+            FontSize  = 14,
+        };
+        title.AttachNode(Host);
+        _rows.Add(title);
+        Y += 22f;
+
+        _rows.Add(Note(Tweak.Text(options.Ignored.Count == 0 ? "Ignored.Empty" : "Ignored.Help"), Pad, ContentW, Muted));
+        Space(4f);
+
+        foreach (var id in options.Ignored.ToList())
+        {
+            var restore = new TextButtonNode
+            {
+                String   = "x",
+                Position = new Vector2(Pad, Y),
+                Size     = new Vector2(30f, 24f),
+            };
+            var itemId = id;
+            restore.OnClick = () =>
+            {
+                Tweak.Unignore(itemId);
+                _rowsDirty = true; // redrawn next frame, not while this button is handling its click
+            };
+            restore.AttachNode(Host);
+            _rows.Add(restore);
+
+            var name = new TextNode
+            {
+                String    = Tweak.ItemName(id),
+                Position  = new Vector2(Pad + 38f, Y + 3f),
+                Size      = new Vector2(ContentW - 38f, 18f),
+                TextColor = Muted,
+                FontSize  = 14,
+            };
+            name.AttachNode(Host);
+            _rows.Add(name);
+
+            Y += 28f;
+        }
     }
 }

@@ -3,9 +3,9 @@ using Dalamud.Game;
 using Dalamud.Game.Gui.Dtr;
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
-using Dalamud.Interface;
-using Dalamud.Interface.Utility;
 using Dalamud.Plugin.Services;
+using Dalamud.Utility;
+using FFXIVClientStructs.FFXIV.Client.UI;
 using GoblinTweaks.Core;
 using GoblinTweaks.Localization;
 using GoblinTweaks.Services;
@@ -60,7 +60,8 @@ public sealed record SniperStatus(bool Scanning, int Done, int Total, DateTime L
 /// <summary>
 /// Watches the market board (through Universalis) for listings priced far below what the item
 /// normally sells for, e.g. a mount posted at 100,000 gil instead of 1,000,000. The number of new
-/// finds is shown in the Server Info Bar; clicking it opens a native window with the list.
+/// finds is shown in the Server Info Bar; clicking it opens a native window with the list. New finds
+/// can also be announced in the chat, with a sound.
 /// </summary>
 /// <remarks>
 /// Nothing is read from or sent to the game: prices come from the public Universalis API, which
@@ -97,17 +98,30 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         /// <summary>Individual item ids to watch, whatever their category.</summary>
         public List<uint> Items { get; set; } = [];
 
-        /// <summary>Game-data language for item names ("" = follow GoblinTweaks). Independent of the UI language.</summary>
+        /// <summary>Items never listed as deals, whatever their category (chosen from the window).</summary>
+        public List<uint> Ignored { get; set; } = [];
+
+        /// <summary>Announce each new deal in the chat.</summary>
+        public bool ChatAlert { get; set; } = true;
+
+        /// <summary>Play a sound when new deals are found.</summary>
+        public bool SoundAlert { get; set; }
+
+        /// <summary>
+        /// Earlier versions chose the language of this tweak's windows here; it now uses the language choice every
+        /// tweak has, and the item names follow the game client. Moved on enable, then left empty.
+        /// </summary>
         public string DataLanguage { get; set; } = string.Empty;
     }
 
-    // Language choices for the item names. "" follows the GoblinTweaks language.
-    private static readonly (string Code, string Label)[] DataLanguages =
-    [
-        ("",   ""),          // label resolved from Loc at draw time
-        ("en", "English"),
-        ("es", "Español"),
-    ];
+    // Fixed, not translated: Dalamud remembers whether an entry is hidden and where it goes by its title.
+    private const string DtrTitle = "GoblinTweaks: Sniper";
+
+    // The <se.6> chat sound effect.
+    private const uint AlertSound = 6;
+
+    // A chat line for each new deal up to this many at once; the rest are counted in one more line.
+    private const int MaxChatDeals = 3;
 
     /// <summary>
     /// Watchable item types: settings key and the rule that tells which items belong to it.
@@ -140,7 +154,7 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
     private static readonly TimeSpan RescanDelay = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan RetryDelay = TimeSpan.FromMinutes(2);
 
-    private sealed record ScanRequest(string Scope, string HomeWorld, int WorldsInDataCenter, bool WholeDataCenter, int Discount, int MinAveragePrice, TimeSpan MaxAge, TimeSpan MaxTimeWithoutSale, HashSet<string> Categories, HashSet<uint> Items, ClientLanguage Language);
+    private sealed record ScanRequest(string Scope, string HomeWorld, int WorldsInDataCenter, bool WholeDataCenter, int Discount, int MinAveragePrice, TimeSpan MaxAge, TimeSpan MaxTimeWithoutSale, HashSet<string> Categories, HashSet<uint> Items, HashSet<uint> Ignored, ClientLanguage Language);
 
     private sealed class Catalog(ClientLanguage language, Dictionary<uint, SniperItem> items)
     {
@@ -158,14 +172,27 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
     }
 
     private readonly HashSet<string> _seen = [];
+    private readonly HashSet<string> _announced = [];
     private GoblinSniperSettingsAddon? _settingsAddon;
     private GoblinSniperAddon? _addon;
+    private TextHelpAddon? _help;
     private IDtrBarEntry? _entry;
+    private string? _shownText;
+    private string? _shownTooltip;
     private CancellationTokenSource? _cancel;
     private DateTime _nextPoll = DateTime.MinValue;
     private DateTime _nextScan = DateTime.MinValue;
     private int _buildingCatalog;
     private bool _scanQueued;
+
+    // Every scan gets a number; only the current one may change the status or the list. A cancelled scan that is
+    // still finishing its last request must not mark the tweak as scanning again, or no scan would ever start.
+    private readonly Lock _scanLock = new();
+    private int _scanGeneration;
+
+    // Deals listed the last time the deals were announced; the first list after enabling is not announced line
+    // by line, so logging in does not flood the chat.
+    private bool _announcedOnce;
 
     // Written by the background scan, read by the UI.
     private volatile IReadOnlyList<SniperDeal> _deals = [];
@@ -184,19 +211,13 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
     /// <summary>A scan was requested and has not finished yet; asking for another one would only restart it.</summary>
     public bool ScanPending => _scanQueued || _status.Scanning;
 
-    /// <summary>Game-data language used for item names.</summary>
-    public ClientLanguage DataLanguage => (string.IsNullOrEmpty(Settings.DataLanguage) ? Loc.CurrentLanguage : Settings.DataLanguage) switch
-    {
-        _    => ClientLanguage.English, // "en", "es" and anything without game data
-    };
-
-    /// <summary>Language of this tweak's own texts: the one chosen for it, or the plugin's when none was.</summary>
-    internal string UiLang => string.IsNullOrEmpty(Settings.DataLanguage) ? Loc.CurrentLanguage : Settings.DataLanguage;
+    /// <summary>Language of the item names: the one of the game client, so a copied name works in the market board search.</summary>
+    public static ClientLanguage DataLanguage => Svc.ClientState.ClientLanguage;
 
     public string SettingsTitle => $"{Text("Name")} — {Text("Settings")}";
 
-    /// <summary>Text of this tweak in its own language (see <see cref="UiLang"/>), for the native windows.</summary>
-    internal string Text(string key) => Loc.GetIn(UiLang, $"Tweaks.{Id}.{key}");
+    /// <summary>Text of this tweak in the language chosen for it, for its native windows.</summary>
+    internal string Text(string key) => T(key);
 
     private GoblinSniperSettingsAddon NewSettingsAddon() => new()
     {
@@ -207,39 +228,30 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         RespectCloseAll = false,
     };
 
-    /// <summary>Rebuilds the open settings window (its texts follow the language chosen in it).</summary>
-    internal void RefreshSettingsWindow()
+    private GoblinSniperAddon NewAddon() => new()
     {
-        var old = _settingsAddon;
-        if (old is not { IsOpen: true }) return;
-
-        // A moment later, never from inside the click of its own drop-down.
-        Svc.Framework.RunOnTick(() =>
-        {
-            old.Dispose();
-            if (_settingsAddon != old) return;
-            _settingsAddon = NewSettingsAddon();
-            Svc.Framework.RunOnTick(() => _settingsAddon?.Open(), delayTicks: 6);
-        }, delayTicks: 2);
-    }
+        InternalName = "GtkGoblinSniper",
+        Title        = Text("Name"),
+        Size         = new System.Numerics.Vector2(990f, 620f),
+        Tweak        = this,
+    };
 
     protected internal override void Enable()
     {
+        MoveOldLanguageSetting();
+
         _deals = [];
         _status = new SniperStatus(false, 0, 0, DateTime.MinValue, SniperError.None);
         _seen.Clear();
+        _announced.Clear();
+        _announcedOnce = false;
+        _shownText = _shownTooltip = null;
         _nextScan = DateTime.UtcNow + RescanDelay;
         _scanQueued = true;
 
-        _addon = new GoblinSniperAddon
-        {
-            InternalName = "GtkGoblinSniper",
-            Title        = Name,
-            Size         = new System.Numerics.Vector2(990f, 620f),
-            Tweak        = this,
-        };
+        _addon = NewAddon();
 
-        _entry = Svc.DtrBar.Get(Name);
+        _entry = Svc.DtrBar.Get(DtrTitle);
         _entry.Shown = false;
         _entry.OnClick = _ => _addon?.Open();
 
@@ -253,6 +265,9 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         Svc.Framework.Update -= OnUpdate;
         CancelScan();
 
+        _help?.Dispose();
+        _help = null;
+
         _settingsAddon?.Dispose();
         _settingsAddon = null;
 
@@ -264,6 +279,48 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         _deals = [];
         _catalog = null;
         _seen.Clear();
+        _announced.Clear();
+    }
+
+    /// <summary>Earlier versions kept the window language in the options of this tweak; it now uses the language choice every tweak has.</summary>
+    private void MoveOldLanguageSetting()
+    {
+        if (Settings.DataLanguage.Length == 0) return;
+
+        if (Language.Length == 0) SetLanguage(Settings.DataLanguage);
+        Settings.DataLanguage = string.Empty;
+        SaveSettings(notify: false);
+    }
+
+    protected override void OnLanguageChanged()
+    {
+        if (State != TweakState.Enabled) return;
+
+        Rebuild(ref _addon, NewAddon);
+        Rebuild(ref _settingsAddon, NewSettingsAddon);
+        _shownText = _shownTooltip = null;
+
+        var helpWasOpen = _help is { IsOpen: true };
+        _help?.Dispose();
+        _help = null;
+        if (helpWasOpen) Svc.Framework.RunOnTick(ToggleHelp, delayTicks: 6);
+    }
+
+    /// <summary>Help topics, in order; each has a "Help.{topic}.Title" and "Help.{topic}.Text".</summary>
+    private static readonly string[] HelpTopics = ["About", "Columns", "Resale", "Sorting", "Data", "Scanning", "Items"];
+
+    /// <summary>Opens the help, or closes it if it is open. It belongs to the tweak, so it is closed with it.</summary>
+    internal void ToggleHelp()
+    {
+        _help ??= new TextHelpAddon
+        {
+            InternalName    = "GtkGoblinSniperHelp",
+            Title           = Text("Help.Title"),
+            Size            = new System.Numerics.Vector2(860f, 600f),
+            RespectCloseAll = false,
+            Pages           = [.. HelpTopics.Select(topic => (Text($"Help.{topic}.Title"), Text($"Help.{topic}.Text")))],
+        };
+        _help.Toggle();
     }
 
     // Any settings change re-scans with the new options.
@@ -295,11 +352,59 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
 
     private void CancelScan()
     {
+        lock (_scanLock)
+        {
+            _scanGeneration++;
+            _status = _status with { Scanning = false };
+        }
+
         _cancel?.Cancel();
         _cancel?.Dispose();
         _cancel = null;
-        _status = _status with { Scanning = false };
     }
+
+    /// <summary>Changes the status, unless the scan asking for it is no longer the current one.</summary>
+    private bool SetStatus(int generation, Func<SniperStatus, SniperStatus> change)
+    {
+        lock (_scanLock)
+        {
+            if (generation != _scanGeneration) return false;
+            _status = change(_status);
+            return true;
+        }
+    }
+
+    /// <summary>When the next scan is due, unless the scan asking for it is no longer the current one.</summary>
+    private void SetNextScan(int generation, DateTime when)
+    {
+        lock (_scanLock)
+        {
+            if (generation == _scanGeneration) _nextScan = when;
+        }
+    }
+
+    /// <summary>Stops listing an item and never lists it again (until it is taken off the ignored list in the settings).</summary>
+    internal void Ignore(uint itemId)
+    {
+        if (Settings.Ignored.Contains(itemId)) return;
+
+        Settings.Ignored.Add(itemId);
+        _deals = [.. _deals.Where(deal => deal.ItemId != itemId)];
+        SaveSettings();
+        _settingsAddon?.ItemsChanged();
+    }
+
+    /// <summary>Lists an ignored item again.</summary>
+    internal void Unignore(uint itemId)
+    {
+        if (Settings.Ignored.Remove(itemId)) SaveSettings();
+    }
+
+    /// <summary>The page of the item on Universalis, with its price history.</summary>
+    internal static void OpenOnUniversalis(uint itemId) => Util.OpenLink($"https://universalis.app/market/{itemId}");
+
+    /// <summary>Deal keys that were already listed when the window was last opened (the rest show as new).</summary>
+    internal IReadOnlySet<string> SeenKeys => _seen;
 
     private void OnUpdate(IFramework _)
     {
@@ -309,6 +414,7 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         try
         {
             UpdateEntry();
+            AnnounceNewDeals();
             StartScanIfDue();
         }
         catch (Exception ex)
@@ -321,20 +427,79 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
     {
         if (_entry == null) return;
 
-        _entry.Shown = Settings.Notify;
+        if (_entry.Shown != Settings.Notify) _entry.Shown = Settings.Notify;
         if (!Settings.Notify) return;
 
         var deals  = _deals;
         var unseen = deals.Count(deal => !_seen.Contains(deal.Key));
-        _entry.Text = new SeStringBuilder().AddText($"{SeIconChar.BoxedStar.ToIconString()} {deals.Count}").Build();
+        var text   = $"{SeIconChar.BoxedStar.ToIconString()} {deals.Count}";
 
         var tip = new StringBuilder();
-        tip.AppendLine(string.Format(T("DtrTooltip"), deals.Count, unseen));
+        tip.AppendLine(string.Format(Text("DtrTooltip"), deals.Count, unseen));
         foreach (var deal in deals.Take(5))
             tip.AppendLine($"  -{deal.Discount}%  {deal.Name}  {deal.Price:N0} ({deal.World})");
-        tip.Append(T("DtrClick"));
+        tip.Append(Text("DtrClick"));
+        var tooltip = tip.ToString();
 
-        _entry.Tooltip = new SeStringBuilder().AddText(tip.ToString()).Build();
+        // Dalamud redraws the entry on every assignment: only touch it when the text really changed.
+        if (text != _shownText)
+        {
+            _entry.Text = new SeStringBuilder().AddText(text).Build();
+            _shownText  = text;
+        }
+        if (tooltip != _shownTooltip)
+        {
+            _entry.Tooltip = new SeStringBuilder().AddText(tooltip).Build();
+            _shownTooltip  = tooltip;
+        }
+    }
+
+    /// <summary>
+    /// Says in the chat which deals are new since the last look (an item link, the price, the discount and the world),
+    /// and plays a sound if chosen. The first list after enabling only says how many were found.
+    /// </summary>
+    private void AnnounceNewDeals()
+    {
+        // Until the first scan ends, wait: what it finds is announced once, as a count.
+        if (!_announcedOnce && _status.LastScan == DateTime.MinValue) return;
+
+        var deals = _deals;
+        var fresh = deals.Where(deal => !_announced.Contains(deal.Key)).ToList();
+
+        // Forget what is no longer listed, so the set does not grow for ever.
+        _announced.IntersectWith(deals.Select(deal => deal.Key));
+        if (fresh.Count == 0) { _announcedOnce = true; return; }
+
+        foreach (var deal in fresh) _announced.Add(deal.Key);
+
+        // The open window already shows them.
+        if (_addon is { IsOpen: true }) { _announcedOnce = true; return; }
+
+        if (Settings.ChatAlert)
+        {
+            if (!_announcedOnce)
+            {
+                Svc.Chat.Print(string.Format(Text("Chat.Found"), fresh.Count), Text("Name"));
+            }
+            else
+            {
+                foreach (var deal in fresh.Take(MaxChatDeals))
+                {
+                    var line = new SeStringBuilder()
+                        .AddText(Text("Chat.New") + " ")
+                        .AddItemLink(deal.ItemId, deal.Hq)
+                        .AddText(" " + string.Format(Text("Chat.Deal"), deal.Price.ToString("N0"), deal.Discount, deal.World))
+                        .Build();
+                    Svc.Chat.Print(line, Text("Name"));
+                }
+
+                if (fresh.Count > MaxChatDeals)
+                    Svc.Chat.Print(string.Format(Text("Chat.More"), fresh.Count - MaxChatDeals), Text("Name"));
+            }
+        }
+
+        if (Settings.SoundAlert) UIGlobals.PlayChatSoundEffect(AlertSound);
+        _announcedOnce = true;
     }
 
     private void StartScanIfDue()
@@ -352,27 +517,38 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         var request = new ScanRequest(scope, homeWorld, Math.Max(1, worlds), Settings.WholeDataCenter, Math.Clamp(Settings.DiscountPercent, 1, 99), Settings.MinAveragePrice,
             TimeSpan.FromHours(Math.Clamp(Settings.MaxAgeHours, 1, 72)),
             TimeSpan.FromDays(Math.Clamp(Settings.MaxDaysWithoutSale, 1, 365)),
-            [.. Settings.Categories], [.. Settings.Items], DataLanguage);
+            [.. Settings.Categories], [.. Settings.Items], [.. Settings.Ignored], DataLanguage);
 
         _scanQueued = false;
         _cancel = new CancellationTokenSource();
         var token = _cancel.Token;
-        _status = _status with { Scanning = true, Done = 0, Total = 0, Error = SniperError.None };
-        _ = Task.Run(() => ScanAsync(request, token), token);
+
+        int generation;
+        lock (_scanLock)
+        {
+            generation = ++_scanGeneration;
+            _status = _status with { Scanning = true, Done = 0, Total = 0, Error = SniperError.None };
+        }
+
+        _ = Task.Run(() => ScanAsync(request, generation, token), token);
     }
 
-    private async Task ScanAsync(ScanRequest request, CancellationToken token)
+    private async Task ScanAsync(ScanRequest request, int generation, CancellationToken token)
     {
         try
         {
             var catalog = GetCatalog(request.Language);
             var ids = catalog.Items.Values
                 .Where(item => (item.Category != null && request.Categories.Contains(item.Category)) || request.Items.Contains(item.Id))
+                .Where(item => !request.Ignored.Contains(item.Id))
                 .Select(item => item.Id)
                 .ToArray();
+            var watched = ids.ToHashSet();
 
-            // Deals of the previous scan stay listed until their item is looked at again.
-            var previous = _deals;
+            // Deals of the previous scan stay listed until their item is looked at again, as long as it is still
+            // watched: an item type or item taken out of the settings takes its deals with it.
+            var previous = _deals.Where(deal => watched.Contains(deal.ItemId)).ToList();
+            Publish(generation, [.. previous]);
             var scanned  = new HashSet<uint>();
             var deals    = new List<SniperDeal>();
             var done     = 0;
@@ -382,7 +558,7 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
             foreach (var batch in ids.Chunk(UniversalisService.MarketBatchSize))
             {
                 token.ThrowIfCancellationRequested();
-                _status = _status with { Done = done, Total = ids.Length };
+                SetStatus(generation, status => status with { Done = done, Total = ids.Length });
                 batches++;
 
                 List<MarketSnapshot> market;
@@ -413,7 +589,7 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
                 // Publish as soon as this batch changes the list: a new deal, or an old one that is gone.
                 scanned.UnionWith(batch);
                 if (deals.Count > found || previous.Any(deal => batch.Contains(deal.ItemId)))
-                    Publish([.. deals, .. previous.Where(deal => !scanned.Contains(deal.ItemId))]);
+                    Publish(generation, [.. deals, .. previous.Where(deal => !scanned.Contains(deal.ItemId))]);
             }
 
             token.ThrowIfCancellationRequested();
@@ -422,17 +598,17 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
             if (lastFailure is not null && failed == batches)
                 throw lastFailure;
 
-            Publish([.. deals, .. previous.Where(deal => !scanned.Contains(deal.ItemId))]);
+            Publish(generation, [.. deals, .. previous.Where(deal => !scanned.Contains(deal.ItemId))]);
             if (lastFailure is null)
             {
-                _status = new SniperStatus(false, done, ids.Length, DateTime.UtcNow, SniperError.None);
+                SetStatus(generation, _ => new SniperStatus(false, done, ids.Length, DateTime.UtcNow, SniperError.None));
                 return;
             }
 
             // Some batches were left out: the scan counts, and the next one comes as soon as after a failure.
             Svc.Log.Warning(lastFailure, "{tweak}: market scan finished without {failed} of {batches} batches", Id, failed, batches);
-            _nextScan = DateTime.UtcNow + RetryDelay;
-            _status = new SniperStatus(false, done, ids.Length, DateTime.UtcNow, ErrorOf(lastFailure));
+            SetNextScan(generation, DateTime.UtcNow + RetryDelay);
+            SetStatus(generation, _ => new SniperStatus(false, done, ids.Length, DateTime.UtcNow, ErrorOf(lastFailure)));
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
@@ -444,8 +620,8 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
             if (token.IsCancellationRequested) return;
 
             // Usually Universalis being overloaded: keep what is listed so far and try again soon.
-            _nextScan = DateTime.UtcNow + RetryDelay;
-            _status = _status with { Scanning = false, Error = ErrorOf(ex) };
+            SetNextScan(generation, DateTime.UtcNow + RetryDelay);
+            SetStatus(generation, status => status with { Scanning = false, Error = ErrorOf(ex) });
         }
     }
 
@@ -456,11 +632,14 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         _                                             => SniperError.Offline,
     };
 
-    /// <summary>Replaces the list read by the window and the Server Info Bar.</summary>
-    private void Publish(List<SniperDeal> deals)
+    /// <summary>Replaces the list read by the window and the Server Info Bar, unless a newer scan took over.</summary>
+    private void Publish(int generation, List<SniperDeal> deals)
     {
         deals.Sort((a, b) => b.Discount.CompareTo(a.Discount));
-        _deals = deals;
+        lock (_scanLock)
+        {
+            if (generation == _scanGeneration) _deals = deals;
+        }
     }
 
     private static SniperDeal? Evaluate(SniperItem item, MarketSnapshot market, ScanRequest request)
@@ -545,36 +724,21 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
 
     // ── Settings ──────────────────────────────────────────────────────────────
 
-    public override TweakButton? OpenButton => new(T("Open"), T("Open.Help"), () => _addon?.Toggle());
+    public override TweakButton? OpenButton => new(TMain("Open"), TMain("Open.Help"), () => _addon?.Toggle());
 
-    public override TweakButton? HelpButton => new(Loc.Get("Window.Help"), null, () => _addon?.OpenHelp());
+    public override TweakButton? HelpButton => new(Loc.Get("Window.Help"), null, ToggleHelp);
 
     protected override IReadOnlyList<string> CommandNames => ["/gsn", "/gsnipe"];
 
     protected override void OnCommand() => _addon?.Toggle();
 
-    public override IReadOnlyList<TweakButton> Buttons => [new(T("Settings"), null, OpenSettings)];
+    public override IReadOnlyList<TweakButton> Buttons => [new(Loc.Get("Window.Settings"), TMain("Settings.Help"), OpenSettings)];
 
     // ── Access for the native settings window ─────────────────────────────────
 
     internal Options Current => Settings;
 
     internal void SaveCurrent() => SaveSettings();
-
-    /// <summary>Language choices for the item names; the first follows the GoblinTweaks language.</summary>
-    internal IReadOnlyList<(string Code, string Text)> LanguageChoices
-        => DataLanguages.Select(l => (l.Code, l.Code.Length == 0 ? Text("Language.Same") : l.Label)).ToList();
-
-    /// <summary>Changes the language of the item names and starts over, since the names already listed are in the old one.</summary>
-    internal void SetDataLanguage(string code)
-    {
-        if (code == Settings.DataLanguage) return;
-
-        Settings.DataLanguage = code;
-        _deals = [];
-        SaveSettings();
-        RefreshSettingsWindow();
-    }
 
     /// <summary>True once the item names exist in the language in use (they load in the background).</summary>
     internal bool CatalogReady()

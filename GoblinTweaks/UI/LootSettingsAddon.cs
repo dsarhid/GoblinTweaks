@@ -5,7 +5,7 @@ using KamiToolKit.Nodes;
 
 namespace GoblinTweaks.UI;
 
-/// <summary>Native settings window of Goblin Loot: when the window opens, what it follows, and the language of its windows.</summary>
+/// <summary>Native settings window of Goblin Loot: when the window opens and closes, what it follows, and the language of its windows.</summary>
 internal sealed class LootSettingsAddon : SettingsPanelAddon
 {
     public GoblinLoot? Tweak { get; init; }
@@ -44,5 +44,7 @@ internal sealed class LootSettingsAddon : SettingsPanelAddon
             on => { options.AutoOpen = on; Tweak.Changed(); });
         Toggle(Tweak.Text("Setting.Follow"), Tweak.Text("Setting.Follow.Help"), options.FollowSelection,
             on => { options.FollowSelection = on; Tweak.Changed(); });
+        Toggle(Tweak.Text("Setting.AutoClose"), Tweak.Text("Setting.AutoClose.Help"), options.AutoClose,
+            on => { options.AutoClose = on; Tweak.Changed(); });
     }
 }

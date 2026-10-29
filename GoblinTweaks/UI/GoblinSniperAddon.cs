@@ -3,6 +3,7 @@ using FFXIVClientStructs.FFXIV.Component.GUI;
 using GoblinTweaks.Tweaks;
 using GoblinTweaks.UI.Nodes;
 using KamiToolKit.BaseTypes;
+using KamiToolKit.ContextMenu;
 using KamiToolKit.Enums;
 using KamiToolKit.Nodes;
 
@@ -10,7 +11,9 @@ namespace GoblinTweaks.UI;
 
 /// <summary>
 /// Native window of the GoblinSniper tweak: a searchable, sortable list of the listings found far
-/// below their normal price, with scan status on top and help in the bottom-left corner.
+/// below their normal price, with scan status on top and help in the bottom-left corner. A click copies the item
+/// name; a right click opens a menu to copy it, open the item on Universalis or ignore it. Deals that were not listed
+/// the last time the window was open are marked as new.
 /// </summary>
 internal unsafe class GoblinSniperAddon : NativeAddon
 {
@@ -39,9 +42,6 @@ internal unsafe class GoblinSniperAddon : NativeAddon
     private const string AnyAge    = "0";
     private static readonly List<string> AgeOptions = [AnyAge, "1", "3", "6", "12"]; // hours
 
-    /// <summary>Help topics, in order; each has a "Help.{topic}.Title" and "Help.{topic}.Text".</summary>
-    private static readonly string[] HelpTopics = ["About", "Columns", "Resale", "Sorting", "Data", "Scanning", "Items"];
-
     private TextInputNode? _searchInput;
     private StringDropDownNode? _sortDropdown;
     private StringDropDownNode? _worldDropdown;
@@ -54,7 +54,10 @@ internal unsafe class GoblinSniperAddon : NativeAddon
     private CircleButtonNode? _settingsButton;
     private CircleButtonNode? _helpButton;
     private ListNode<SniperDeal, SniperRowNode>? _list;
-    private TextHelpAddon? _helpAddon;
+    private ContextMenu? _menu;
+
+    // Deals already listed when the window opened; the others are new.
+    private HashSet<string> _knownAtOpen = [];
 
     private IReadOnlyList<SniperDeal>? _shownDeals;
     private string _searchText = string.Empty;
@@ -75,9 +78,16 @@ internal unsafe class GoblinSniperAddon : NativeAddon
     {
         base.OnSetup(addon, atkValues);
 
-        SniperRowNode.SubText    = TypeLabel;
+        // Before the list is filled, which marks everything as seen.
+        _knownAtOpen = [.. Tweak.SeenKeys];
+
+        SniperRowNode.SubText      = TypeLabel;
         SniperRowNode.NextFormat   = Tweak.Text("Row.Next");
         SniperRowNode.PerDayFormat = Tweak.Text("Row.PerDay");
+        SniperRowNode.NewLabel     = Tweak.Text("Row.New");
+        SniperRowNode.IsNew        = deal => !_knownAtOpen.Contains(deal.Key);
+        SniperRowNode.OnRightClick = OpenMenu;
+        _menu = new ContextMenu();
 
         var c  = ContentStartPosition;
         var cs = ContentSize;
@@ -148,10 +158,12 @@ internal unsafe class GoblinSniperAddon : NativeAddon
         _list           = null;
         _shownDeals     = null;
 
-        _helpAddon?.Dispose();
-        _helpAddon = null;
+        _menu?.Dispose();
+        _menu = null;
 
-        SniperRowNode.SubText = null;
+        SniperRowNode.SubText      = null;
+        SniperRowNode.IsNew        = null;
+        SniperRowNode.OnRightClick = null;
 
         base.OnFinalize(addon);
     }
@@ -311,7 +323,7 @@ internal unsafe class GoblinSniperAddon : NativeAddon
             Size        = new Vector2(22f, 22f),
             TextTooltip = Tweak.Text("Help.Title"),
         };
-        _helpButton.OnClick = OpenHelp;
+        _helpButton.OnClick = Tweak.ToggleHelp;
         _helpButton.AttachNode(this);
 
         // Scan status, next to the help button; it has the whole bar up to the counter.
@@ -336,16 +348,24 @@ internal unsafe class GoblinSniperAddon : NativeAddon
         _count.AttachNode(this);
     }
 
-    internal void OpenHelp()
+    /// <summary>Right click on a deal: copy its name, open it on Universalis, or ignore the item from now on.</summary>
+    private void OpenMenu(SniperDeal deal)
     {
-        _helpAddon ??= new TextHelpAddon
-        {
-            InternalName = "GtkGoblinSniperHelp",
-            Title        = Tweak.Text("Help.Title"),
-            Size         = new Vector2(860f, 600f),
-            Pages        = [.. HelpTopics.Select(topic => (Tweak.Text($"Help.{topic}.Title"), Tweak.Text($"Help.{topic}.Text")))],
-        };
-        _helpAddon.Toggle();
+        if (_menu is null) return;
+
+        _menu.Clear();
+        _menu.AddItem(Tweak.Text("Menu.Copy"), () => CopyName(deal));
+        _menu.AddItem(Tweak.Text("Menu.Universalis"), () => GoblinSniper.OpenOnUniversalis(deal.ItemId));
+        _menu.AddItem(Tweak.Text("Menu.Ignore"), () => IgnoreItem(deal));
+        _menu.Open();
+    }
+
+    private void IgnoreItem(SniperDeal deal)
+    {
+        Tweak.Ignore(deal.ItemId);
+        _notice      = string.Format(Tweak.Text("Window.Ignored"), deal.Name);
+        _noticeUntil = DateTime.UtcNow.AddSeconds(6);
+        _nextStatus  = DateTime.MinValue;
     }
 
     // ── Data ──────────────────────────────────────────────────────────────────

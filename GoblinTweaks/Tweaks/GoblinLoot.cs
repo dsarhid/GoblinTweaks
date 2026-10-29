@@ -1,3 +1,4 @@
+using System.Reflection;
 using Dalamud.Game.Chat;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
@@ -7,13 +8,14 @@ using GoblinTweaks.Core;
 using GoblinTweaks.Localization;
 using GoblinTweaks.UI;
 using LuminaAddon = Lumina.Excel.Sheets.Addon;
+using LuminaClassJobCategory = Lumina.Excel.Sheets.ClassJobCategory;
 using LuminaItem = Lumina.Excel.Sheets.Item;
 
 namespace GoblinTweaks.Tweaks;
 
 /// <summary>
 /// A table of what each member of the party did with the items of the loot list (Need, Greed or Pass, and the
-/// number of the roll), in a window of its own, with the last rolls kept.
+/// number of the roll), in a window of its own, with the last rolls kept and a summary of the duty.
 /// </summary>
 /// <remarks>
 /// The game says who has chosen as it happens (log message 5180) but not what; Need, Greed and the numbers come
@@ -30,6 +32,9 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
 
         /// <summary>The table shows the item selected in the loot window of the game.</summary>
         public bool FollowSelection { get; set; } = true;
+
+        /// <summary>Close the window a moment after every roll is over, when it opened by itself.</summary>
+        public bool AutoClose { get; set; }
     }
 
     private static readonly string[] HelpTopics = ["Overview", "Table", "Timing", "Settings"];
@@ -39,15 +44,26 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
     private const uint ObtainMessage  = 1232;   // "X obtains item"
     private const int  MaxSlots       = 16;
 
-    private LootRolls?       _rolls;
-    private LootRollsAddon?  _addon;
+    private static readonly TimeSpan AutoCloseDelay = TimeSpan.FromSeconds(10);
+
+    // The job columns of ClassJobCategory, in ClassJob order (ADV, GLA, PGL...): column n is the job of row n.
+    private static readonly PropertyInfo[] JobColumns =
+        [.. typeof(LuminaClassJobCategory).GetProperties().Where(property => property.PropertyType == typeof(bool))];
+
+    private LootRolls?         _rolls;
+    private LootRollsAddon?    _addon;
     private LootSettingsAddon? _settingsAddon;
-    private TextHelpAddon?   _help;
-    private HashSet<string>  _needWords  = [];
-    private HashSet<string>  _greedWords = [];
-    private long             _tick;
-    private int              _gameSelected = -1;
-    private bool             _placed;
+    private LootSummaryAddon?  _summaryAddon;
+    private TextHelpAddon?     _help;
+    private HashSet<string>    _needWords  = [];
+    private HashSet<string>    _greedWords = [];
+    private readonly Dictionary<(uint Item, uint Job), bool> _forJob = [];
+    private long               _tick;
+    private int                _gameSelected = -1;
+    private bool               _placed;
+    private bool               _openedByLoot;
+    private bool               _wasOpen;
+    private DateTime?          _closeAt;
 
     internal LootRolls Rolls => _rolls ??= NewRolls();
 
@@ -59,36 +75,34 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
         LoadChoiceWords();
         _addon         = NewAddon();
         _settingsAddon = NewSettingsAddon();
+        _summaryAddon  = NewSummaryAddon();
         _gameSelected = -1;
         _placed       = false;
+        _openedByLoot = false;
+        _wasOpen      = false;
+        _closeAt      = null;
 
         _rolls.Added += OnAdded;
         Svc.Framework.Update += OnUpdate;
         Svc.Chat.LogMessage  += OnLogMessage;
-        Svc.ClientState.TerritoryChanged += OnTerritoryChanged;
-    }
-
-    /// <summary>The rolls of the last duty are not the rolls of this one.</summary>
-    private void OnTerritoryChanged(uint territory)
-    {
-        try { _rolls?.Clear(); }
-        catch (Exception ex) { ReportFailure(ex); }
     }
 
     protected internal override void Disable()
     {
         Svc.Framework.Update -= OnUpdate;
         Svc.Chat.LogMessage  -= OnLogMessage;
-        Svc.ClientState.TerritoryChanged -= OnTerritoryChanged;
 
         if (_rolls is not null) _rolls.Added -= OnAdded;
         _addon?.Dispose();
         _addon = null;
         _settingsAddon?.Dispose();
         _settingsAddon = null;
+        _summaryAddon?.Dispose();
+        _summaryAddon = null;
         _help?.Dispose();
         _help  = null;
         _rolls = null;
+        _forJob.Clear();
     }
 
     public override TweakButton? OpenButton => new(TMain("Open"), TMain("Open.Help"), () => _addon?.Toggle());
@@ -97,7 +111,7 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
 
     public override IReadOnlyList<TweakButton> Buttons =>
     [
-        new(TMain("Button.Settings"), TMain("Settings.Help"), OpenSettings),
+        new(Loc.Get("Window.Settings"), TMain("Settings.Help"), OpenSettings),
     ];
 
     protected override IReadOnlyList<string> CommandNames => ["/gloot", "/gloottable"];
@@ -115,6 +129,7 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
 
         Rebuild(ref _addon, NewAddon);
         Rebuild(ref _settingsAddon, NewSettingsAddon);
+        Rebuild(ref _summaryAddon, NewSummaryAddon);
 
         var helpWasOpen = _help is { IsOpen: true };
         _help?.Dispose();
@@ -130,18 +145,39 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
         }
     }
 
+    internal void OpenSummary()
+    {
+        if (_summaryAddon is { } window)
+        {
+            if (window.IsOpen) window.Close(); else window.Open();
+        }
+    }
+
     internal void OpenHelp()
     {
         _help ??= NewHelp();
         _help.Toggle();
     }
 
+    /// <summary>Forgets the rolls that are over and the summary of the duty.</summary>
+    internal void ClearHistory() => _rolls?.Clear();
+
     private LootSettingsAddon NewSettingsAddon() => new()
     {
-        InternalName = "GtkGoblinLootSettings",
-        Title        = T("Settings.Title"),
-        Size         = new System.Numerics.Vector2(480f, 330f),
-        Tweak        = this,
+        InternalName    = "GtkGoblinLootSettings",
+        Title           = $"{T("Title")} — {Loc.GetIn(UiLanguage, "Window.Settings")}",
+        Size            = new System.Numerics.Vector2(480f, 400f),
+        RespectCloseAll = false,
+        Tweak           = this,
+    };
+
+    private LootSummaryAddon NewSummaryAddon() => new()
+    {
+        InternalName    = "GtkGoblinLootSummary",
+        Title           = T("Summary.Title"),
+        Size            = new System.Numerics.Vector2(460f, 480f),
+        RespectCloseAll = false,
+        Tweak           = this,
     };
 
     private TextHelpAddon NewHelp() => new()
@@ -152,13 +188,13 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
         Pages        = [.. HelpTopics.Select(topic => (T($"Help.{topic}.Title"), T($"Help.{topic}.Text")))],
     };
 
-    private LootRolls NewRolls() => new(Roster, ItemInfo);
+    private LootRolls NewRolls() => new(Roster, ItemInfo, () => Svc.ClientState.TerritoryType);
 
     private LootRollsAddon NewAddon() => new()
     {
         InternalName    = "GtkGoblinLoot",
         Title           = T("Title"),
-        Size            = new System.Numerics.Vector2(600f, 420f),
+        Size            = new System.Numerics.Vector2(620f, 470f),
         RespectCloseAll = false,
         Tweak           = this,
     };
@@ -262,11 +298,13 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
 
             foreach (var entry in _rolls.Entries)
             {
-                if (!entry.Resolved && entry.SeenTick != _tick) _rolls.Left(entry);
+                entry.InList = entry.SeenTick == _tick;
+                if (!entry.Resolved && !entry.InList) _rolls.Left(entry);
             }
 
             _rolls.Sweep();
             FollowGameSelection(loot);
+            AutoCloseWhenOver();
         }
         catch (Exception ex) { ReportFailure(ex); }
     }
@@ -289,12 +327,41 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
         if (entry is not null) _addon.Select(entry.Id);
     }
 
+    /// <summary>With the option on, the window that opened by itself closes a moment after the last roll is over.</summary>
+    private void AutoCloseWhenOver()
+    {
+        if (_addon is not { IsOpen: true } addon || _rolls is null)
+        {
+            // Closed after being open (by the player or by this): the next time it opens on its own again.
+            // While it is still opening, the flag stays.
+            if (_wasOpen) _openedByLoot = false;
+            _wasOpen = false;
+            _closeAt = null;
+            return;
+        }
+        _wasOpen = true;
+
+        if (!Settings.AutoClose || !_openedByLoot || _rolls.Entries.Any(e => !e.Resolved || e.InList))
+        {
+            _closeAt = null;
+            return;
+        }
+
+        _closeAt ??= DateTime.UtcNow + AutoCloseDelay;
+        if (DateTime.UtcNow < _closeAt) return;
+
+        addon.Close();
+        _openedByLoot = false;
+        _closeAt      = null;
+    }
+
     private void OnAdded(LootEntry entry)
     {
         _addon?.FollowNew(entry);
 
         if (!Settings.AutoOpen || _addon is null || _addon.IsOpen) return;
         _addon.Open();
+        _openedByLoot = true;
 
         // Next to the loot window of the game, the first time: after that, where the player left it.
         if (!_placed) Svc.Framework.RunOnTick(PlaceNextToLoot, delayTicks: 3);
@@ -308,9 +375,17 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
             var loot = (AtkUnitBase*)Svc.GameGui.GetAddonByName("NeedGreed").Address;
             if (own == null || loot == null || !loot->IsVisible) return;
 
-            var x = (short)(loot->X + loot->GetScaledWidth(true) + 8);
-            var y = loot->Y;
-            own->SetPosition(x, y);
+            // To the right of the loot window, or to its left when there is no room; always on the screen.
+            var screen = AtkStage.Instance()->ScreenSize;
+            var width  = own->GetScaledWidth(true);
+            var height = own->GetScaledHeight(true);
+
+            var x = loot->X + loot->GetScaledWidth(true) + 8f;
+            if (x + width > screen.Width) x = loot->X - width - 8f;
+            x = Math.Clamp(x, 0f, Math.Max(0f, screen.Width - width));
+            var y = Math.Clamp((float)loot->Y, 0f, Math.Max(0f, screen.Height - height));
+
+            own->SetPosition((short)x, (short)y);
             _placed = true;
         }
         catch (Exception ex) { ReportFailure(ex); }
@@ -341,9 +416,32 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
     private static (string Name, uint IconId) ItemInfo(uint itemId)
     {
         var sheet = Svc.Data.GetExcelSheet<LuminaItem>();
-        var plain = itemId >= 1_000_000 ? itemId - 1_000_000 : itemId;
-        return sheet is not null && sheet.TryGetRow(plain, out var row)
+        return sheet is not null && sheet.TryGetRow(PlainItemId(itemId), out var row)
             ? (row.Name.ExtractText(), row.Icon)
             : ($"#{itemId}", 0u);
+    }
+
+    /// <summary>The item id without the high-quality mark.</summary>
+    internal static uint PlainItemId(uint itemId) => itemId >= 1_000_000 ? itemId - 1_000_000 : itemId;
+
+    /// <summary>Whether the job you are on now can wear the item (only gear has a list of jobs).</summary>
+    internal bool ForMyJob(uint itemId)
+    {
+        var job = Svc.PlayerState.IsLoaded ? Svc.PlayerState.ClassJob.RowId : 0;
+        if (job == 0) return false;
+
+        var key = (PlainItemId(itemId), job);
+        if (_forJob.TryGetValue(key, out var known)) return known;
+
+        var result = false;
+        var sheet  = Svc.Data.GetExcelSheet<LuminaItem>();
+        if (sheet is not null && sheet.TryGetRow(key.Item1, out var row)
+            && row.ClassJobCategory.RowId != 0 && row.ClassJobCategory.IsValid && job < JobColumns.Length)
+        {
+            result = JobColumns[job].GetValue(row.ClassJobCategory.Value) is true;
+        }
+
+        _forJob[key] = result;
+        return result;
     }
 }

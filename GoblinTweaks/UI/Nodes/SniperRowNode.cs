@@ -52,7 +52,17 @@ internal sealed class SniperRowNode : ListItemNode<SniperDeal>, IListItemNode
     /// <summary>Set by the addon: localized "{0}/day" label for the sales per day.</summary>
     internal static string PerDayFormat = "{0}";
 
+    /// <summary>Set by the addon: localized "New" label put before the type of a new deal.</summary>
+    internal static string NewLabel = "New";
+
+    /// <summary>Set by the addon: whether a deal was not listed the last time the window was open.</summary>
+    internal static Func<SniperDeal, bool>? IsNew;
+
+    /// <summary>Set by the addon: invoked with the deal of a row on right click.</summary>
+    internal static Action<SniperDeal>? OnRightClick;
+
     private static readonly Vector4 ColorName     = new(0.93f, 0.93f, 0.93f, 1f);
+    private static readonly Vector4 ColorNew      = new(216 / 255f, 187 / 255f, 125 / 255f, 1f);
     private static readonly Vector4 ColorSubtitle = new(157 / 255f, 131 / 255f,  91 / 255f, 1f);
     private static readonly Vector4 ColorMuted    = new(0.60f, 0.60f, 0.60f, 1f);
     private static readonly Vector4 ColorPrice    = new(0.40f, 0.88f, 0.46f, 1f);
@@ -77,7 +87,7 @@ internal sealed class SniperRowNode : ListItemNode<SniperDeal>, IListItemNode
     private readonly TextNode _world;
     private readonly TextNode _age;
 
-    public SniperRowNode()
+    public unsafe SniperRowNode()
     {
         _icon = new IconImageNode { FitTexture = true, Size = new Vector2(SniperColumns.IconSz, SniperColumns.IconSz) };
         _icon.AttachNode(this);
@@ -99,6 +109,13 @@ internal sealed class SniperRowNode : ListItemNode<SniperDeal>, IListItemNode
         _perDay   = Column(11, ColorMuted, AlignmentType.Right);
         _world    = Column(12, ColorName, AlignmentType.Left);
         _age      = Column(12, ColorMuted, AlignmentType.Right);
+
+        // MouseDown (not MouseClick) reliably fires for the right button here.
+        AddEvent(AtkEventType.MouseDown, (_, _, _, _, eventData) =>
+        {
+            if (eventData is not null && eventData->MouseData.ButtonId == 1 && ItemData is not null)
+                OnRightClick?.Invoke(ItemData);
+        });
     }
 
     private TextNode Column(uint fontSize, Vector4 color, AlignmentType alignment)
@@ -152,9 +169,13 @@ internal sealed class SniperRowNode : ListItemNode<SniperDeal>, IListItemNode
     {
         _icon.IconId = data.IconId;
 
-        var name = data.Hq ? $"{data.Name} {HighQuality}" : data.Name;
-        _name.String = data.Quantity > 1 ? $"{name}  x{data.Quantity}" : name;
-        _sub.String  = SubText?.Invoke(data) ?? string.Empty;
+        var name  = data.Hq ? $"{data.Name} {HighQuality}" : data.Name;
+        var isNew = IsNew?.Invoke(data) == true;
+        _name.String    = data.Quantity > 1 ? $"{name}  x{data.Quantity}" : name;
+        _name.TextColor = isNew ? ColorNew : ColorName;
+
+        var type = SubText?.Invoke(data) ?? string.Empty;
+        _sub.String = isNew ? $"{NewLabel}  ·  {type}" : type;
 
         _level.String    = data.ItemLevel.ToString();
         _average.String  = $"{data.AveragePrice:N0}{Gil}";
