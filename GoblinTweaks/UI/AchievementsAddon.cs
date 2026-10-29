@@ -784,6 +784,17 @@ internal unsafe class AchievementsAddon : NativeAddon
 
     // ── Filters ───────────────────────────────────────────────────────────────
 
+    /// <summary>Goes to the pinned achievements with this one selected (a click on the tracker).</summary>
+    internal void ShowAchievement(AchievementInfo info)
+    {
+        _tab      = TabTracked;
+        _selected = info;
+        Tweak.RequestProgress(info.Id);
+        UpdateTabs();
+        FilterChanged();
+        if (IsOpen) UpdateDetail();
+    }
+
     /// <summary>The user changed search, sort or a filter: rebuild the list from the top.</summary>
     private void FilterChanged()
     {
@@ -920,6 +931,6 @@ internal unsafe class AchievementsAddon : NativeAddon
         _status.TextColor = MutedGrey;
         _status.String = Tweak.QueuedProgress > 0
             ? string.Format(Tweak.Text("Window.Asking"), Tweak.QueuedProgress)
-            : string.Format(Tweak.Text("Window.Loaded"), Tweak.Config.Tracked.Count, Tweak.Text(Tweak.NearLoaded ? "Window.NearYes" : "Window.NearNo"));
+            : string.Format(Tweak.Text("Window.Loaded"), Tweak.TrackedCount, Tweak.Text(Tweak.NearLoaded ? "Window.NearYes" : "Window.NearNo"));
     }
 }

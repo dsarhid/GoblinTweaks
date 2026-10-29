@@ -7,11 +7,12 @@ using KamiToolKit.UiOverlay;
 namespace GoblinTweaks.UI.Nodes;
 
 /// <summary>One line of the achievement tracker: what it is, how far along, and how much of it is done.</summary>
-internal readonly record struct TrackerRow(uint IconId, string Name, string Progress, float Fraction, bool Done, bool Near = false);
+internal readonly record struct TrackerRow(uint Id, uint IconId, string Name, string Progress, float Fraction, bool Done, bool Near = false);
 
 /// <summary>
 /// The tracker of pinned achievements: a header with a title and one bar per achievement with its progress. It sits on the
-/// overlay layer and is dragged by any part of it when unlocked. It has no buttons: what is tracked is chosen in the window.
+/// overlay layer and is dragged by any part of it when unlocked. A click on a row opens that achievement in the window;
+/// what is tracked is chosen there.
 /// </summary>
 internal sealed class AchievementTrackerNode : OverlayNode
 {
@@ -55,6 +56,14 @@ internal sealed class AchievementTrackerNode : OverlayNode
     private bool _visibilityApplied;
     private bool _movable;
     private string _titleText = string.Empty;
+    private readonly uint[] _rowIds = new uint[MaxRows];
+    private DateTime _movedAt = DateTime.MinValue;
+
+    // A click right after a drag is the end of the drag, not a click on a row.
+    private static readonly TimeSpan ClickAfterMove = TimeSpan.FromMilliseconds(400);
+
+    /// <summary>Invoked with the id of the achievement of the row that was clicked.</summary>
+    public Action<uint>? OnRowClick { get; set; }
 
     public AchievementTrackerNode()
     {
@@ -87,8 +96,17 @@ internal sealed class AchievementTrackerNode : OverlayNode
             row.Progress.AttachNode(this);
             row.Visible = false;
             _rows[i] = row;
+
+            var index = i;
+            row.Track.ShowClickableCursor = true;
+            row.Track.AddEvent(AtkEventType.MouseClick, () =>
+            {
+                if (DateTime.UtcNow - _movedAt < ClickAfterMove || _rowIds[index] == 0) return;
+                OnRowClick?.Invoke(_rowIds[index]);
+            });
         }
 
+        OnMoveComplete = _ => _movedAt = DateTime.UtcNow;
         Size = new Vector2(PanelWidth, HeaderH);
     }
 
@@ -176,6 +194,7 @@ internal sealed class AchievementTrackerNode : OverlayNode
         {
             var row = _rows[i];
             row.Visible = i < count;
+            _rowIds[i]  = i < count ? rows[i].Id : 0;
             if (i >= count) continue;
 
             var data = rows[i];

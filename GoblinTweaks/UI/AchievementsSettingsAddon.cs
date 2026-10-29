@@ -50,6 +50,12 @@ internal sealed class AchievementsSettingsAddon : SettingsPanelAddon
         Toggle(Tweak.Text("Setting.ClosestFirst"), Tweak.Text("Setting.ClosestFirst.Help"), options.ClosestFirst,
             on => { options.ClosestFirst = on; Tweak.Changed(); });
 
+        Section(Tweak.Text("Section.Progress"));
+        Toggle(Tweak.Text("Setting.AutoRefresh"), Tweak.Text("Setting.AutoRefresh.Help"), options.AutoRefresh,
+            on => { options.AutoRefresh = on; Tweak.Changed(); });
+        Number(Tweak.Text("Setting.AutoRefreshMinutes"), null, 5, 60, 1, options.AutoRefreshMinutes,
+            value => { options.AutoRefreshMinutes = value; Tweak.Changed(); });
+
         Section(Tweak.Text("Section.Appearance"));
         Number(Tweak.Text("Setting.Opacity"), Tweak.Text("Setting.Opacity.Help"), 0, 100, 5, options.Opacity,
             value => { options.Opacity = value; Tweak.Changed(); });

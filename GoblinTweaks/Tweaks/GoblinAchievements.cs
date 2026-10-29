@@ -1,6 +1,7 @@
 using System.Numerics;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
+using Dalamud.Game.ClientState.Conditions;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using GoblinTweaks.Core;
 using GoblinTweaks.Localization;
@@ -31,6 +32,22 @@ public sealed class CompletedEntry
     public long Time { get; set; }
 }
 
+/// <summary>What is kept of one character: achievements are per character, so pins, progress and history are too.</summary>
+public sealed class AchievementCharacter
+{
+    /// <summary>Ids of the pinned achievements, in the order they were pinned.</summary>
+    public List<uint> Tracked { get; set; } = [];
+
+    /// <summary>The last progress the server told of each achievement, so the bars are there when the window opens.</summary>
+    public Dictionary<uint, SavedProgress> Progress { get; set; } = [];
+
+    /// <summary>The last achievements completed while the tweak was on, newest first.</summary>
+    public List<CompletedEntry> History { get; set; } = [];
+
+    /// <summary>Saved lists of pinned achievements: three slots.</summary>
+    public List<List<uint>> Lists { get; set; } = [[], [], []];
+}
+
 /// <summary>How much of the game is done: overall and per category.</summary>
 internal sealed record AchievementStats(int Done, int Total, int PointsDone, int PointsTotal,
     IReadOnlyDictionary<uint, (int Done, int Total)> Categories);
@@ -53,8 +70,18 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
 {
     public sealed class Options
     {
-        /// <summary>Ids of the pinned achievements, in the order they were pinned.</summary>
-        public List<uint> Tracked { get; set; } = [];
+        /// <summary>Pins, progress, history and saved lists of each character (content id).</summary>
+        public Dictionary<ulong, AchievementCharacter> Characters { get; set; } = [];
+
+        /// <summary>Before they were kept per character. Moved to the first character that logs in, then left empty.</summary>
+        public List<uint>? Tracked { get; set; }
+        public Dictionary<uint, SavedProgress>? Progress { get; set; }
+        public List<CompletedEntry>? History { get; set; }
+        public List<List<uint>>? Lists { get; set; }
+
+        /// <summary>Asks again for the progress of the pinned achievements every <see cref="AutoRefreshMinutes"/>.</summary>
+        public bool AutoRefresh { get; set; }
+        public int AutoRefreshMinutes { get; set; } = 10;
 
         public bool TrackerVisible { get; set; } = true;
         public bool HideWhenEmpty { get; set; } = true;
@@ -78,15 +105,6 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
 
         /// <summary>The groups of the category column that were left open.</summary>
         public List<string> ExpandedGroups { get; set; } = [];
-
-        /// <summary>The last progress the server told of each achievement, so the bars are there when the window opens.</summary>
-        public Dictionary<uint, SavedProgress> Progress { get; set; } = [];
-
-        /// <summary>The last achievements completed while the tweak was on, newest first.</summary>
-        public List<CompletedEntry> History { get; set; } = [];
-
-        /// <summary>Saved lists of pinned achievements: three slots.</summary>
-        public List<List<uint>> Lists { get; set; } = [[], [], []];
     }
 
     private static readonly string[] HelpTopics = ["Overview", "Browser", "Panel", "Tracker", "Loading", "Notices"];
@@ -110,6 +128,14 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
     private const int MaxTracked = 50;
     public const int ListSlots = 3;
 
+    private const int MinAutoRefresh = 5;
+    private const int MaxAutoRefresh = 60;
+
+    // What is shown while no character is logged in: never saved.
+    private AchievementCharacter _none = new();
+    private ulong _character;
+    private DateTime _nextAutoRefresh = DateTime.MaxValue;
+
     private AchievementStats? _stats;
     private int _statsVersion = -1;
     private bool _statsLoaded;
@@ -117,6 +143,7 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
     private int _sessionPoints;
 
     private List<AchievementInfo>? _catalog;
+    private Dictionary<uint, AchievementInfo>? _byId;
     private OverlayController? _overlay;
     private AchievementTrackerNode? _tracker;
     private AchievementsAddon? _addon;
@@ -132,7 +159,7 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
     private DateTime _openUntil;
     private DateTime? _openReadyAt;
     private bool _openShownByUs;
-    private ushort _lastHistory;
+    private ushort[] _lastHistory = [];
     private bool _historySeen;
     private Vector2? _placed;
     private bool _dirty = true;
@@ -145,6 +172,20 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
 
     /// <summary>Every achievement of the game, in the order the game lists them. Read from the game data the first time it is asked for.</summary>
     internal IReadOnlyList<AchievementInfo> Catalog => _catalog ??= BuildCatalog();
+
+    /// <summary>An achievement by its id, or null when the game has no such one.</summary>
+    internal AchievementInfo? Info(uint id)
+    {
+        _byId ??= Catalog.ToDictionary(info => info.Id);
+        return _byId.GetValueOrDefault(id);
+    }
+
+    /// <summary>Pins, progress, history and lists of the character logged in now.</summary>
+    private AchievementCharacter Data
+        => _character != 0 && Settings.Characters.TryGetValue(_character, out var data) ? data : _none;
+
+    /// <summary>How many achievements are pinned.</summary>
+    internal int TrackedCount => Data.Tracked.Count;
 
     /// <summary>Raised each time the tracked achievements or their numbers change.</summary>
     internal int Version { get; private set; }
@@ -164,14 +205,12 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
         _sessionDone = 0;
         _sessionPoints = 0;
         _stats = null;
-        EnsureLists();
-
+        _character = 0;
+        _none = new AchievementCharacter();
         _progress.Clear();
-        foreach (var (id, saved) in Settings.Progress)
-            if (saved.Max > 0) _progress[id] = new AchievementProgress(saved.Current, saved.Max);
 
         _overlay = new OverlayController();
-        _tracker = new AchievementTrackerNode();
+        _tracker = new AchievementTrackerNode { OnRowClick = ShowInWindow };
         _overlay.AddNode(_tracker);
 
         _addon = NewAddon();
@@ -197,6 +236,7 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
         _tracker = null;
 
         _catalog = null;
+        _byId = null;
         _progress.Clear();
         _queue.Clear();
         _warned.Clear();
@@ -215,7 +255,7 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
 
     public override IReadOnlyList<TweakButton> Buttons =>
     [
-        new(TMain("Button.Settings"), TMain("Settings.Help"), OpenSettings),
+        new(Loc.Get("Window.Settings"), TMain("Settings.Help"), OpenSettings),
         new(TMain("Button.ResetPosition"), TMain("ResetPosition.Help"), ResetPosition),
     ];
 
@@ -230,7 +270,7 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
     private AchievementsSettingsAddon NewSettingsAddon() => new()
     {
         InternalName = "GtkAchievementsSettings",
-        Title        = T("Settings.Title"),
+        Title        = $"{T("Title")} — {Loc.GetIn(UiLanguage, "Window.Settings")}",
         Size         = new Vector2(540f, 640f),
         Tweak        = this,
     };
@@ -374,11 +414,11 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
 
     internal bool TryGetProgress(uint id, out AchievementProgress progress) => _progress.TryGetValue(id, out progress);
 
-    internal bool IsTracked(uint id) => Settings.Tracked.Contains(id);
+    internal bool IsTracked(uint id) => Data.Tracked.Contains(id);
 
     private void EnsureLists()
     {
-        while (Settings.Lists.Count < ListSlots) Settings.Lists.Add([]);
+        while (Data.Lists.Count < ListSlots) Data.Lists.Add([]);
     }
 
     internal int SessionDone => _sessionDone;
@@ -411,11 +451,11 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
     }
 
     /// <summary>Achievements completed while the tweak was on, newest first.</summary>
-    internal IReadOnlyList<CompletedEntry> History => Settings.History;
+    internal IReadOnlyList<CompletedEntry> History => Data.History;
 
     internal DateTime? CompletedAt(uint id)
     {
-        var entry = Settings.History.FirstOrDefault(e => e.Id == id);
+        var entry = Data.History.FirstOrDefault(e => e.Id == id);
         return entry is null || entry.Time == 0 ? null : DateTimeOffset.FromUnixTimeSeconds(entry.Time).LocalDateTime;
     }
 
@@ -499,12 +539,12 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
         var pick = Catalog
             .Where(a => !IsComplete(a.Id) && !IsTracked(a.Id) && Closeness(a.Id) >= 0f)
             .OrderByDescending(a => Closeness(a.Id))
-            .Take(Math.Max(0, Math.Min(count, MaxTracked - Settings.Tracked.Count)))
+            .Take(Math.Max(0, Math.Min(count, MaxTracked - Data.Tracked.Count)))
             .ToList();
 
         foreach (var info in pick)
         {
-            Settings.Tracked.Add(info.Id);
+            Data.Tracked.Add(info.Id);
             Enqueue(info.Id);
         }
 
@@ -515,7 +555,7 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
 
     internal void ClearTracked()
     {
-        Settings.Tracked.Clear();
+        Data.Tracked.Clear();
         _warned.Clear();
         Version++;
         Changed();
@@ -523,8 +563,8 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
 
     internal void CopyList()
     {
-        var ok = ClipboardHelper.SetText(string.Join(",", Settings.Tracked));
-        Svc.Chat.Print(string.Format(T(ok ? "Chat.Copied" : "Chat.CopyFailed"), Settings.Tracked.Count), Name);
+        var ok = ClipboardHelper.SetText(string.Join(",", Data.Tracked));
+        Svc.Chat.Print(string.Format(T(ok ? "Chat.Copied" : "Chat.CopyFailed"), Data.Tracked.Count), Name);
     }
 
     /// <summary>Adds the ids on the clipboard (numbers separated by anything) that exist and are not pinned yet.</summary>
@@ -534,10 +574,10 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
         var added = 0;
         foreach (var part in ClipboardHelper.GetText().Split([',', ' ', ';', '\n', '\r', '\t'], StringSplitOptions.RemoveEmptyEntries))
         {
-            if (Settings.Tracked.Count >= MaxTracked) break;
-            if (!uint.TryParse(part, out var id) || !valid.Contains(id) || Settings.Tracked.Contains(id)) continue;
+            if (Data.Tracked.Count >= MaxTracked) break;
+            if (!uint.TryParse(part, out var id) || !valid.Contains(id) || Data.Tracked.Contains(id)) continue;
 
-            Settings.Tracked.Add(id);
+            Data.Tracked.Add(id);
             Enqueue(id);
             added++;
         }
@@ -547,12 +587,12 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
         Svc.Chat.Print(string.Format(T("Chat.Pasted"), added), Name);
     }
 
-    internal int ListSize(int slot) => slot >= 0 && slot < Settings.Lists.Count ? Settings.Lists[slot].Count : 0;
+    internal int ListSize(int slot) => slot >= 0 && slot < Data.Lists.Count ? Data.Lists[slot].Count : 0;
 
     internal void SaveList(int slot)
     {
         EnsureLists();
-        Settings.Lists[slot] = [.. Settings.Tracked];
+        Data.Lists[slot] = [.. Data.Tracked];
         Version++;
         Changed();
     }
@@ -560,9 +600,10 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
     internal void LoadList(int slot)
     {
         EnsureLists();
-        Settings.Tracked = [.. Settings.Lists[slot].Take(MaxTracked)];
+        // What was completed since the list was saved has nothing left to track.
+        Data.Tracked = [.. Data.Lists[slot].Where(id => !IsComplete(id)).Take(MaxTracked)];
         _warned.Clear();
-        foreach (var id in Settings.Tracked) Enqueue(id);
+        foreach (var id in Data.Tracked) Enqueue(id);
         Version++;
         Changed();
     }
@@ -581,9 +622,9 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
     /// <summary>Pins an achievement to the tracker, or takes it off. Pinning one asks for its progress.</summary>
     internal void ToggleTracked(uint id)
     {
-        if (!Settings.Tracked.Remove(id))
+        if (!Data.Tracked.Remove(id))
         {
-            Settings.Tracked.Add(id);
+            Data.Tracked.Add(id);
             Enqueue(id);
         }
         else
@@ -623,14 +664,15 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
     /// <summary>How old the progress of an achievement is, from when the server told it, or null when it was never asked.</summary>
     internal TimeSpan? ProgressAge(uint id)
     {
-        if (!Settings.Progress.TryGetValue(id, out var saved) || saved.Time == 0) return null;
+        if (!Data.Progress.TryGetValue(id, out var saved) || saved.Time == 0) return null;
         return DateTimeOffset.UtcNow - DateTimeOffset.FromUnixTimeSeconds(saved.Time);
     }
 
     /// <summary>Asks for the progress of every tracked achievement again, one at a time.</summary>
     internal void RefreshProgress()
     {
-        foreach (var id in Settings.Tracked) Enqueue(id);
+        foreach (var id in Data.Tracked)
+            if (!IsComplete(id)) Enqueue(id);
     }
 
     internal int QueuedProgress => _queue.Count + (_waiting is null ? 0 : 1);
@@ -659,7 +701,11 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
 
             if (_tracker is not { } node) return;
 
+            var character = Svc.PlayerState.IsLoaded ? Svc.PlayerState.ContentId : 0;
+            if (character != _character) SwitchCharacter(character);
+
             var now = DateTime.UtcNow;
+            AutoRefreshProgress(now);
             ServeProgress(now);
             ServeOpen(now);
             WatchCompletions();
@@ -675,6 +721,85 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
         {
             ReportFailure(ex);
         }
+    }
+
+    /// <summary>
+    /// Another character (or none): what was known of the last one is put away, the new one's pins, progress and history
+    /// come in, and its completions are watched from scratch, so its own history is not taken for new completions.
+    /// </summary>
+    private void SwitchCharacter(ulong character)
+    {
+        _character = character;
+        if (character != 0)
+        {
+            if (!Settings.Characters.ContainsKey(character)) Settings.Characters[character] = new AchievementCharacter();
+            MoveSharedData(Settings.Characters[character]);
+        }
+
+        EnsureLists();
+
+        _progress.Clear();
+        foreach (var (id, saved) in Data.Progress)
+            if (saved.Max > 0) _progress[id] = new AchievementProgress(saved.Current, saved.Max);
+
+        _queue.Clear();
+        _asked.Clear();
+        _warned.Clear();
+        _baseline.Clear();
+        _waiting = null;
+        _historySeen = false;
+        _lastHistory = [];
+        _sessionDone = 0;
+        _sessionPoints = 0;
+        _stats = null;
+        _nextAutoRefresh = DateTime.UtcNow + AutoRefreshEvery;
+        Version++;
+        _dirty = true;
+    }
+
+    /// <summary>Earlier versions kept one set of pins, progress, history and lists for every character: it goes to the first one that logs in.</summary>
+    private void MoveSharedData(AchievementCharacter data)
+    {
+        if (Settings.Tracked is null && Settings.Progress is null && Settings.History is null && Settings.Lists is null) return;
+
+        if (data.Tracked.Count == 0 && data.Progress.Count == 0 && data.History.Count == 0)
+        {
+            data.Tracked  = Settings.Tracked ?? [];
+            data.Progress = Settings.Progress ?? [];
+            data.History  = Settings.History ?? [];
+            if (Settings.Lists is { Count: > 0 } lists) data.Lists = lists;
+        }
+
+        Settings.Tracked = null;
+        Settings.Progress = null;
+        Settings.History = null;
+        Settings.Lists = null;
+        Changed();
+    }
+
+    private TimeSpan AutoRefreshEvery => TimeSpan.FromMinutes(Math.Clamp(Settings.AutoRefreshMinutes, MinAutoRefresh, MaxAutoRefresh));
+
+    /// <summary>
+    /// With the option on, asks again for the progress of the pinned achievements every few minutes, through the same
+    /// queue (one at a time). Not in combat or while changing zones, and not while a refresh is still going.
+    /// </summary>
+    private void AutoRefreshProgress(DateTime now)
+    {
+        if (!Settings.AutoRefresh || now < _nextAutoRefresh) return;
+        if (!IsLoaded || Data.Tracked.Count == 0 || QueuedProgress > 0) return;
+        if (Svc.Condition[ConditionFlag.InCombat] || Svc.Condition[ConditionFlag.BetweenAreas] || Svc.Condition[ConditionFlag.BetweenAreas51]) return;
+
+        _nextAutoRefresh = now + AutoRefreshEvery;
+        RefreshProgress();
+    }
+
+    /// <summary>A row of the tracker was clicked: the window opens on the pinned achievements with that one selected.</summary>
+    private void ShowInWindow(uint id)
+    {
+        if (_addon is null || Info(id) is not { } info) return;
+
+        _addon.ShowAchievement(info);
+        if (!_addon.IsOpen) _addon.Open();
     }
 
     /// <summary>One request at a time, a couple of seconds apart: it reads the answer, then asks for the next.</summary>
@@ -705,7 +830,7 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
         if (_queue.Count == 0 || now < _nextRequest || !achievements->IsLoaded()) return;
 
         var next = _queue.Dequeue();
-        if (!Settings.Tracked.Contains(next) && !_asked.Contains(next)) return;
+        if (!Data.Tracked.Contains(next) && !_asked.Contains(next)) return;
 
         achievements->RequestAchievementProgress(next);
         _waiting = next;
@@ -716,12 +841,12 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
     /// <summary>Keeps what the server said, with the time, for the next session. The oldest are dropped past a limit.</summary>
     private void SaveProgress(uint id, uint current, uint max)
     {
-        Settings.Progress[id] = new SavedProgress { Current = current, Max = max, Time = DateTimeOffset.UtcNow.ToUnixTimeSeconds() };
+        Data.Progress[id] = new SavedProgress { Current = current, Max = max, Time = DateTimeOffset.UtcNow.ToUnixTimeSeconds() };
 
-        if (Settings.Progress.Count > MaxSavedProgress)
+        if (Data.Progress.Count > MaxSavedProgress)
         {
-            foreach (var old in Settings.Progress.OrderBy(pair => pair.Value.Time).Take(Settings.Progress.Count - MaxSavedProgress).Select(pair => pair.Key).ToList())
-                Settings.Progress.Remove(old);
+            foreach (var old in Data.Progress.OrderBy(pair => pair.Value.Time).Take(Data.Progress.Count - MaxSavedProgress).Select(pair => pair.Key).ToList())
+                Data.Progress.Remove(old);
         }
 
         Changed();
@@ -734,13 +859,11 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
         if (progress.Current >= progress.Max || progress.Current * 100d / progress.Max < Settings.NearPercent) return;
         if (!_warned.Add(id)) return;
 
-        var info = Catalog.FirstOrDefault(a => a.Id == id);
-        if (info is null) return;
+        if (Info(id) is not { } info) return;
 
         Svc.Chat.Print(string.Format(T("Chat.Near"), info.Name, progress.Current, progress.Max), Name);
     }
 
-    /// <summary>The game keeps the last five achievements completed; a new one at the front is one just completed.</summary>
     /// <summary>
     /// The game keeps its own last five completed. They go to the end of the recent list (without a date) the first time
     /// they are read, so the list is not empty before the tweak has seen anything complete.
@@ -751,9 +874,9 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
         for (var i = 0; i < 5; i++)
         {
             var id = achievements->History[i];
-            if (id == 0 || Settings.History.Any(e => e.Id == id)) continue;
+            if (id == 0 || Data.History.Any(e => e.Id == id)) continue;
 
-            Settings.History.Add(new CompletedEntry { Id = id, Time = 0 });
+            Data.History.Add(new CompletedEntry { Id = id, Time = 0 });
             added = true;
         }
 
@@ -762,33 +885,50 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
         Changed();
     }
 
+    /// <summary>
+    /// The game keeps the last five achievements completed, newest first. Any id there that was not there before was just
+    /// completed: comparing all five catches two completed at once, which comparing only the newest misses.
+    /// </summary>
     private void WatchCompletions()
     {
         var achievements = Achievement.Instance();
-        if (achievements == null || !achievements->IsLoaded()) return;
+        if (achievements == null || !achievements->IsLoaded() || _character == 0) return;
 
-        var latest = achievements->History[0];
+        var history = new ushort[5];
+        for (var i = 0; i < history.Length; i++) history[i] = achievements->History[i];
+
         if (!_historySeen)
         {
             _historySeen = true;
-            _lastHistory = latest;
+            _lastHistory = history;
             SeedHistory(achievements);
             return;
         }
 
-        if (latest == _lastHistory) return;
-        _lastHistory = latest;
-        if (latest == 0) return;
+        if (history.SequenceEqual(_lastHistory)) return;
 
-        var info = Catalog.FirstOrDefault(a => a.Id == latest);
+        var before = _lastHistory;
+        _lastHistory = history;
 
-        Settings.Tracked.Remove(latest);
-        Settings.Progress.Remove(latest);
+        // Oldest first, so the newest ends at the front of the recent list.
+        for (var i = history.Length - 1; i >= 0; i--)
+        {
+            var id = history[i];
+            if (id != 0 && !before.Contains(id)) Completed(id);
+        }
+    }
+
+    private void Completed(uint latest)
+    {
+        var info = Info(latest);
+
+        Data.Tracked.Remove(latest);
+        Data.Progress.Remove(latest);
         _progress.Remove(latest);
         _warned.Remove(latest);
-        Settings.History.RemoveAll(e => e.Id == latest);
-        Settings.History.Insert(0, new CompletedEntry { Id = latest, Time = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
-        if (Settings.History.Count > MaxHistory) Settings.History.RemoveRange(MaxHistory, Settings.History.Count - MaxHistory);
+        Data.History.RemoveAll(e => e.Id == latest);
+        Data.History.Insert(0, new CompletedEntry { Id = latest, Time = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
+        if (Data.History.Count > MaxHistory) Data.History.RemoveRange(MaxHistory, Data.History.Count - MaxHistory);
 
         _sessionDone++;
         _sessionPoints += info?.Points ?? 0;
@@ -830,14 +970,13 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
     private void ShowTracker(AchievementTrackerNode node)
     {
         var rows = new List<TrackerRow>();
-        IEnumerable<uint> order = Settings.Tracked;
+        IEnumerable<uint> order = Data.Tracked;
         if (Settings.ClosestFirst)
             order = order.OrderByDescending(id => IsComplete(id) ? 2f : Closeness(id));
 
         foreach (var id in order.Take(AchievementTrackerNode.MaxRows))
         {
-            var info = Catalog.FirstOrDefault(a => a.Id == id);
-            if (info is null) continue;
+            if (Info(id) is not { } info) continue;
 
             var done = IsComplete(id);
             string progress;
@@ -862,7 +1001,7 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
                 fraction = 0f;
             }
 
-            rows.Add(new TrackerRow(info.IconId, info.Name, progress, fraction, done, near));
+            rows.Add(new TrackerRow(info.Id, info.IconId, info.Name, progress, fraction, done, near));
         }
 
         node.Shown = Settings.TrackerVisible && (rows.Count > 0 || !Settings.HideWhenEmpty);
