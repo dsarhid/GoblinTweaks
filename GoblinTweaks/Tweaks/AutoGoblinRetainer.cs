@@ -19,6 +19,7 @@ namespace GoblinTweaks.Tweaks;
 /// Adds two buttons to the retainer list (next to the venture coins): Pinch reprices every listing on the
 /// Market Board just below the cheapest seller, and Sell opens a docked window to pick items from bags, armoury
 /// chest and retainers and list them for sale. A help button at the bottom of the retainer list explains it all.
+/// Items on the "keep my price" list are never repriced, and retainers can be left out of the Pinch tour.
 /// </summary>
 [Tweak(TweakCategory.Inventory)]
 public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options>
@@ -35,7 +36,17 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
         public int SearchDelayMs { get; set; } = 1500;
         /// <summary>After listing, reprice every listing of the retainers that were visited.</summary>
         public bool PinchAfterListing { get; set; } = true;
+        /// <summary>Undercut by <see cref="UndercutPercent"/> % of the cheapest price instead of <see cref="UndercutAmount"/> gil.</summary>
+        public bool UndercutIsPercent { get; set; }
+        /// <summary>Percentage taken off the cheapest other listing when <see cref="UndercutIsPercent"/> is on.</summary>
+        public int UndercutPercent { get; set; } = 1;
+        /// <summary>Items whose listings Pinch never reprices.</summary>
+        public List<uint> KeepPrice { get; set; } = [];
+        /// <summary>Retainers (by id) left out of the Pinch tour and of the reprice after listing.</summary>
+        public List<ulong> ExcludedRetainers { get; set; } = [];
     }
+
+    private const int MaxSearchResults = 30;
 
     // Geometry inside the RetainerList window. Tune if the game's layout differs.
     private const float ButtonW      = 76f;
@@ -63,22 +74,17 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
     private AutoGoblinRetainerSettingsAddon? _settingsWindow;
     private TextHelpAddon?      _helpWindow;
 
+    // Every item that can be sold on the Market Board, by name, for the "keep my price" search (built on first use).
+    private (uint Id, string Name)[]? _marketable;
+
     protected internal override void Enable()
     {
-        _window = new RetainerSellAddon
-        {
-            InternalName    = "GtkAutoGoblinRetainer",
-            Title           = T("WindowTitle"),
-            Size            = new Vector2(660f, 640f),
-            Tweak           = this,
-            RespectCloseAll = false,
-        };
-
+        _window = NewSellWindow();
         _settingsWindow = NewSettingsWindow();
 
         _pincher = new AutoPincher(PinchRulesNow, Say);
-        _cycler  = new RetainerCycler(_pincher, Say);
-        _runner  = new SellRunner(_pincher, PinchRulesNow, Say);
+        _cycler  = new RetainerCycler(_pincher, Say, IsExcluded);
+        _runner  = new SellRunner(_pincher, PinchRulesNow, Say, IsExcluded);
 
         _askingPriceText = Svc.Data.GetExcelSheet<LogMessage>()?.GetRowOrDefault(AskingPriceUpdatedId)?.Text.ExtractText();
         Svc.Chat.CheckMessageHandled += OnCheckMessage;
@@ -122,7 +128,17 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
         _settingsWindow = null;
         _helpWindow?.Dispose();
         _helpWindow = null;
+        _marketable = null;
     }
+
+    private RetainerSellAddon NewSellWindow() => new()
+    {
+        InternalName    = "GtkAutoGoblinRetainer",
+        Title           = T("WindowTitle"),
+        Size            = new Vector2(660f, 640f),
+        Tweak           = this,
+        RespectCloseAll = false,
+    };
 
     // Remembers the open retainer's contents even when the sell window is closed,
     // because the game only keeps one retainer in memory at a time.
@@ -153,10 +169,14 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
 
     private bool Working => DateTime.UtcNow < _quietUntil;
 
-    /// <summary>Hides the "price copied to clipboard" and "Asking price updated." lines while a run is working.</summary>
+    /// <summary>
+    /// Hides the "price copied to clipboard" and "Asking price updated." lines while a run is working. Only lines
+    /// without a sender (the game's and plugins' own); nothing a player writes is ever hidden.
+    /// </summary>
     private void OnCheckMessage(IHandleableChatMessage message)
     {
         if (message.IsHandled || !Working) return;
+        if (message.Sender.TextValue.Length > 0) return;
 
         var text = message.Message.TextValue;
         if (ClipboardWords.Any(word => text.Contains(word, StringComparison.OrdinalIgnoreCase))
@@ -290,27 +310,42 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
         var reason = parts[0].Split(':')[0];
         var text   = reason switch
         {
-            "done"          => string.Format(T("Msg.Done"), Part(parts, 1), Part(parts, 2), Part(parts, 3)) + Who(parts),
-            "stopped"       => string.Format(T("Msg.Stopped"), Part(parts, 1), Part(parts, 2), Part(parts, 3)) + Who(parts),
-            "closed"        => string.Format(T("Msg.Closed"), Part(parts, 1), Part(parts, 2), Part(parts, 3)),
+            "done"          => string.Format(T("Msg.Done"), Part(parts, 1), Part(parts, 2), Part(parts, 3)) + Who(parts) + ChangeText(Part(parts, 5)),
+            "stopped"       => string.Format(T("Msg.Stopped"), Part(parts, 1), Part(parts, 2), Part(parts, 3)) + Who(parts) + ChangeText(Part(parts, 5)),
+            "closed"        => string.Format(T("Msg.Closed"), Part(parts, 1), Part(parts, 2), Part(parts, 3)) + ChangeText(Part(parts, 5)),
             "timeout"       => string.Format(T("Msg.Timeout"), Part(parts, 1), Part(parts, 2), Part(parts, 3)) + " " + code.Split('|')[0].Replace("timeout:", string.Empty),
             "error"         => string.Format(T("Msg.Stopped"), Part(parts, 1), Part(parts, 2), Part(parts, 3)),
             "noSellList"    => T("Msg.NoSellList"),
             "noItems"       => T("Msg.NoItems"),
+            "allExcluded"   => T("Msg.AllExcluded"),
             "noList"        => T("Msg.NoList"),
-            "listedOne"     => string.Format(T("Msg.ListedOne"), parts.Length > 1 ? parts[1] : "?", Part(parts, 2), Part(parts, 3)),
+            "listedOne"     => string.Format(T("Msg.ListedOne"), parts.Length > 1 ? parts[1] : "?", Part(parts, 2), Gil(Part(parts, 3))),
             "noSelection"   => T("Msg.NoSelection"),
             "noCapacity"    => T("Msg.NoCapacity"),
-            "sellDone"      => string.Format(T("Msg.SellDone"), Part(parts, 1), Part(parts, 2), Part(parts, 3)),
-            "sellstop"      => string.Format(T("Msg.SellStopped"), Part(parts, 1), Part(parts, 2), Part(parts, 3)) + (parts.Length > 4 ? " (" + parts[4] + ")" : string.Empty),
+            "sellDone"      => string.Format(T("Msg.SellDone"), Part(parts, 1), Part(parts, 2), Part(parts, 3)) + ListedText(Part(parts, 4)),
+            "sellstop"      => string.Format(T("Msg.SellStopped"), Part(parts, 1), Part(parts, 2), Part(parts, 3)) + (parts.Length > 4 ? " (" + parts[4] + ")" : string.Empty) + ListedText(Part(parts, 5)),
             "problem"       => "  - " + (parts.Length > 1 ? parts[1] : string.Empty) + ": " + (parts.Length > 2 ? T("Problem." + parts[2]) : string.Empty),
-            "cycleDone"     => string.Format(T("Msg.CycleDone"), Part(parts, 1), Part(parts, 2), Part(parts, 3), Part(parts, 4)),
+            "cycleDone"     => string.Format(T("Msg.CycleDone"), Part(parts, 1), Part(parts, 2), Part(parts, 3), Part(parts, 4)) + ChangeText(Part(parts, 5)),
+            "cycleStopped"  => string.Format(T("Msg.CycleStopped"), Part(parts, 1), Part(parts, 2), Part(parts, 3), Part(parts, 4)) + ChangeText(Part(parts, 5)),
             "visiting"      => string.Format(T("Msg.Visiting"), parts.Length > 1 ? parts[1] : "?"),
             "repriced"      => RepricedText(parts),
             _               => code,
         };
-        Svc.Chat.Print($"[AutoGoblinRetainer] {text}");
+        Svc.Chat.Print(text, Name);
     }
+
+    /// <summary>" Listings went down 12,000 gil in total." (or up); empty when nothing changed.</summary>
+    private string ChangeText(string value)
+    {
+        if (!long.TryParse(value, out var change) || change == 0) return string.Empty;
+        return " " + string.Format(T(change < 0 ? "Msg.TotalDown" : "Msg.TotalUp"), Math.Abs(change).ToString("N0"));
+    }
+
+    /// <summary>" Worth 1,250,000 gil in total." for what was listed; empty when nothing was.</summary>
+    private string ListedText(string value)
+        => long.TryParse(value, out var gil) && gil > 0 ? " " + string.Format(T("Msg.ListedGil"), gil.ToString("N0")) : string.Empty;
+
+    private static string Gil(string value) => long.TryParse(value, out var gil) ? gil.ToString("N0") : value;
 
     /// <summary>"Item: 1,200 → 1,150 gil, down 4.2%". The code is "repriced|name|hq|old|new".</summary>
     private string RepricedText(string[] parts)
@@ -335,7 +370,7 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
     // ── Settings and help windows ─────────────────────────────────────────────
 
     /// <summary>The buttons in the GoblinTweaks window: the options live in a native window.</summary>
-    public override IReadOnlyList<TweakButton> Buttons => [new(TMain("Settings"), null, () => _settingsWindow?.Toggle())];
+    public override IReadOnlyList<TweakButton> Buttons => [new(Loc.Get("Window.Settings"), TMain("Settings.Help"), () => _settingsWindow?.Toggle())];
 
     public override TweakButton? HelpButton => new(Loc.Get("Window.Help"), null, OpenHelp);
 
@@ -347,7 +382,7 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
     {
         InternalName    = "GtkAutoGoblinRetainerSettings",
         Title           = T("SettingsTitle"),
-        Size            = new Vector2(540f, 510f),
+        Size            = new Vector2(560f, 640f),
         Tweak           = this,
         RespectCloseAll = false,
     };
@@ -357,8 +392,16 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
         if (State != TweakState.Enabled) return;
 
         Rebuild(ref _settingsWindow, NewSettingsWindow);
+        Rebuild(ref _window, NewSellWindow);
         _helpWindow?.Dispose();
         _helpWindow = null;
+
+        // The buttons added to the game's windows carry texts too.
+        var list = (AtkUnitBase*)Svc.GameGui.GetAddonByName("RetainerList").Address;
+        if (list is not null && list->IsVisible) AttachButtons(list);
+
+        var sellList = (AtkUnitBase*)Svc.GameGui.GetAddonByName("RetainerSellList").Address;
+        if (sellList is not null && sellList->IsVisible) AttachSellListButton(sellList);
     }
 
     internal Options Current => Settings;
@@ -388,7 +431,50 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
     }
 
     private PinchRules PinchRulesNow()
-        => new(Settings.UndercutAmount, Settings.MaxUndercutPercent, Settings.MinPrice, Settings.SearchDelayMs);
+        => new(Settings.UndercutAmount, Settings.UndercutIsPercent, Settings.UndercutPercent, Settings.MaxUndercutPercent,
+            Settings.MinPrice, Settings.SearchDelayMs, Settings.KeepPrice.ToHashSet());
+
+    private bool IsExcluded(ulong retainerId) => Settings.ExcludedRetainers.Contains(retainerId);
+
+    // ── Access for the settings window ────────────────────────────────────────
+
+    /// <summary>The retainers of the character (id and name, in list order); empty until the game knows them.</summary>
+    internal List<(ulong Id, string Name)> Retainers()
+    {
+        var result = new List<(ulong, string)>();
+        var retMgr = FFXIVClientStructs.FFXIV.Client.Game.RetainerManager.Instance();
+        if (retMgr == null) return result;
+
+        for (uint i = 0; i < retMgr->GetRetainerCount() && i < 10; i++)
+        {
+            var ret = retMgr->GetRetainerBySortedIndex(i);
+            if (ret != null && ret->Available) result.Add((ret->RetainerId, SellInventory.RetainerName(ret, i)));
+        }
+
+        return result;
+    }
+
+    internal void SetExcluded(ulong retainerId, bool excluded)
+    {
+        Settings.ExcludedRetainers.Remove(retainerId);
+        if (excluded) Settings.ExcludedRetainers.Add(retainerId);
+        SaveSettings();
+    }
+
+    /// <summary>Marketable items whose name contains the text, at most <see cref="MaxSearchResults"/>.</summary>
+    internal List<(uint Id, string Name)> SearchItems(string term)
+    {
+        _marketable ??= [.. Svc.Data.GetExcelSheet<Item>()
+            .Where(item => item.ItemSearchCategory.RowId != 0)
+            .Select(item => (item.RowId, item.Name.ExtractText()))
+            .Where(item => item.Item2.Length > 0)
+            .OrderBy(item => item.Item2, StringComparer.OrdinalIgnoreCase)];
+
+        return [.. _marketable.Where(item => item.Name.Contains(term, StringComparison.OrdinalIgnoreCase)).Take(MaxSearchResults)];
+    }
+
+    internal static string ItemName(uint id)
+        => Svc.Data.GetExcelSheet<Item>().GetRowOrDefault(id)?.Name.ExtractText() is { Length: > 0 } name ? name : $"#{id}";
 
     /// <summary>"List on Market Board": lists the ticked stacks (or stops the run in progress).</summary>
     internal void SellSelected(IReadOnlyCollection<(SellableItem Item, int Quantity)> picks)

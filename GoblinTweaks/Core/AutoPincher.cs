@@ -6,7 +6,16 @@ using FFXIVClientStructs.FFXIV.Component.GUI;
 namespace GoblinTweaks.Core;
 
 /// <summary>How the auto-pinch prices an item. Filled from the tweak's settings.</summary>
-internal sealed record PinchRules(int UndercutAmount, int MaxUndercutPercent, int MinPrice, int SearchDelayMs);
+/// <param name="UndercutIsPercent">Undercut by <paramref name="UndercutPercent"/> % of the cheapest price instead of a fixed amount of gil.</param>
+/// <param name="KeepPrice">Items whose listings are never repriced.</param>
+internal sealed record PinchRules(
+    int UndercutAmount, bool UndercutIsPercent, int UndercutPercent, int MaxUndercutPercent, int MinPrice, int SearchDelayMs,
+    IReadOnlySet<uint> KeepPrice)
+{
+    /// <summary>Gil taken off <paramref name="lowest"/>: the fixed amount, or the percentage of it (at least 1 gil).</summary>
+    public long Undercut(long lowest)
+        => UndercutIsPercent ? Math.Max(1, lowest * Math.Max(0, UndercutPercent) / 100) : Math.Max(0, UndercutAmount);
+}
 
 internal enum PinchOutcome { Repriced, Unchanged, Skipped }
 
@@ -44,6 +53,7 @@ internal sealed unsafe class AutoPincher
     private bool                _expectedHq;
     private readonly SearchWatch _watch = new();
     private int                 _repriced, _unchanged, _skipped;
+    private long                _priceChange;      // sum of (new - old) x quantity of the repriced listings
 
     // Callback values the game's windows expect (see the comments at each use).
     private const int SellListOpenMenu = 0;
@@ -69,6 +79,9 @@ internal sealed unsafe class AutoPincher
     public int Repriced => _repriced;
     public int Unchanged => _unchanged;
     public int Skipped => _skipped;
+
+    /// <summary>How much the repriced listings changed in total, in gil (negative when they went down).</summary>
+    public long PriceChange => _priceChange;
 
     /// <summary>Name shown in the end-of-run message (the retainer being worked on during a tour); null for none.</summary>
     public string? Label { get; set; }
@@ -98,6 +111,7 @@ internal sealed unsafe class AutoPincher
         _index = 0;
         LastRunCompleted = false;
         _repriced = _unchanged = _skipped = 0;
+        _priceChange = 0;
         Enter(Step.WaitData, TimeSpan.FromSeconds(8));
         return true;
     }
@@ -112,7 +126,7 @@ internal sealed unsafe class AutoPincher
 
         _step = Step.Idle;
         LastRunCompleted = false;
-        _say($"{reason}|{_repriced}|{_unchanged}|{_skipped}|{Label}");
+        _say($"{reason}|{_repriced}|{_unchanged}|{_skipped}|{Label}|{_priceChange}");
         Ended?.Invoke();
     }
 
@@ -160,6 +174,16 @@ internal sealed unsafe class AutoPincher
                 if (!Ready(PriceAddon, out var price)) return;
                 _currentPrice = ((AddonRetainerSell*)price)->AskingPrice->Value;
                 ReadItem((AddonRetainerSell*)price, out _expectedId, out _expectedHq);
+
+                // An item on the "keep my price" list: left as it is, without even searching the Market Board.
+                if (_rules().KeepPrice.Contains(_expectedId))
+                {
+                    Fire(price, PriceCancel);
+                    _skipped++;
+                    Enter(Step.WaitPriceClosed, MenuTimeout);
+                    return;
+                }
+
                 Enter(Step.Compare, MenuTimeout);
                 break;
 
@@ -191,9 +215,12 @@ internal sealed unsafe class AutoPincher
                 if (!Ready(PriceAddon, out price)) { Stop("closed"); return; }
                 if (outcome == PinchOutcome.Repriced)
                 {
-                    ((AddonRetainerSell*)price)->AskingPrice->SetValue(newPrice);
+                    var window   = (AddonRetainerSell*)price;
+                    var quantity = window->Quantity == null ? 1 : Math.Max(1, window->Quantity->Value);
+                    window->AskingPrice->SetValue(newPrice);
                     Fire(price, PriceConfirm);
                     _repriced++;
+                    _priceChange += (long)(newPrice - _currentPrice) * quantity;
 
                     // What changed, for the chat: item, old price, new price (the tweak works out the percentage).
                     _say($"repriced|{ItemName(itemId)}|{(hq ? 1 : 0)}|{_currentPrice}|{newPrice}");
@@ -272,7 +299,7 @@ internal sealed unsafe class AutoPincher
     {
         _step = Step.Idle;
         LastRunCompleted = true;
-        _say($"done|{_repriced}|{_unchanged}|{_skipped}|{Label}");
+        _say($"done|{_repriced}|{_unchanged}|{_skipped}|{Label}|{_priceChange}");
         Ended?.Invoke();
     }
 
@@ -330,7 +357,7 @@ internal sealed unsafe class AutoPincher
         if (lowest == uint.MaxValue) return PinchOutcome.Skipped;      // nobody sells it: no reference price
         if (lowestIsOwn) return PinchOutcome.Unchanged;                // we are already the cheapest
 
-        var target = (int)Math.Min(int.MaxValue, lowest) - Math.Max(0, rules.UndercutAmount);
+        var target = (int)Math.Clamp(lowest - rules.Undercut(lowest), 0, int.MaxValue);
         target = Math.Max(target, Math.Max(1, rules.MinPrice));
         if (target == currentPrice) return PinchOutcome.Unchanged;
 

@@ -6,57 +6,105 @@ using KamiToolKit.Nodes;
 
 namespace GoblinTweaks.UI;
 
-/// <summary>Native settings window of AutoGoblinRetainer: how the prices are chosen and how fast it works.</summary>
-internal sealed unsafe class AutoGoblinRetainerSettingsAddon : NativeAddon
+/// <summary>
+/// Native settings window of AutoGoblinRetainer: language of its windows, how the prices are chosen, how fast it
+/// works, the retainers the Pinch tour visits, and the items whose price is never touched (a search box and the list).
+/// </summary>
+internal sealed unsafe class AutoGoblinRetainerSettingsAddon : SettingsPanelAddon
 {
-    private static readonly Vector4 Gold  = new(216 / 255f, 187 / 255f, 125 / 255f, 1f);
-    private static readonly Vector4 Muted = new(0.62f, 0.62f, 0.62f, 1f);
-
-    private const float InputW = 150f;
-    private const float RowH   = 74f;
-    private const float LanguageRowH = 40f;
-
     public AutoGoblinRetainer? Tweak { get; init; }
 
-    private NumericInputNode? _undercut;
-    private NumericInputNode? _maxCut;
-    private NumericInputNode? _minPrice;
-    private NumericInputNode? _delay;
-    private CheckboxNode?     _pinchAfter;
+    private readonly List<NodeBase> _rows = [];
+    private CheckboxNode? _pinchAfter;
+    private string        _term = string.Empty;
+    private float         _rowsTop;
+    private bool          _rowsDirty;
 
-    protected override void OnSetup(AtkUnitBase* addon, Span<AtkValue> atkValues)
+    protected override float HeaderHeight => 40f;
+
+    protected override void BuildHeader(Vector2 origin, float width)
     {
-        base.OnSetup(addon, atkValues);
         if (Tweak is null) return;
 
-        var c = ContentStartPosition;
-        var y = c.Y + 6f;
-        var options = Tweak.Current;
+        TweakLanguageSelect.Add(this, Tweak, origin + new Vector2(width - TweakLanguageSelect.Width - Pad, 6f));
+    }
 
-        y += LanguageRowH;
+    protected override void Build()
+    {
+        if (Tweak is null) return;
+        var tweak   = Tweak;
+        var options = tweak.Current;
 
-        _undercut = AddNumber(c, ref y, "Setting.Undercut", "Setting.Undercut.Help", 0, 1_000_000, 1, options.UndercutAmount,
-            value => options.UndercutAmount = value);
-        _maxCut = AddNumber(c, ref y, "Setting.MaxCut", "Setting.MaxCut.Help", 1, 100, 1, options.MaxUndercutPercent,
-            value => options.MaxUndercutPercent = value);
-        _minPrice = AddNumber(c, ref y, "Setting.MinPrice", "Setting.MinPrice.Help", 1, 999_999_999, 10, options.MinPrice,
-            value => options.MinPrice = value);
-        _delay = AddNumber(c, ref y, "Setting.Delay", "Setting.Delay.Help", 500, 5000, 100, options.SearchDelayMs,
-            value => options.SearchDelayMs = value);
+        // A full rebuild disposed the nodes of the last one, the search box included.
+        _rows.Clear();
+        _term = string.Empty;
 
-        _pinchAfter = new CheckboxNode
+        Section(tweak.Text("Section.Prices"));
+
+        Toggle(tweak.Text("Setting.UndercutPercent"), tweak.Text("Setting.UndercutPercent.Help"), options.UndercutIsPercent, on =>
         {
-            String      = Tweak.PinchAfterText,
-            Position    = new Vector2(c.X + 6f, y + 2f),
-            Size        = new Vector2(ContentSize.X - 12f, 24f),
-            IsChecked   = options.PinchAfterListing,
-            TextTooltip = Tweak.PinchAfterTooltip,
-        };
-        _pinchAfter.OnClick = isChecked => Tweak.PinchAfter = isChecked;
-        _pinchAfter.AttachNode(this);
+            options.UndercutIsPercent = on;
+            tweak.SaveCurrent();
+            RequestRebuild(); // shows the field of the chosen kind
+        });
 
-        // Last, so its list opens over the options.
-        TweakLanguageSelect.Add(this, Tweak, new Vector2(c.X + ContentSize.X - TweakLanguageSelect.Width - 6f, c.Y + 6f));
+        if (options.UndercutIsPercent)
+            Number(tweak.Text("Setting.UndercutPct"), tweak.Text("Setting.UndercutPct.Help"), 1, 50, 1, options.UndercutPercent,
+                value => { options.UndercutPercent = value; tweak.SaveCurrent(); });
+        else
+            Number(tweak.Text("Setting.Undercut"), tweak.Text("Setting.Undercut.Help"), 0, 1_000_000, 1, options.UndercutAmount,
+                value => { options.UndercutAmount = value; tweak.SaveCurrent(); });
+
+        Number(tweak.Text("Setting.MaxCut"), tweak.Text("Setting.MaxCut.Help"), 1, 100, 1, options.MaxUndercutPercent,
+            value => { options.MaxUndercutPercent = value; tweak.SaveCurrent(); });
+        Number(tweak.Text("Setting.MinPrice"), tweak.Text("Setting.MinPrice.Help"), 1, 999_999_999, 10, options.MinPrice,
+            value => { options.MinPrice = value; tweak.SaveCurrent(); });
+
+        Section(tweak.Text("Section.Speed"));
+        Number(tweak.Text("Setting.Delay"), tweak.Text("Setting.Delay.Help"), 500, 5000, 100, options.SearchDelayMs,
+            value => { options.SearchDelayMs = value; tweak.SaveCurrent(); });
+
+        Section(tweak.Text("Section.Listing"));
+        _pinchAfter = Toggle(tweak.PinchAfterText, tweak.PinchAfterTooltip, options.PinchAfterListing, on => tweak.PinchAfter = on);
+
+        Section(tweak.Text("Section.Retainers"));
+        var retainers = tweak.Retainers();
+        if (retainers.Count == 0)
+        {
+            Note(tweak.Text("Retainers.None"), Pad, ContentW, Muted);
+        }
+        else
+        {
+            Note(tweak.Text("Retainers.Help"), Pad, ContentW, Muted);
+            Space(6f);
+            foreach (var (id, name) in retainers)
+            {
+                var retainerId = id;
+                Toggle(name, null, !options.ExcludedRetainers.Contains(id), on => tweak.SetExcluded(retainerId, !on));
+            }
+        }
+
+        Section(tweak.Text("Section.Keep"));
+        Note(tweak.Text("Keep.Help"), Pad, ContentW, Muted);
+        Space(6f);
+
+        var search = new TextInputNode
+        {
+            Position          = new Vector2(Pad, Y),
+            Size              = new Vector2(ContentW, 28f),
+            PlaceholderString = tweak.Text("Keep.Search"),
+            MaxCharacters     = 64,
+        };
+        search.OnInputReceived = text =>
+        {
+            _term      = text.ToString().Trim();
+            _rowsDirty = true;
+        };
+        search.AttachNode(Host);
+        Y += 36f;
+
+        _rowsTop = Y;
+        RebuildRows();
     }
 
     protected override void OnUpdate(AtkUnitBase* addon)
@@ -66,59 +114,102 @@ internal sealed unsafe class AutoGoblinRetainerSettingsAddon : NativeAddon
         // The same option lives next to the list button of the sell window; keep both in step.
         if (Tweak is not null && _pinchAfter is not null && _pinchAfter.IsChecked != Tweak.PinchAfter)
             _pinchAfter.IsChecked = Tweak.PinchAfter;
+
+        if (_rowsDirty)
+        {
+            _rowsDirty = false;
+            RebuildRows();
+        }
     }
 
-    protected override void OnFinalize(AtkUnitBase* addon)
+    protected override void OnClosed()
     {
-        _undercut = _maxCut = _minPrice = _delay = null;
+        _rows.Clear();
         _pinchAfter = null;
-        base.OnFinalize(addon);
+        _term       = string.Empty;
+        _rowsDirty  = false;
     }
 
-    /// <summary>A labelled number field: title and explanation on the left, the input on the right.</summary>
-    private NumericInputNode AddNumber(Vector2 c, ref float y, string labelKey, string helpKey, int min, int max, int step, int value, Action<int> apply)
+    /// <summary>Redraws the search results and the kept items under the search box.</summary>
+    private void RebuildRows()
     {
-        var textW = ContentSize.X - InputW - 28f;
+        if (Tweak is null) return;
+        var tweak   = Tweak;
+        var options = tweak.Current;
 
-        new TextNode
-        {
-            String    = Tweak!.Text(labelKey),
-            Position  = new Vector2(c.X + 6f, y),
-            Size      = new Vector2(textW, 20f),
-            TextColor = Gold,
-            FontSize  = 15,
-        }.AttachNode(this);
+        NativeFocus.Release(InternalAddon);
+        foreach (var row in _rows) row.Dispose();
+        _rows.Clear();
+        Y = _rowsTop;
 
-        var help = new TextNode
+        if (_term.Length >= 2)
         {
-            String        = Tweak.Text(helpKey),
-            Position      = new Vector2(c.X + 6f, y + 22f),
-            Size          = new Vector2(textW, RowH - 28f),
-            TextColor     = Muted,
-            FontSize      = 12,
-            LineSpacing   = 15,
-            AlignmentType = AlignmentType.TopLeft,
-        };
-        help.AddTextFlags(TextFlags.MultiLine | TextFlags.WordWrap);
-        help.AttachNode(this);
+            var found = tweak.SearchItems(_term).Where(item => !options.KeepPrice.Contains(item.Id)).ToList();
+            foreach (var (id, name) in found)
+            {
+                var add = new TextButtonNode
+                {
+                    String   = $"+ {name}",
+                    Position = new Vector2(Pad, Y),
+                    Size     = new Vector2(ContentW, 24f),
+                };
+                var itemId = id;
+                add.OnClick = () =>
+                {
+                    options.KeepPrice.Add(itemId);
+                    tweak.SaveCurrent();
+                    _rowsDirty = true; // redrawn next frame, not while this button is handling its click
+                };
+                add.AttachNode(Host);
+                _rows.Add(add);
+                Y += 26f;
+            }
 
-        var input = new NumericInputNode
-        {
-            Min      = min,
-            Max      = max,
-            Step     = step,
-            Value    = Math.Clamp(value, min, max),
-            Position = new Vector2(c.X + ContentSize.X - InputW - 8f, y + 2f),
-            Size     = new Vector2(InputW, 28f),
-        };
-        input.OnValueUpdate = newValue =>
-        {
-            apply(Math.Clamp(newValue, min, max));
-            Tweak.SaveCurrent();
-        };
-        input.AttachNode(this);
+            if (found.Count == 0)
+                _rows.Add(Note(tweak.Text("Keep.NoResults"), Pad, ContentW, Muted));
 
-        y += RowH;
-        return input;
+            Space(10f);
+        }
+
+        if (options.KeepPrice.Count == 0)
+        {
+            _rows.Add(Note(tweak.Text("Keep.Empty"), Pad, ContentW, Muted));
+        }
+        else
+        {
+            foreach (var id in options.KeepPrice.ToList())
+            {
+                var remove = new TextButtonNode
+                {
+                    String   = "x",
+                    Position = new Vector2(Pad, Y),
+                    Size     = new Vector2(30f, 24f),
+                };
+                var itemId = id;
+                remove.OnClick = () =>
+                {
+                    options.KeepPrice.Remove(itemId);
+                    tweak.SaveCurrent();
+                    _rowsDirty = true;
+                };
+                remove.AttachNode(Host);
+                _rows.Add(remove);
+
+                var name = new TextNode
+                {
+                    String    = AutoGoblinRetainer.ItemName(id),
+                    Position  = new Vector2(Pad + 38f, Y + 3f),
+                    Size      = new Vector2(ContentW - 38f, 18f),
+                    TextColor = White,
+                    FontSize  = 14,
+                };
+                name.AttachNode(Host);
+                _rows.Add(name);
+
+                Y += 28f;
+            }
+        }
+
+        FinishLayout();
     }
 }

@@ -13,12 +13,14 @@ internal static class SellPrices
 
     private static readonly TimeSpan Window = TimeSpan.FromDays(30);
 
-    /// <summary>Prices of one small group of items. Null when Universalis could not be reached.</summary>
-    public static async Task<Dictionary<uint, (long Nq, long Hq)>?> FetchChunkAsync(IReadOnlyCollection<uint> ids)
+    /// <summary>The home world, read on the game thread before any request goes out (null when no character is logged in).</summary>
+    public static string? HomeWorld() => Svc.PlayerState.IsLoaded ? Svc.PlayerState.HomeWorld.Value.Name.ExtractText() : null;
+
+    /// <summary>Prices of one small group of items on <paramref name="world"/>. Null when Universalis could not be reached.</summary>
+    public static async Task<Dictionary<uint, (long Nq, long Hq)>?> FetchChunkAsync(string world, IReadOnlyCollection<uint> ids)
     {
         try
         {
-            var world = Svc.PlayerState.HomeWorld.Value.Name.ExtractText();
             var sales = await UniversalisService.GetRecentSalesAsync(world, ids, Window, CancellationToken.None).ConfigureAwait(false);
 
             var cutoff = DateTime.UtcNow - Window;
@@ -34,11 +36,11 @@ internal static class SellPrices
     }
 
     /// <summary>Prices of every item, group after group. Items whose group failed are left out.</summary>
-    public static async Task<Dictionary<uint, (long Nq, long Hq)>?> FetchAsync(uint[] ids)
+    public static async Task<Dictionary<uint, (long Nq, long Hq)>?> FetchAsync(string world, uint[] ids)
     {
         var prices = new Dictionary<uint, (long, long)>();
         foreach (var chunk in ids.Chunk(ChunkSize))
-            if (await FetchChunkAsync(chunk).ConfigureAwait(false) is { } found)
+            if (await FetchChunkAsync(world, chunk).ConfigureAwait(false) is { } found)
                 foreach (var (id, price) in found) prices[id] = price;
 
         return prices;
@@ -48,14 +50,14 @@ internal static class SellPrices
     /// Fetches the groups one after another in the background, reporting each price as it arrives, so a long list
     /// fills in gradually. Stops when <paramref name="keepGoing"/> turns false or Universalis cannot be reached.
     /// </summary>
-    public static Task StreamAsync(List<uint[]> batches, Func<bool> keepGoing, Action<uint, (long Nq, long Hq)> report)
+    public static Task StreamAsync(string world, List<uint[]> batches, Func<bool> keepGoing, Action<uint, (long Nq, long Hq)> report)
         => Task.Run(async () =>
         {
             foreach (var batch in batches)
             {
                 if (!keepGoing()) return;
 
-                var found = await FetchChunkAsync(batch).ConfigureAwait(false);
+                var found = await FetchChunkAsync(world, batch).ConfigureAwait(false);
                 if (found is null) return; // offline or overloaded: the next window open tries again
 
                 foreach (var id in batch) report(id, found.GetValueOrDefault(id));

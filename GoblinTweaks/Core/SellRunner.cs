@@ -25,7 +25,8 @@ internal sealed class RetainerJob(int row, ulong retainerId)
 /// retainers it visited. Items inside a retainer must be sold by that retainer; items from the bags or armoury
 /// chest go to whichever retainers still have room (20 listings each). Each listing is priced just under the
 /// cheapest other seller, or with the Universalis normal price when nobody else sells the item. Every step waits
-/// for its window and the whole run stops on a timeout, leaving the game's windows closed.
+/// for its window and the whole run stops on a timeout, leaving the game's windows closed. A cheapest listing far
+/// below the normal price (a bait listing) is not followed: that stack is left out instead.
 /// </summary>
 internal sealed unsafe class SellRunner
 {
@@ -61,6 +62,7 @@ internal sealed unsafe class SellRunner
     private readonly AutoPincher         _pincher;
     private readonly Func<PinchRules>    _rules;
     private readonly Action<string>      _say;
+    private readonly Func<ulong, bool>   _excluded;
 
     private Step      _step = Step.Idle;
     private DateTime  _deadline;
@@ -87,17 +89,20 @@ internal sealed unsafe class SellRunner
     private DateTime _verifyUntil;
 
     private int _listed, _skipped, _unplaced, _visited;
+    private long _listedGil;
     private readonly List<string> _problems = [];
 
     // Universalis normal prices (world, then data center), fetched once before the run: itemId -> (nq, hq).
     private Task<Dictionary<uint, (long Nq, long Hq)>?>? _prefetch;
     private Dictionary<uint, (long Nq, long Hq)> _fallback = [];
 
-    public SellRunner(AutoPincher pincher, Func<PinchRules> rules, Action<string> say)
+    /// <param name="excluded">Retainers left out of the reprice after listing (chosen in the settings).</param>
+    public SellRunner(AutoPincher pincher, Func<PinchRules> rules, Action<string> say, Func<ulong, bool> excluded)
     {
-        _pincher = pincher;
-        _rules   = rules;
-        _say     = say;
+        _pincher  = pincher;
+        _rules    = rules;
+        _say      = say;
+        _excluded = excluded;
         _pincher.Ended += () => _pincherEnded = true;
     }
 
@@ -115,6 +120,7 @@ internal sealed unsafe class SellRunner
 
         if (!AddonCallback.Ready(ListAddon, out _)) { _say("noList"); return false; }
         if (tasks.Count == 0)                       { _say("noSelection"); return false; }
+        if (SellPrices.HomeWorld() is not { } world) return false;
 
         var retMgr = RetainerManager.Instance();
         if (retMgr == null) return false;
@@ -129,7 +135,7 @@ internal sealed unsafe class SellRunner
             if (ret == null || !ret->Available) continue;
 
             free[ret->RetainerId] = Math.Max(0, MaxListings - ret->MarketItemCount);
-            var job = new RetainerJob((int)i, ret->RetainerId) { Pinch = pinchAfterwards && ret->MarketItemCount > 0 };
+            var job = new RetainerJob((int)i, ret->RetainerId) { Pinch = pinchAfterwards && ret->MarketItemCount > 0 && !_excluded(ret->RetainerId) };
             jobs[ret->RetainerId] = job;
             order.Add(job);
         }
@@ -162,12 +168,13 @@ internal sealed unsafe class SellRunner
         }
 
         _listed = _skipped = _visited = 0;
+        _listedGil = 0;
         _problems.Clear();
         _fallback = [];
 
-        // Ask Universalis for the fallback prices while the first retainer is being opened.
+        // Ask Universalis for the normal prices (fallback and bait check) while the first retainer is being opened.
         var ids = _jobs.SelectMany(j => j.OwnItems.Concat(j.BagItems)).Select(t => t.ItemId).Distinct().ToArray();
-        _prefetch = SellPrices.FetchAsync(ids);
+        _prefetch = SellPrices.FetchAsync(world, ids);
 
         Enter(Step.Prefetch, TimeSpan.FromSeconds(120));
         return true;
@@ -189,14 +196,14 @@ internal sealed unsafe class SellRunner
         if (AddonCallback.Ready(PriceAddon, out var price)) AddonCallback.Fire(price, PriceCancel);
 
         _step = Step.Idle;
-        _say($"sellstop|{_listed}|{_skipped}|{_unplaced}|{reason}");
+        _say($"sellstop|{_listed}|{_skipped}|{_unplaced}|{reason}|{_listedGil}");
         foreach (var problem in _problems) _say($"problem|{problem}");
     }
 
     private void Finish()
     {
         _step = Step.Idle;
-        _say($"sellDone|{_listed}|{_skipped}|{_unplaced}");
+        _say($"sellDone|{_listed}|{_skipped}|{_unplaced}|{_listedGil}");
         foreach (var problem in _problems) _say($"problem|{problem}");
     }
 
@@ -342,7 +349,7 @@ internal sealed unsafe class SellRunner
                 var proxy = InfoProxyItemSearch.Instance();
                 if (proxy == null || !_watch.IsFresh(proxy, _task!.ItemId)) return;
 
-                var newPrice = ChoosePrice(proxy, _task);
+                var (newPrice, problem) = ChoosePrice(proxy, _task);
                 results->Close(true);
                 if (!AddonCallback.Ready(PriceAddon, out price)) { Stop("closed"); return; }
 
@@ -358,7 +365,7 @@ internal sealed unsafe class SellRunner
                 {
                     AddonCallback.Fire(price, PriceCancel);
                     _skipped++;
-                    _problems.Add($"{_task.Name}|NoPrice");
+                    _problems.Add($"{_task.Name}|{problem ?? "NoPrice"}");
                     _confirmed = false;
                 }
 
@@ -380,7 +387,8 @@ internal sealed unsafe class SellRunner
                     if (DateTime.UtcNow - _verifySeen < TimeSpan.FromSeconds(2)) return;
 
                     _listed++;
-                    _say($"listedOne|{_task!.Name}|{_task.Quantity}|{_pricePaid}");
+                    _listedGil += (long)_pricePaid * Math.Max(1, _task!.Quantity);
+                    _say($"listedOne|{_task.Name}|{_task.Quantity}|{_pricePaid}");
                     Enter(Step.NextItem);
                 }
                 else if (_verifySeen != DateTime.MinValue)
@@ -519,27 +527,32 @@ internal sealed unsafe class SellRunner
 
     /// <summary>
     /// Just under the cheapest other seller; the same price when the cheapest is one of our own retainers (never
-    /// undercut ourselves); the Universalis normal price when nobody else sells it. Null when there is no reference.
+    /// undercut ourselves); the Universalis normal price when nobody else sells it. No price (and why) when there is
+    /// no reference, or when the cheapest listing is so far below the normal price that it looks like bait: the same
+    /// "largest price cut" that protects repricing protects a new listing.
     /// </summary>
-    private int? ChoosePrice(InfoProxyItemSearch* proxy, ListingTask task)
+    private (int? Price, string? Problem) ChoosePrice(InfoProxyItemSearch* proxy, ListingTask task)
     {
         var rules = _rules();
         var floor = Math.Max(1, rules.MinPrice);
 
+        // Only sales of the same quality count.
+        var normal = _fallback.TryGetValue(task.ItemId, out var prices) ? (task.Hq ? prices.Hq : prices.Nq) : 0;
+
         var lowest = AutoPincher.LowestListing(proxy, task.ItemId, task.Hq, out var own);
         if (lowest is { } l)
         {
-            var target = own ? (long)l : l - Math.Max(0, rules.UndercutAmount);
-            return (int)Math.Clamp(target, floor, int.MaxValue);
+            var target = own ? (long)l : l - rules.Undercut(l);
+
+            if (normal > 0 && rules.MaxUndercutPercent < 100 && target < normal * (100 - rules.MaxUndercutPercent) / 100)
+                return (null, "Bait");
+
+            return ((int)Math.Clamp(target, floor, int.MaxValue), null);
         }
 
-        if (_fallback.TryGetValue(task.ItemId, out var normal))
-        {
-            var price = task.Hq ? normal.Hq : normal.Nq; // only sales of the same quality count
-            if (price > 0) return (int)Math.Clamp(price, floor, int.MaxValue);
-        }
+        if (normal > 0) return ((int)Math.Clamp(normal, floor, int.MaxValue), null);
 
-        return null;
+        return (null, "NoPrice");
     }
 
     /// <summary>Gives up on the current stack (closing anything it opened) and carries on with the next one.</summary>

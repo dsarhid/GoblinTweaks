@@ -425,12 +425,15 @@ internal sealed unsafe class RetainerSellAddon : NativeAddon
 
         if (_priceWorker is { IsCompleted: false } || _priceQueue.Count == 0) return;
 
+        // Read on the game thread: the worker runs in the background.
+        if (SellPrices.HomeWorld() is not { } world) return;
+
         var generation = _priceGeneration;
         var batches    = new List<uint[]>();
         while (_priceQueue.Count > 0)
             batches.Add(Enumerable.Range(0, Math.Min(SellPrices.ChunkSize, _priceQueue.Count)).Select(_ => _priceQueue.Dequeue()).ToArray());
 
-        _priceWorker = SellPrices.StreamAsync(batches, () => generation == _priceGeneration, (id, price) => _priceArrived.Enqueue((id, price)));
+        _priceWorker = SellPrices.StreamAsync(world, batches, () => generation == _priceGeneration, (id, price) => _priceArrived.Enqueue((id, price)));
     }
 
     /// <summary>Takes the prices that arrived since the last frame and redraws.</summary>
