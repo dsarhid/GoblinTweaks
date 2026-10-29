@@ -1,6 +1,7 @@
 using GoblinTweaks.Localization;
 using System.Globalization;
 using System.Numerics;
+using System.Reflection;
 using System.Text.Json.Serialization;
 using Dalamud.Game.Command;
 using Dalamud.Game.Gui.FlyText;
@@ -340,6 +341,9 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         /// <summary>Actions whose cooldown is not announced.</summary>
         public List<uint> CooldownsOff { get; set; } = [];
 
+        /// <summary>For an action with charges, announce each charge that comes back, not only when all of them are.</summary>
+        public bool CooldownEachCharge { get; set; }
+
         // Populate: values missing from a saved file keep the defaults given here, instead of the bare ones of the class.
         [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)]
         public HighlightOptions Critical { get; set; } = DefaultHighlight(BattleTextHighlight.Critical);
@@ -434,6 +438,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     // Cooldown alerts: the announced actions of the current job, and the ones cooling down right now.
     private readonly List<uint> _watched = [];
     private readonly HashSet<uint> _coolingDown = [];
+    private readonly Dictionary<uint, uint> _charges = [];
     private (uint Job, int Level) _watchedFor;
     private DateTime _nextCooldownPoll = DateTime.MinValue;
     private DateTime _cooldownsSettle = DateTime.MinValue;
@@ -499,15 +504,52 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         var store = base.Settings;
         if (!store.Characters.TryGetValue(_characterId, out var options))
         {
-            // As Options, so the copy does not carry the characters along. With fields, as the settings are
-            // saved: the parts of a color are fields, and without them every color would come out empty.
-            options = System.Text.Json.JsonSerializer.Deserialize<Options>(
-                System.Text.Json.JsonSerializer.Serialize<Options>(store, CopyOptions), CopyOptions) ?? new Options();
+            options = CopyOf(store);
             store.Characters[_characterId] = options;
             Changed();
         }
 
         _character = options;
+    }
+
+    /// <summary>
+    /// A deep copy of a set of options. As Options, so a copy of the store does not carry the characters along. With
+    /// fields, as the settings are saved: the parts of a color are fields, and without them every color would come out empty.
+    /// </summary>
+    private static Options CopyOf(Options options)
+        => System.Text.Json.JsonSerializer.Deserialize<Options>(
+               System.Text.Json.JsonSerializer.Serialize<Options>(options, CopyOptions), CopyOptions) ?? new Options();
+
+    /// <summary>How many other characters have options of their own.</summary>
+    internal int OtherCharacters => base.Settings.Characters.Keys.Count(id => id != _characterId);
+
+    /// <summary>
+    /// Gives every other character a copy of the options of the one logged in, and makes them the ones a new character
+    /// starts with. Says in the chat how many it reached.
+    /// </summary>
+    internal void UseOnAllCharacters()
+    {
+        if (_character is null)
+        {
+            Svc.Chat.Print(T("Chat.NoCharacter"), Name);
+            return;
+        }
+
+        var store = base.Settings;
+        var others = store.Characters.Keys.Where(id => id != _characterId).ToList();
+        foreach (var id in others)
+            store.Characters[id] = CopyOf(_character);
+
+        // What a new character starts from: the options of the store itself, all but the list of characters.
+        var template = CopyOf(_character);
+        const BindingFlags Public = BindingFlags.Public | BindingFlags.Instance;
+        foreach (var property in typeof(Options).GetProperties(Public).Where(p => p.CanRead && p.CanWrite && p.DeclaringType == typeof(Options)))
+            property.SetValue(store, property.GetValue(template));
+        foreach (var field in typeof(Options).GetFields(Public).Where(f => f.DeclaringType == typeof(Options)))
+            field.SetValue(store, field.GetValue(template));
+
+        Changed();
+        Svc.Chat.Print(string.Format(T("Chat.UsedOnAll"), others.Count), Name);
     }
 
     /// <summary>While true, sample messages are shown so the areas can be positioned.</summary>
@@ -648,6 +690,23 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
     private ShieldDisplay? _shield;
     private int _limitBreakLevel = -1;
+    private TextHelpAddon? _help;
+
+    private static readonly string[] HelpTopics = ["Overview", "General", "Areas", "Events", "Highlights", "Cooldowns", "Positionals", "OverTime", "Rules"];
+
+    /// <summary>Opens the help, or closes it if it is open. It belongs to the tweak, so it is closed with it.</summary>
+    internal void OpenHelp()
+    {
+        _help ??= new TextHelpAddon
+        {
+            InternalName    = "GtkBattleTextHelp",
+            Title           = T("Help.Title"),
+            Size            = new Vector2(860f, 700f),
+            RespectCloseAll = false,
+            Pages           = [.. HelpTopics.Select(topic => (T($"Help.{topic}.Title"), T($"Help.{topic}.Text")))],
+        };
+        _help.Toggle();
+    }
 
     protected internal override void Enable()
     {
@@ -736,6 +795,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
         _addon?.Dispose();
         _addon = null;
+        _help?.Dispose();
+        _help = null;
         Preview = false;
 
         // A handle stops listening to the mouse before it goes.
@@ -757,7 +818,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
     public override IReadOnlyList<TweakButton> Buttons => [new(Loc.Get("Window.Settings"), TMain("Open.Help"), () => _addon?.Toggle())];
 
-    public override TweakButton? HelpButton => new(Loc.Get("Window.Help"), null, () => _addon?.OpenHelp());
+    public override TweakButton? HelpButton => new(Loc.Get("Window.Help"), null, OpenHelp);
 
     private BattleTextAddon NewAddon() => new()
     {
@@ -770,7 +831,18 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
     protected override void OnLanguageChanged()
     {
-        if (State == TweakState.Enabled) Rebuild(ref _addon, NewAddon);
+        if (State != TweakState.Enabled) return;
+
+        Rebuild(ref _addon, NewAddon);
+
+        // The handles of the areas carry their names.
+        foreach (var area in Enum.GetValues<BattleTextArea>())
+            _handles[(int)area]?.Label = T($"AreaName.{area}");
+
+        var helpWasOpen = _help is { IsOpen: true };
+        _help?.Dispose();
+        _help = null;
+        if (helpWasOpen) Svc.Framework.RunOnTick(OpenHelp, delayTicks: 6);
     }
 
     protected override IReadOnlyList<string> CommandNames => ["/gbt", "/goblinbattletext"];
@@ -880,6 +952,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                 Refill(Settings.CooldownOrder, defaults.CooldownOrder);
                 Refill(Settings.CooldownHidden, defaults.CooldownHidden);
                 Settings.CooldownsOff.Clear();
+                Settings.CooldownEachCharge = defaults.CooldownEachCharge;
                 _watchedFor = default; // rebuild the list of announced cooldowns
                 break;
         }
@@ -2109,9 +2182,12 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         // NPC that is not told apart yet.
         if (owned && other->SubKind is not ((byte)BattleNpcSubKind.Pet or (byte)BattleNpcSubKind.Buddy or (byte)BattleNpcSubKind.RaceChocobo))
         {
-            var key = $"{other->SubKind}:{((Character*)other)->NameString}";
-            if (_ownedKindsLogged.Add(key))
-                Svc.Log.Information($"GoblinBattleText: an object of yours that is not a pet: {((Character*)other)->NameString}, kind {other->SubKind} ({(BattleNpcSubKind)other->SubKind}).");
+            if (DebugLogging)
+            {
+                var key = $"{other->SubKind}:{((Character*)other)->NameString}";
+                if (_ownedKindsLogged.Add(key))
+                    Svc.Log.Debug($"GoblinBattleText: an object of yours that is not a pet: {((Character*)other)->NameString}, kind {other->SubKind} ({(BattleNpcSubKind)other->SubKind}).");
+            }
         }
 
         return Settings.IncludePets && owned;
@@ -2162,8 +2238,13 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     /// them. Once for each different set, so a long fight does not fill the log. It names nothing in the game: it is to see
     /// which status the tick belongs to, if any.
     /// </summary>
+    /// <summary>Whether the debug lines of the log are kept: the diagnostics below build nothing otherwise, as they run in combat.</summary>
+    private static bool DebugLogging => Svc.Log.MinimumLogLevel <= Serilog.Events.LogEventLevel.Debug;
+
     private void LogUnnamedHealTick(GameObject* player, (uint StatusId, uint SourceId)? ticking)
     {
+        if (!DebugLogging) return;
+
         var statuses = ((BattleChara*)player)->GetStatusManager();
         if (statuses == null) return;
 
@@ -2181,12 +2262,14 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         var told = ticking is { } t ? $"the tick says status {t.StatusId}, source {t.SourceId:X}" : "the tick says nothing";
         var list = string.Join("; ", parts);
         if (FirstTime(list))
-            Svc.Log.Information($"GoblinBattleText: healing over time on you with no name; {told}. Statuses on you: {list}.");
+            Svc.Log.Debug($"GoblinBattleText: healing over time on you with no name; {told}. Statuses on you: {list}.");
     }
 
     /// <summary>The same for a damage tick on an enemy: its statuses, with ids, names and who put them. Once for each different set.</summary>
     private void LogUnnamedTick(GameObject* target, (uint StatusId, uint SourceId)? ticking)
     {
+        if (!DebugLogging) return;
+
         var statuses = ((BattleChara*)target)->GetStatusManager();
         if (statuses == null) return;
 
@@ -2204,11 +2287,13 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         var told = ticking is { } t ? $"the tick says status {t.StatusId}, source {t.SourceId:X}" : "the tick says nothing";
         var list = string.Join("; ", parts);
         if (FirstTime("dot:" + list))
-            Svc.Log.Information($"GoblinBattleText: damage over time with no name on {((Character*)target)->NameString}; {told}. Statuses on it: {list}.");
+            Svc.Log.Debug($"GoblinBattleText: damage over time with no name on {((Character*)target)->NameString}; {told}. Statuses on it: {list}.");
     }
 
     private void LogHealTickOnOther(GameObject* target, (uint StatusId, uint SourceId)? ticking, (string? Name, uint IconId, int Mine, int Total) over)
     {
+        if (!DebugLogging) return;
+
         var statuses = ((BattleChara*)target)->GetStatusManager();
         if (statuses == null) return;
 
@@ -2226,7 +2311,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         var told = ticking is { } t ? $"status {t.StatusId}, source {t.SourceId:X}" : "nothing";
         var list = string.Join("; ", parts);
         if (FirstTime("other:" + told + list))
-            Svc.Log.Information($"GoblinBattleText: healing tick shown on {((Character*)target)->NameString}; the tick says {told}; yours {over.Mine} of {over.Total}; you are {((GameObject*)Control.GetLocalPlayer())->EntityId:X}. Statuses on them: {list}.");
+            Svc.Log.Debug($"GoblinBattleText: healing tick shown on {((Character*)target)->NameString}; the tick says {told}; yours {over.Mine} of {over.Total}; you are {((GameObject*)Control.GetLocalPlayer())->EntityId:X}. Statuses on them: {list}.");
     }
 
     private (string? Name, uint IconId) LookupStatus(uint statusId)
@@ -2324,6 +2409,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         if (DateTime.UtcNow < _cooldownsSettle)
         {
             _coolingDown.Clear();
+            _charges.Clear();
             return;
         }
 
@@ -2340,10 +2426,23 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             _watched.Clear();
             _watched.AddRange(CooldownActions().Select(action => action.Id).Where(id => !Settings.CooldownsOff.Contains(id)));
             _coolingDown.IntersectWith(_watched);
+            _charges.Clear();
         }
 
         foreach (var actionId in _watched)
         {
+            // An action with charges, with the option on: each charge that comes back is told, with how many there are.
+            var max = Settings.CooldownEachCharge ? (uint)Math.Max(0, (int)ActionManager.GetMaxCharges(actionId, 0)) : 0u;
+            if (max > 1)
+            {
+                var charges = manager->GetCurrentCharges(actionId);
+                if (_charges.TryGetValue(actionId, out var before) && charges > before)
+                    Queue(BattleTextEvent.Cooldown, CooldownMessage(LookupAction(actionId), charges, max));
+                _charges[actionId] = charges;
+                _coolingDown.Remove(actionId);
+                continue;
+            }
+
             if (manager->IsRecastTimerActive(ActionType.Action, actionId))
                 _coolingDown.Add(actionId);
             else if (_coolingDown.Remove(actionId))
@@ -2351,8 +2450,11 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         }
     }
 
-    /// <summary>"Icon, NAME ready now!" by default, with the name in its own color and the look chosen for the alert.</summary>
-    private BattleTextMessage CooldownMessage((string? Name, uint IconId) action)
+    /// <summary>
+    /// "Icon, NAME ready now!" by default, with the name in its own color and the look chosen for the alert. For a charge
+    /// that came back, "NAME charge ready (2/3)!".
+    /// </summary>
+    private BattleTextMessage CooldownMessage((string? Name, uint IconId) action, uint charges = 0, uint maxCharges = 0)
     {
         var highlight = Settings.CooldownReady;
         return new BattleTextMessage
@@ -2361,7 +2463,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             NameColor  = Settings.Colors.Cooldown,
             Order      = Settings.CooldownOrder,
             Hidden     = Settings.CooldownHidden,
-            Label      = T("Cooldown.Ready"),
+            Label      = maxCharges > 1 ? string.Format(T("Cooldown.ChargeReady"), charges, maxCharges) : T("Cooldown.Ready"),
             IconId     = action.IconId,
             Color      = highlight.Enabled ? highlight.Color : DefaultColors.CooldownText,
             Look       = highlight.Enabled ? new BattleTextLook(highlight.Font, highlight.FontSize, highlight.Animation, highlight.Intensity) : null,
@@ -2672,11 +2774,14 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
             if (_overlay is null) return;
 
-            // Another character, or none: everything is set up again with its options.
+            // Another character, or none: everything is set up again with its options. The settings window, if it was
+            // open, opens again on the new character's options.
             if (CurrentCharacter != _characterId)
             {
+                var settingsOpen = _addon is { IsOpen: true };
                 Disable();
                 Enable();
+                if (settingsOpen) Svc.Framework.RunOnTick(() => _addon?.Open(), delayTicks: 6);
                 return;
             }
 

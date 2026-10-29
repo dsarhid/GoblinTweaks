@@ -31,8 +31,6 @@ internal unsafe class BattleTextAddon : NativeAddon
     private const float DefaultsW = 100f;   // the hold button of the game has this width
     private const uint  TextSize  = 14;
 
-    private static readonly string[] HelpTopics = ["Overview", "General", "Areas", "Events", "Highlights", "Cooldowns", "Positionals", "OverTime", "Rules"];
-
     /// <summary>
     /// One "order of the parts" row: the parts, which of them are hidden, which of them apply, and
     /// the chips showing them. A part that does not apply has no chip.
@@ -57,7 +55,6 @@ internal unsafe class BattleTextAddon : NativeAddon
 
     // Drop-downs are attached last, bottom one first, so an open list draws over the rows below it.
     private readonly List<(NodeBase Node, ResNode Parent)> _dropDowns = [];
-    private TextHelpAddon? _helpAddon;
     private Page? _page;
 
     // A part of the page being built that is shown or hidden as one; null to build on the page itself.
@@ -140,9 +137,6 @@ internal unsafe class BattleTextAddon : NativeAddon
         _areaOrder  = null;
         _areaSwitch = null;
 
-        _helpAddon?.Dispose();
-        _helpAddon = null;
-
         base.OnFinalize(addon);
     }
 
@@ -191,7 +185,7 @@ internal unsafe class BattleTextAddon : NativeAddon
             Size        = new Vector2(24f, 24f),
             TextTooltip = Tweak.Text("Help.Title"),
         };
-        help.OnClick = OpenHelp;
+        help.OnClick = Tweak.OpenHelp;
         help.AttachNode(this);
 
         new TextNode
@@ -226,18 +220,6 @@ internal unsafe class BattleTextAddon : NativeAddon
         Tweak.ResetTab((GoblinBattleText.BattleTextTab)_selected, _area);
         foreach (var refresh in _pages[_selected].Refresh)
             refresh();
-    }
-
-    internal void OpenHelp()
-    {
-        _helpAddon ??= new TextHelpAddon
-        {
-            InternalName = "GtkBattleTextHelp",
-            Title        = Tweak.Text("Help.Title"),
-            Size         = new Vector2(860f, 700f),
-            Pages        = [.. HelpTopics.Select(topic => (Tweak.Text($"Help.{topic}.Title"), Tweak.Text($"Help.{topic}.Text")))],
-        };
-        _helpAddon.Toggle();
     }
 
     // ── Pages ───────────────────────────────────────────────────────────────────
@@ -313,6 +295,18 @@ internal unsafe class BattleTextAddon : NativeAddon
         _y += RowH;
 
         AddColorCell(0, "Color.Outline", () => colors.Outline, GoblinBattleText.DefaultColors.Outline, value => colors.Outline = value);
+
+        // Next to the last color, where the page has room: held down, as it replaces the options of the other characters.
+        var useOnAll = new HoldButtonNode
+        {
+            String           = Tweak.Text("Characters.UseOnAll"),
+            Position         = new Vector2(_width - DefaultsW * 2.2f - 8f, _y),
+            Size             = new Vector2(DefaultsW * 2.2f, 36f),
+            TextTooltip      = string.Format(Tweak.Text("Characters.UseOnAll.Help"), Tweak.OtherCharacters),
+            UnlockAfterClick = true,
+        };
+        useOnAll.OnClick = Tweak.UseOnAllCharacters;
+        useOnAll.AttachNode(Target);
         _y += RowH;
     }
 
@@ -604,6 +598,9 @@ internal unsafe class BattleTextAddon : NativeAddon
         AddHighlightBlock(GoblinBattleText.BattleTextHighlight.CooldownReady, () =>
             AddColorAt(new Vector2(half + 10f, _y + 4f), half - 22f, "Color.Cooldown",
                 () => colors.Cooldown, GoblinBattleText.DefaultColors.Cooldown, value => colors.Cooldown = value));
+
+        AddCheckCell(0, "CooldownEachCharge", () => options.CooldownEachCharge, value => options.CooldownEachCharge = value);
+        _y += RowH;
 
         AddHeader("CooldownOrder");
         AddOrderList(new OrderList
