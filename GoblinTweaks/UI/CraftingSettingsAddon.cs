@@ -3,21 +3,18 @@ using GoblinTweaks.Tweaks;
 
 namespace GoblinTweaks.UI;
 
-/// <summary>Native settings window of the Crafting Materials tweak: language of the names and which inventories to count.</summary>
+/// <summary>Native settings window of the Crafting Materials tweak: language of its windows, which inventories to count and when a recipe is "almost" craftable.</summary>
 internal sealed class CraftingSettingsAddon : SettingsPanelAddon
 {
     public CraftingMaterials? Tweak { get; init; }
 
-    protected override float HeaderHeight => 86f;
+    protected override float HeaderHeight => 40f;
 
     protected override void BuildHeader(Vector2 origin, float width)
     {
         if (Tweak is null) return;
-        var options = Tweak.Current;
 
-        LanguageSelect(origin, width, Tweak.Text("Language"), Tweak.Text("Language.Help"), Tweak.LanguageChoices,
-            () => options.DataLanguage,
-            code => { options.DataLanguage = code; Tweak.SaveCurrent(); Tweak.RefreshSettingsWindow(); });
+        TweakLanguageSelect.Add(this, Tweak, origin + new Vector2(width - TweakLanguageSelect.Width - Pad, 6f));
     }
 
     protected override void Build()
@@ -35,5 +32,11 @@ internal sealed class CraftingSettingsAddon : SettingsPanelAddon
             on => { options.IncludeFCChest = on; Tweak.SaveCurrent(); });
         Toggle(Tweak.Text("Highlight"), Tweak.Text("Highlight.Help"), options.Highlight,
             on => { options.Highlight = on; Tweak.SaveCurrent(); });
+
+        Section(Tweak.Text("Status"));
+
+        Number(Tweak.Text("NearCompleteMissing"), Tweak.Text("NearCompleteMissing.Help"),
+            0, CraftingMaterials.MaxNearCompleteMissing, 1, options.NearCompleteMissing,
+            value => { options.NearCompleteMissing = value; Tweak.SaveCurrent(); });
     }
 }

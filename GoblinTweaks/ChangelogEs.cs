@@ -8,6 +8,20 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.2.8"] = (
+            "Crafting Materials lista solo recetas del crafting log, con lista de compras, crafteos posibles, costo y margen.",
+            [
+                "Change: Crafting Materials lista solo las recetas que cuentan para el crafting log (las de nivel y Special Recipes › Housing) — se fueron las maestras, las de sidequests, entregas y demás especiales, y ahora aparecen las del log con ingredientes intransferibles",
+                "New: lista de compras en Crafting Materials — desarma una receta en los materiales base de un crafteo, usando primero lo que ya tenés",
+                "New: Crafting Materials muestra cuántas veces podés craftear una receta, cuánto cuestan sus materiales en el market board y el margen",
+                "New: filtro \"Solo mi nivel\" en Crafting Materials; la ventana ahora recuerda sus filtros",
+                "New: Crafting Materials dice hace cuánto abriste por última vez cada retainer, la saddlebag y el baúl de la FC",
+                "New: Crafting Materials cuenta los cristales de tus retainers y del baúl de la FC, y cuántos materiales faltantes cuentan como \"Casi\" se elige en Ajustes",
+                "Fix: Crafting Materials guardaba los inventarios de todos tus personajes en un solo archivo, así que los alts se pisaban y el baúl de la FC de uno aparecía en otro — ahora cada personaje tiene el suyo",
+                "Fix: apagar una fuente de inventario en Crafting Materials borraba lo que tenía, y los retainers despedidos o renombrados seguían sumando",
+                "Fix: ordenar Crafting Materials por precio de mercado saturaba Universalis y hacía saltar la lista — ahora los precios cargan por tandas y la selección y el scroll quedan donde estaban",
+                "Change: Crafting Materials usa la elección de idioma que tienen todos los tweaks, los nombres de ítems siguen el idioma del cliente del juego y ya no llena el log de Dalamud",
+            ]),
         ["1.2.7"] = (
             "Goblin Battle Text ya no dibuja un signo raro delante de los montos estimados de daño y curación en el tiempo.",
             [

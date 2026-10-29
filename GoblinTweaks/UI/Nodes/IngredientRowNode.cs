@@ -13,7 +13,7 @@ namespace GoblinTweaks.UI.Nodes;
 /// </summary>
 internal readonly record struct IngredientRow(
     IngredientCheck Check, string PrimaryLocation,
-    IReadOnlyList<(string Location, int Total, int Hq)> AllLocations,
+    IReadOnlyList<(string Location, int Total, int Hq, DateTime Seen)> AllLocations,
     int Depth, bool Craftable, bool Expanded, int NodeId);
 
 /// <summary>
@@ -140,7 +140,7 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
             if (locs.Count > 1)
             {
                 locText     += " +";
-                TextTooltip = string.Join("\n", locs.Select(l => $"{l.Location}: {FormatQty(l.Total, l.Hq)}"));
+                TextTooltip = string.Join("\n", locs.Select(FormatLocation));
                 ItemTooltip = 0;
             }
             else
@@ -160,14 +160,14 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
                 // Primary location + "+" marker to indicate the item is spread across multiple inventories.
                 var primary = data.PrimaryLocation;
                 locText     = (string.IsNullOrEmpty(primary) ? CraftLoc.Get("loc.otherinv") : primary) + " +";
-                // Tooltip lists every source with quantity and HQ breakdown.
-                TextTooltip = string.Join("\n", locs.Select(l => $"{l.Location}: {FormatQty(l.Total, l.Hq)}"));
+                // Tooltip lists every source with quantity, HQ breakdown and how old that data is.
+                TextTooltip = string.Join("\n", locs.Select(FormatLocation));
                 ItemTooltip = 0;
             }
             else
             {
                 locText     = string.IsNullOrEmpty(data.PrimaryLocation) ? CraftLoc.Get("loc.otherinv") : data.PrimaryLocation;
-                TextTooltip = locs.Count == 1 ? $"{locs[0].Location}: {FormatQty(locs[0].Total, locs[0].Hq)}" : null;
+                TextTooltip = locs.Count == 1 ? FormatLocation(locs[0]) : null;
                 ItemTooltip = ing.ItemId;
             }
         }
@@ -179,6 +179,13 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
 
         // Re-run layout since the indent depends on the row's data.
         Layout();
+    }
+
+    // "Retainer - Bags: 5 (2 HQ)  ·  3 h ago" (the age only when that place was read a while ago)
+    private static string FormatLocation((string Location, int Total, int Hq, DateTime Seen) l)
+    {
+        var age = CraftLoc.Age(l.Seen);
+        return $"{l.Location}: {FormatQty(l.Total, l.Hq)}" + (age.Length > 0 ? $"  ·  {age}" : string.Empty);
     }
 
     // "5"  →  all NQ

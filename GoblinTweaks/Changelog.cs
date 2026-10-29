@@ -34,6 +34,20 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.2.8", "2026-10-28",
+            "Crafting Materials lists only crafting-log recipes, with a shopping list, crafts possible, material cost and margin.",
+            [
+                "Change: Crafting Materials lists only the recipes that count for the crafting log (level-based and Special Recipes › Housing) — master, sidequest, delivery and other special recipes are gone, and log recipes with untradable ingredients now show up",
+                "New: Crafting Materials shopping list — breaks a recipe down into the base materials of one craft, using what you already own first",
+                "New: Crafting Materials shows how many times you can craft a recipe, what its materials cost on the market board and the margin",
+                "New: Crafting Materials \"Only my level\" filter; the window now remembers its filters",
+                "New: Crafting Materials says how long ago each retainer, the saddlebag and the FC chest were last opened",
+                "New: Crafting Materials counts the crystals in your retainers and the FC chest, and how many missing materials count as \"Almost\" can be set in Settings",
+                "Fix: Crafting Materials kept every character's inventories in one file, so alts overwrote each other and one character's FC chest showed up on another — each character now has its own",
+                "Fix: turning off an inventory source in Crafting Materials erased what it held, and dismissed or renamed retainers stayed in the counts",
+                "Fix: sorting Crafting Materials by market price flooded Universalis and made the list jump — prices now load in batches and the selection and scroll stay put",
+                "Change: Crafting Materials uses the language choice every tweak has, item names follow the game client's language, and it no longer fills the Dalamud log",
+            ]),
         new("1.2.7", "2026-10-26",
             "Goblin Battle Text no longer draws a stray sign before the estimated amounts of damage and healing over time.",
             [

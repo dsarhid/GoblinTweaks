@@ -6,8 +6,6 @@ using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Game.Inventory.InventoryEventArgTypes;
 using Dalamud.Plugin.Services;
-using Dalamud.Interface;
-using Dalamud.Interface.Utility;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using GoblinTweaks.Core;
 using GoblinTweaks.Services;
@@ -21,6 +19,26 @@ namespace GoblinTweaks.Tweaks;
 // ── Data models ──────────────────────────────────────────────────────────────
 
 public enum InventorySource { Player, Saddlebag, Retainer, FreeCompany }
+
+/// <summary>What one retainer held when it was last opened.</summary>
+public sealed class RetainerData
+{
+    /// <summary>The retainer's id; 0 in data saved before retainers were told apart by id (they are matched by name then).</summary>
+    public ulong    Id;
+    public string   Name = string.Empty;
+    /// <summary>When its bags were last read (UTC); <see cref="DateTime.MinValue"/> if unknown.</summary>
+    public DateTime Seen;
+    public readonly Dictionary<uint, int> Items   = new();
+    public readonly Dictionary<uint, int> ItemsHQ = new();
+
+    public RetainerData Copy()
+    {
+        var copy = new RetainerData { Id = Id, Name = Name, Seen = Seen };
+        foreach (var (k, v) in Items)   copy.Items[k]   = v;
+        foreach (var (k, v) in ItemsHQ) copy.ItemsHQ[k] = v;
+        return copy;
+    }
+}
 
 /// <summary>Aggregated item quantities per inventory source, built by a single scan.</summary>
 public sealed class InventorySnapshot
@@ -42,11 +60,15 @@ public sealed class InventorySnapshot
     public readonly Dictionary<uint, int>                              RetainerHQ      = new(); // aggregate HQ
     public readonly Dictionary<uint, int>                              FCChest         = new();
     public readonly Dictionary<uint, int>                              FCChestHQ       = new();
-    /// <summary>Where each item sits in the FC chest, as 1-based (tab, slot) pairs.</summary>
+    /// <summary>Where each item sits in the FC chest, as 1-based (tab, slot) pairs. Tab 0 is the crystal page.</summary>
     public readonly Dictionary<uint, List<(int Tab, int Slot)>>        FCChestSlots    = new();
-    public readonly List<(string Name, Dictionary<uint, int> Items, Dictionary<uint, int> ItemsHQ)> RetainerDetails = [];
-    /// <summary>Raw contents per FC chest page (1-based), so pages can be kept or replaced one by one. The aggregates above derive from it.</summary>
+    public readonly List<RetainerData>                                 RetainerDetails = [];
+    /// <summary>Raw contents per FC chest page (1-based, 0 = crystals), so pages can be kept or replaced one by one. The aggregates above derive from it.</summary>
     public readonly Dictionary<int, List<(int Slot, uint Id, int Qty, bool Hq)>> FCChestPages = new();
+    /// <summary>When each FC chest page was last read (UTC).</summary>
+    public readonly Dictionary<int, DateTime>                          FCChestPageSeen = new();
+    /// <summary>When the saddlebag was last read (UTC); <see cref="DateTime.MinValue"/> if unknown.</summary>
+    public DateTime SaddlebagSeen;
 
     /// <summary>Rebuilds FCChest / FCChestHQ / FCChestSlots from FCChestPages.</summary>
     public void RebuildFCChest()
@@ -60,6 +82,51 @@ public sealed class InventorySnapshot
                 if (!FCChestSlots.TryGetValue(id, out var list)) FCChestSlots[id] = list = [];
                 list.Add((page, slot));
             }
+    }
+
+    /// <summary>
+    /// A copy holding only the sources that are counted. The saved snapshot keeps every source, so turning one off
+    /// in the settings hides it without forgetting what it holds.
+    /// </summary>
+    public InventorySnapshot Only(bool saddlebag, bool retainers, bool fcChest)
+    {
+        var view = new InventorySnapshot { PlayerName = PlayerName };
+        Copy(Player, view.Player);
+        Copy(PlayerHQ, view.PlayerHQ);
+
+        if (saddlebag)
+        {
+            view.HasSaddlebagData = HasSaddlebagData;
+            view.SaddlebagSeen    = SaddlebagSeen;
+            Copy(Saddlebag, view.Saddlebag);
+            Copy(SaddlebagHQ, view.SaddlebagHQ);
+        }
+
+        if (retainers)
+        {
+            view.HasRetainerData = HasRetainerData;
+            Copy(Retainer, view.Retainer);
+            Copy(RetainerHQ, view.RetainerHQ);
+            foreach (var retainer in RetainerDetails)
+                view.RetainerDetails.Add(retainer.Copy());
+        }
+
+        if (fcChest)
+        {
+            view.HasFCData = HasFCData;
+            Copy(FCChest, view.FCChest);
+            Copy(FCChestHQ, view.FCChestHQ);
+            foreach (var (k, v) in FCChestSlots) view.FCChestSlots[k] = [.. v];
+            foreach (var (k, v) in FCChestPages) view.FCChestPages[k] = [.. v];
+            foreach (var (k, v) in FCChestPageSeen) view.FCChestPageSeen[k] = v;
+        }
+
+        return view;
+
+        static void Copy(Dictionary<uint, int> from, Dictionary<uint, int> to)
+        {
+            foreach (var (k, v) in from) to[k] = v;
+        }
     }
 
     public int Get(uint itemId, InventorySource src) => src switch
@@ -86,42 +153,53 @@ public sealed class InventorySnapshot
         if (FCChest  .TryGetValue(itemId, out     q) && q > 0) yield return (InventorySource.FreeCompany, q);
     }
 
-    /// <summary>Returns human-readable location strings for tooltip display, including retainer names and HQ counts.</summary>
-    public IEnumerable<(string Location, int Total, int Hq)> Locations(uint itemId)
+    /// <summary>
+    /// Returns human-readable location strings for tooltip display, including retainer names and HQ counts, with when
+    /// that place was last read (<see cref="DateTime.MinValue"/> for the bags, which are always live, or when unknown).
+    /// </summary>
+    public IEnumerable<(string Location, int Total, int Hq, DateTime Seen)> Locations(uint itemId)
     {
         var q  = Player.GetValueOrDefault(itemId);
         var hq = PlayerHQ.GetValueOrDefault(itemId);
         if (q > 0)
-            yield return (string.IsNullOrEmpty(PlayerName) ? CraftLoc.Get("loc.yourbags") : CraftLoc.Fmt("loc.bagsof", PlayerName), q, hq);
+            yield return (string.IsNullOrEmpty(PlayerName) ? CraftLoc.Get("loc.yourbags") : CraftLoc.Fmt("loc.bagsof", PlayerName), q, hq, DateTime.MinValue);
 
         q  = Saddlebag.GetValueOrDefault(itemId);
         hq = SaddlebagHQ.GetValueOrDefault(itemId);
-        if (q > 0) yield return (CraftLoc.Get("loc.saddlebag"), q, hq);
+        if (q > 0) yield return (CraftLoc.Get("loc.saddlebag"), q, hq, SaddlebagSeen);
 
         if (RetainerDetails.Count > 0)
         {
-            foreach (var (name, items, itemsHQ) in RetainerDetails)
+            foreach (var retainer in RetainerDetails)
             {
-                q  = items.GetValueOrDefault(itemId);
-                hq = itemsHQ.GetValueOrDefault(itemId);
-                if (q > 0) yield return (CraftLoc.Fmt("loc.bagsof", name), q, hq);
+                q  = retainer.Items.GetValueOrDefault(itemId);
+                hq = retainer.ItemsHQ.GetValueOrDefault(itemId);
+                if (q > 0) yield return (CraftLoc.Fmt("loc.bagsof", retainer.Name), q, hq, retainer.Seen);
             }
         }
         else
         {
             q  = Retainer.GetValueOrDefault(itemId);
             hq = RetainerHQ.GetValueOrDefault(itemId);
-            if (q > 0) yield return (CraftLoc.Get("loc.retainers"), q, hq);
+            if (q > 0) yield return (CraftLoc.Get("loc.retainers"), q, hq, DateTime.MinValue);
         }
 
         q  = FCChest.GetValueOrDefault(itemId);
         hq = FCChestHQ.GetValueOrDefault(itemId);
         if (q > 0)
         {
+            // Crystals (tab 0) have no tab.slot position worth showing. The age is that of the oldest page holding the item.
             var where = string.Empty;
-            if (FCChestSlots.TryGetValue(itemId, out var slots) && slots.Count > 0)
-                where = " (" + string.Join(", ", slots.Take(4).Select(t => $"{t.Tab}.{t.Slot}")) + (slots.Count > 4 ? ", ..." : "") + ")";
-            yield return (CraftLoc.Get("loc.fcchest") + where, q, hq);
+            var seen  = DateTime.MinValue;
+            if (FCChestSlots.TryGetValue(itemId, out var all))
+            {
+                if (all.Where(t => t.Tab > 0).ToList() is { Count: > 0 } slots)
+                    where = " (" + string.Join(", ", slots.Take(4).Select(t => $"{t.Tab}.{t.Slot}")) + (slots.Count > 4 ? ", ..." : "") + ")";
+
+                var pages = all.Select(t => FCChestPageSeen.GetValueOrDefault(t.Tab)).Where(d => d > DateTime.MinValue).ToList();
+                if (pages.Count > 0) seen = pages.Min();
+            }
+            yield return (CraftLoc.Get("loc.fcchest") + where, q, hq, seen);
         }
     }
 }
@@ -160,16 +238,12 @@ public sealed class CraftableEntry
     public uint                  IconId;
     public ushort                ResultAmount;
     public string                CraftClass      = string.Empty;
+    /// <summary>CraftType row (0 Woodworking … 7 Cooking).</summary>
+    public uint                  CraftTypeId;
     public string                CategoryName    = string.Empty;
     public CraftStatus           Status;
     public int                   MissingCount;
     public bool                  IsCrafted;
-    /// <summary>
-    /// True for basic recipes and special-category housing recipes — these count toward
-    /// the in-game crafting log. False for master recipes (SecretRecipeBook) and other
-    /// special-category recipes (seasonal, event, etc.).
-    /// </summary>
-    public bool                  IsLogRecipe;
     public int                   ItemLevel;
     public int                   CraftLevel;   // recipe class-job level (1-100)
     public List<IngredientCheck> Ingredients     = [];
@@ -190,53 +264,43 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         public bool Highlight          { get; set; } = true;
         /// <summary>Max missing ingredient types before a recipe moves from NearComplete → NotReady.</summary>
         public int  NearCompleteMissing { get; set; } = 2;
-        /// <summary>Game-data language for item/recipe names ("" = follow GoblinTweaks). Independent of the UI language.</summary>
+        /// <summary>Old per-tweak window language. Only read to move it to the common language choice of the tweak.</summary>
         public string DataLanguage { get; set; } = string.Empty;
+
+        // What the window shows, remembered between sessions and when the window is rebuilt (language change).
+        /// <summary>Status view ("all", "ready", "near", "notReady") or category ("cat:&lt;name&gt;").</summary>
+        public string View           { get; set; } = "ready";
+        public string SortMode       { get; set; } = string.Empty;
+        public bool   SortDescending { get; set; }
+        /// <summary>Crafter class name ("" = all classes).</summary>
+        public string ClassFilter    { get; set; } = string.Empty;
+        public bool   HideCrafted    { get; set; }
+        /// <summary>Only recipes your crafter of that class has the level for.</summary>
+        public bool   OnlyMyLevel    { get; set; }
     }
 
-    // Language choices for the window's item/recipe names. "" follows the GoblinTweaks language.
-    private static readonly (string Code, string Label)[] DataLanguages =
-    [
-        ("",   ""),          // label resolved from Loc at draw time
-        ("en", "English"),
-        ("es", "Español"),
-    ];
+    public const int MaxNearCompleteMissing = 10;
 
     private CraftingMaterialsAddon?     _addon;
-    private UniversalisService?         _universalis;
-    private InventorySnapshot?          _cachedSnapshot;
-
     private CraftingSettingsAddon?      _settingsAddon;
+    private CraftingHelpAddon?          _helpAddon;
+    private UniversalisService?         _universalis;
     private readonly FCChestHighlighter _fcHighlighter = new();
     private readonly InventoryHighlighter _bagHighlighter = new();
 
     public UniversalisService      Universalis     => _universalis!;
-    /// <summary>Last known inventory snapshot, loaded from disk at startup and updated after each scan.</summary>
-    public InventorySnapshot?      CachedSnapshot  => _cachedSnapshot;
     public uint WorldId => Svc.PlayerState.IsLoaded ? Svc.PlayerState.HomeWorld.RowId : 0u;
 
-    /// <summary>Language code for the window's own UI strings ("" = follow GoblinTweaks).</summary>
-    public string WindowUiLang => string.IsNullOrEmpty(Settings.DataLanguage) ? Loc.CurrentLanguage : Settings.DataLanguage;
-
-    /// <summary>Game-data language used for item/recipe names in the window.</summary>
-    public ClientLanguage DataLanguage => WindowUiLang switch
-    {
-        _    => ClientLanguage.English, // "en", "es" and anything without game data
-    };
+    /// <summary>Game-data language for item and recipe names: the one the game client uses, so they read as in the game.</summary>
+    public static ClientLanguage DataLanguage => Svc.ClientState.ClientLanguage;
 
     protected internal override void Enable()
     {
-        _cachedSnapshot = LoadSnapshot();
+        MoveOldLanguageSetting();
+
         _universalis = new UniversalisService();
-        CraftLoc.Lang = WindowUiLang;
-        _addon = new CraftingMaterialsAddon
-        {
-            InternalName = "GtkCraftingMaterials",
-            Title        = CraftLoc.Get("title"),
-            Size         = new System.Numerics.Vector2(1180f, 740f),
-            Tweak        = this,
-            RespectCloseAll = false, // stay open when the game closes windows (chest, retainer, NPC talk)
-        };
+        CraftLoc.Lang = UiLanguage;
+        _addon = NewAddon();
 
         Svc.ContextMenu.OnMenuOpened += OnMenuOpened;
         Svc.GameInventory.InventoryChanged += OnInventoryChanged;
@@ -269,14 +333,50 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         _bagHighlighter.Source = null;
         _fcHighlighter.Stop();
         _fcHighlighter.Source = null;
+
+        _helpAddon?.Dispose();
+        _helpAddon = null;
         _settingsAddon?.Dispose();
         _settingsAddon = null;
-
         _addon?.Dispose();
         _addon = null;
+
         _universalis?.Dispose();
         _universalis = null;
     }
+
+    /// <summary>Earlier versions kept the window language in the options of this tweak; it now uses the language choice every tweak has.</summary>
+    private void MoveOldLanguageSetting()
+    {
+        if (Settings.DataLanguage.Length == 0) return;
+
+        if (Language.Length == 0) SetLanguage(Settings.DataLanguage);
+        Settings.DataLanguage = string.Empty;
+        SaveSettings();
+    }
+
+    protected override void OnLanguageChanged()
+    {
+        if (State != TweakState.Enabled) return;
+
+        CraftLoc.Lang = UiLanguage;
+        Rebuild(ref _addon, NewAddon);
+        Rebuild(ref _settingsAddon, NewSettingsAddon);
+
+        var helpWasOpen = _helpAddon is { IsOpen: true };
+        _helpAddon?.Dispose();
+        _helpAddon = null;
+        if (helpWasOpen) Svc.Framework.RunOnTick(OpenHelp, delayTicks: 6);
+    }
+
+    private CraftingMaterialsAddon NewAddon() => new()
+    {
+        InternalName    = "GtkCraftingMaterials",
+        Title           = CraftLoc.Get("title"),
+        Size            = new System.Numerics.Vector2(1180f, 740f),
+        Tweak           = this,
+        RespectCloseAll = false, // stay open when the game closes windows (chest, retainer, NPC talk)
+    };
 
     // Adds a "Crafting Materials" shortcut at the bottom of the inventory item right-click menu.
     // (The main-menu "Logs" popup is not a Dalamud-extensible context menu, so it can't be reached
@@ -298,7 +398,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         }
         catch (Exception ex)
         {
-            Svc.Log.Error(ex, "CraftingMaterials: OnMenuOpened failed");
+            ReportFailure(ex);
         }
     }
 
@@ -317,12 +417,19 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     {
         if (!_captureDirty || DateTime.UtcNow < _nextCapture) return;
 
-        var retMgr = RetainerManager.Instance();
-        if (retMgr == null || retMgr->GetActiveRetainer() == null) { _captureDirty = false; return; }
+        try
+        {
+            var retMgr = RetainerManager.Instance();
+            var active = retMgr == null ? null : retMgr->GetActiveRetainer();
+            if (active == null) { _captureDirty = false; return; }
 
-        _captureDirty = false;
-        _nextCapture  = DateTime.UtcNow.AddSeconds(2);
-        try   { ScanAndMerge(); }
+            // A retainer that was just opened may still show the previous one's pages: wait (keeping the flag) until they are its own.
+            if (!RetainerSettled(active->RetainerId)) return;
+
+            _captureDirty = false;
+            _nextCapture  = DateTime.UtcNow.AddSeconds(2);
+            ScanAndMerge();
+        }
         catch (Exception ex) { Svc.Log.Warning(ex, "CraftingMaterials: background capture failed"); }
     }
 
@@ -335,33 +442,70 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         _addon?.RequestRefresh();
 
     // ── Snapshot persistence ──────────────────────────────────────────────────
+    // One file per character, so alts don't overwrite each other's retainers, saddlebag and FC chest.
 
     private static readonly JsonSerializerOptions SnapshotJson = new() { WriteIndented = false };
 
-    private string SnapshotFilePath =>
+    private InventorySnapshot? _cachedSnapshot; // every source of the character below, as last saved
+    private ulong              _snapshotOwner;  // content id of the character the cached snapshot belongs to
+    private string?            _lastSavedJson;
+
+    private static string SnapshotFilePath(ulong contentId) =>
+        Path.Combine(Svc.PluginInterface.GetPluginConfigDirectory(), $"CraftingSnapshot_{contentId:X16}.json");
+
+    // Before there was one file per character there was a single one, for whoever played last.
+    private static string LegacySnapshotFilePath =>
         Path.Combine(Svc.PluginInterface.GetPluginConfigDirectory(), "CraftingSnapshot.json");
 
-    public void SaveSnapshot(InventorySnapshot snap)
+    /// <summary>Makes the cached snapshot the logged-in character's. False when no character is logged in.</summary>
+    private bool EnsureCharacter()
     {
+        var contentId = Svc.PlayerState.IsLoaded ? Svc.PlayerState.ContentId : 0UL;
+        if (contentId == 0) return false;
+        if (contentId == _snapshotOwner) return true;
+
+        _snapshotOwner  = contentId;
+        _cachedSnapshot = LoadSnapshot(contentId);
+        _lastSavedJson  = null;
+        _seenFCPages.Clear();
+        _activeRetainerId = 0;
+        return true;
+    }
+
+    private void SaveSnapshot(InventorySnapshot snap)
+    {
+        _cachedSnapshot = snap;
         try
         {
-            var path = SnapshotFilePath;
+            var json = JsonSerializer.Serialize(InventorySnapshotData.From(snap), SnapshotJson);
+            if (json == _lastSavedJson) return;
+
+            var path = SnapshotFilePath(_snapshotOwner);
             var tmp  = path + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(InventorySnapshotData.From(snap), SnapshotJson));
+            File.WriteAllText(tmp, json);
             File.Move(tmp, path, true);
-            _cachedSnapshot = snap;
+            _lastSavedJson = json;
         }
         catch (Exception ex) { Svc.Log.Warning(ex, "CraftingMaterials: could not save snapshot"); }
     }
 
-    private InventorySnapshot? LoadSnapshot()
+    private InventorySnapshot? LoadSnapshot(ulong contentId)
     {
         try
         {
-            var path = SnapshotFilePath;
-            if (!File.Exists(path)) return null;
-            var data = JsonSerializer.Deserialize<InventorySnapshotData>(File.ReadAllText(path), SnapshotJson);
-            return data?.ToSnapshot();
+            var path = SnapshotFilePath(contentId);
+            if (File.Exists(path))
+                return JsonSerializer.Deserialize<InventorySnapshotData>(File.ReadAllText(path), SnapshotJson)?.ToSnapshot();
+
+            // The old single file is taken over by the character it was saved for.
+            var legacy = LegacySnapshotFilePath;
+            if (!File.Exists(legacy)) return null;
+
+            var data = JsonSerializer.Deserialize<InventorySnapshotData>(File.ReadAllText(legacy), SnapshotJson);
+            if (data is null || data.PlayerName != Svc.PlayerState.CharacterName) return null;
+
+            File.Move(legacy, path, true);
+            return data.ToSnapshot();
         }
         catch (Exception ex)
         {
@@ -371,63 +515,108 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     }
 
     /// <summary>
-    /// Scans live inventories and merges persisted retainer/FC data when those sources
-    /// are not yet available in memory (not visited this session). Saves the result.
+    /// Scans live inventories and merges saved retainer / saddlebag / FC data for whatever is not in memory now
+    /// (not visited this session). Saves every source, and returns only the ones the settings count.
+    /// With no character logged in nothing is read or saved.
     /// </summary>
     public InventorySnapshot ScanAndMerge()
     {
+        if (!EnsureCharacter()) return new InventorySnapshot();
+
         var live = ScanInventories();
 
-        if (_cachedSnapshot != null)
+        if (_cachedSnapshot is { } saved)
         {
-            // Saved data of another character must not leak into this one.
-            var sameCharacter = _cachedSnapshot.PlayerName == live.PlayerName;
-
-            // Only one retainer is live at a time, so merge per retainer: live ones win, the rest come from the saved copy.
-            if (Settings.IncludeRetainers && sameCharacter && _cachedSnapshot.HasRetainerData)
+            // Only one retainer is live at a time, so merge per retainer: the live one wins, the rest come from the saved copy.
+            // When the game knows the character's retainers, the saved ones that are gone (dismissed) are dropped and the
+            // others take their current name (renamed).
+            var current = CurrentRetainers();
+            foreach (var savedRetainer in saved.RetainerDetails)
             {
-                var liveNames = live.RetainerDetails.Select(r => r.Name).ToHashSet();
-                foreach (var (name, items, hq) in _cachedSnapshot.RetainerDetails)
-                    if (!liveNames.Contains(name))
-                        live.RetainerDetails.Add((name, new Dictionary<uint, int>(items), new Dictionary<uint, int>(hq)));
+                var retainer = savedRetainer.Copy();
 
-                live.Retainer.Clear();
-                live.RetainerHQ.Clear();
-                foreach (var (_, items, hq) in live.RetainerDetails)
+                // Saved before retainers had an id: the retainer of that name, if there is one.
+                if (retainer.Id == 0 && current is not null)
+                    retainer.Id = current.FirstOrDefault(pair => pair.Value == retainer.Name).Key;
+
+                if (current is not null)
                 {
-                    foreach (var (k, v) in items) live.Retainer[k]   = live.Retainer.GetValueOrDefault(k)   + v;
-                    foreach (var (k, v) in hq)    live.RetainerHQ[k] = live.RetainerHQ.GetValueOrDefault(k) + v;
+                    if (!current.TryGetValue(retainer.Id, out var name)) continue;
+                    retainer.Name = name;
                 }
-                live.HasRetainerData = live.RetainerDetails.Count > 0;
+
+                var isLive = retainer.Id != 0
+                    ? live.RetainerDetails.Any(r => r.Id == retainer.Id)
+                    : live.RetainerDetails.Any(r => r.Name == retainer.Name);
+                if (!isLive) live.RetainerDetails.Add(retainer);
             }
 
-            // The saddlebag is only in memory after opening it; keep the last known contents.
-            if (Settings.IncludeSaddlebag && sameCharacter && !live.HasSaddlebagData)
+            live.Retainer.Clear();
+            live.RetainerHQ.Clear();
+            foreach (var retainer in live.RetainerDetails)
             {
-                foreach (var (k, v) in _cachedSnapshot.Saddlebag)   live.Saddlebag[k]   = v;
-                foreach (var (k, v) in _cachedSnapshot.SaddlebagHQ) live.SaddlebagHQ[k] = v;
-                live.HasSaddlebagData = _cachedSnapshot.HasSaddlebagData;
+                foreach (var (k, v) in retainer.Items)   live.Retainer[k]   = live.Retainer.GetValueOrDefault(k)   + v;
+                foreach (var (k, v) in retainer.ItemsHQ) live.RetainerHQ[k] = live.RetainerHQ.GetValueOrDefault(k) + v;
+            }
+            live.HasRetainerData = live.RetainerDetails.Count > 0;
+
+            // The saddlebag is only in memory after opening it; keep the last known contents.
+            if (!live.HasSaddlebagData)
+            {
+                foreach (var (k, v) in saved.Saddlebag)   live.Saddlebag[k]   = v;
+                foreach (var (k, v) in saved.SaddlebagHQ) live.SaddlebagHQ[k] = v;
+                live.HasSaddlebagData = saved.HasSaddlebagData;
+                live.SaddlebagSeen    = saved.SaddlebagSeen;
             }
 
             // The chest may be only partly loaded (pages not opened this session): keep the saved copy of every page the game didn't load.
-            if (Settings.IncludeFCChest && _cachedSnapshot.FCChestPages.Count > 0)
+            if (saved.FCChestPages.Count > 0)
             {
-                foreach (var (page, items) in _cachedSnapshot.FCChestPages)
-                    live.FCChestPages.TryAdd(page, [.. items]);
+                foreach (var (page, items) in saved.FCChestPages)
+                    if (live.FCChestPages.TryAdd(page, [.. items]) && saved.FCChestPageSeen.TryGetValue(page, out var seen))
+                        live.FCChestPageSeen[page] = seen;
                 live.RebuildFCChest();
                 live.HasFCData = true;
             }
-            else if (Settings.IncludeFCChest && !live.HasFCData && _cachedSnapshot.HasFCData)
+            else if (!live.HasFCData && saved.HasFCData)
             {
-                foreach (var (k, v) in _cachedSnapshot.FCChest)   live.FCChest[k]   = v;
-                foreach (var (k, v) in _cachedSnapshot.FCChestHQ) live.FCChestHQ[k] = v;
-                foreach (var (k, v) in _cachedSnapshot.FCChestSlots) live.FCChestSlots[k] = [.. v];
+                foreach (var (k, v) in saved.FCChest)   live.FCChest[k]   = v;
+                foreach (var (k, v) in saved.FCChestHQ) live.FCChestHQ[k] = v;
+                foreach (var (k, v) in saved.FCChestSlots) live.FCChestSlots[k] = [.. v];
                 live.HasFCData = true;
             }
         }
 
         SaveSnapshot(live);
-        return live;
+        return live.Only(Settings.IncludeSaddlebag, Settings.IncludeRetainers, Settings.IncludeFCChest);
+    }
+
+    /// <summary>The character's retainers by id, with their current names; null while the game hasn't loaded the list.</summary>
+    private static unsafe Dictionary<ulong, string>? CurrentRetainers()
+    {
+        var retMgr = RetainerManager.Instance();
+        if (retMgr == null) return null;
+
+        var count = retMgr->GetRetainerCount();
+        if (count == 0) return null;
+
+        var result = new Dictionary<ulong, string>();
+        for (uint i = 0; i < count && i < 10; i++)
+        {
+            var retainer = retMgr->GetRetainerBySortedIndex(i);
+            if (retainer == null || retainer->RetainerId == 0) continue;
+            result[retainer->RetainerId] = RetainerName(retainer, i);
+        }
+        return result.Count > 0 ? result : null;
+    }
+
+    /// <summary>A retainer's name (a Span&lt;byte&gt; with a null terminator, decoded as UTF-8).</summary>
+    private static unsafe string RetainerName(RetainerManager.Retainer* retainer, uint sortedIndex)
+    {
+        var nameSpan = retainer->Name;
+        var nullIdx  = nameSpan.IndexOf((byte)0);
+        var name     = Encoding.UTF8.GetString(nullIdx >= 0 ? nameSpan[..nullIdx] : nameSpan);
+        return string.IsNullOrWhiteSpace(name) ? CraftLoc.Fmt("loc.retainern", sortedIndex + 1) : name;
     }
 
     // ── Snapshot DTO (for disk serialization) ─────────────────────────────────
@@ -449,10 +638,14 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         public Dictionary<uint, List<int[]>> FCChestSlots { get; set; } = [];
         public Dictionary<int, List<long[]>> FCChestPages { get; set; } = [];
         public List<RetainerDetail>   RetainerDetails { get; set; } = [];
+        public DateTime               SaddlebagSeen   { get; set; }
+        public Dictionary<int, DateTime> FCChestPageSeen { get; set; } = [];
 
         public sealed class RetainerDetail
         {
+            public ulong                 Id      { get; set; }
             public string                Name    { get; set; } = string.Empty;
+            public DateTime              Seen    { get; set; }
             public Dictionary<uint, int> Items   { get; set; } = [];
             public Dictionary<uint, int> ItemsHQ { get; set; } = [];
         }
@@ -474,8 +667,10 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             FCChestSlots    = s.FCChestSlots.ToDictionary(kv => kv.Key, kv => kv.Value.Select(t => new[] { t.Tab, t.Slot }).ToList()),
             FCChestPages    = s.FCChestPages.ToDictionary(kv => kv.Key, kv => kv.Value.Select(e => new long[] { e.Slot, e.Id, e.Qty, e.Hq ? 1 : 0 }).ToList()),
             RetainerDetails = s.RetainerDetails
-                .Select(r => new RetainerDetail { Name = r.Name, Items = new(r.Items), ItemsHQ = new(r.ItemsHQ) })
+                .Select(r => new RetainerDetail { Id = r.Id, Name = r.Name, Seen = r.Seen, Items = new(r.Items), ItemsHQ = new(r.ItemsHQ) })
                 .ToList(),
+            SaddlebagSeen   = s.SaddlebagSeen,
+            FCChestPageSeen = new(s.FCChestPageSeen),
         };
 
         public InventorySnapshot ToSnapshot()
@@ -486,7 +681,9 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
                 HasRetainerData = HasRetainerData,
                 HasFCData       = HasFCData,
                 HasSaddlebagData = HasSaddlebagData,
+                SaddlebagSeen   = SaddlebagSeen,
             };
+            foreach (var (k, v) in FCChestPageSeen) s.FCChestPageSeen[k] = v;
             foreach (var (k, v) in Player)      s.Player[k]      = v;
             foreach (var (k, v) in PlayerHQ)    s.PlayerHQ[k]    = v;
             foreach (var (k, v) in Saddlebag)   s.Saddlebag[k]   = v;
@@ -499,7 +696,12 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             foreach (var (page, items) in FCChestPages)
                 s.FCChestPages[page] = items.Where(a => a.Length == 4).Select(a => ((int)a[0], (uint)a[1], (int)a[2], a[3] != 0)).ToList();
             foreach (var r in RetainerDetails)
-                s.RetainerDetails.Add((r.Name, new Dictionary<uint, int>(r.Items), new Dictionary<uint, int>(r.ItemsHQ)));
+            {
+                var retainer = new RetainerData { Id = r.Id, Name = r.Name, Seen = r.Seen };
+                foreach (var (k, v) in r.Items)   retainer.Items[k]   = v;
+                foreach (var (k, v) in r.ItemsHQ) retainer.ItemsHQ[k] = v;
+                s.RetainerDetails.Add(retainer);
+            }
             return s;
         }
     }
@@ -507,9 +709,9 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     // Any settings change re-scans the window with the new options.
     protected override void OnSettingsChanged() => _addon?.RequestRefresh();
 
-    public override TweakButton? OpenButton => new(T("Open"), T("Open.Help"), () => _addon?.Toggle());
+    public override TweakButton? OpenButton => new(TMain("Open"), TMain("Open.Help"), () => _addon?.Toggle());
 
-    public override TweakButton? HelpButton => new(Loc.Get("Window.Help"), null, () => _addon?.OpenHelp());
+    public override TweakButton? HelpButton => new(Loc.Get("Window.Help"), null, OpenHelp);
 
     protected override IReadOnlyList<string> CommandNames => ["/gcm", "/gmaterials"];
 
@@ -527,6 +729,24 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         if (window.IsOpen) window.Close(); else window.Open();
     }
 
+    /// <summary>Opens the help of the window, or closes it if it is open. It belongs to the tweak, so it is closed with it.</summary>
+    internal void OpenHelp()
+    {
+        _helpAddon ??= new CraftingHelpAddon
+        {
+            InternalName = "GtkCraftMatHelp",
+            Title        = CraftLoc.Get("help.title"),
+            Size         = new System.Numerics.Vector2(780f, 560f),
+        };
+        _helpAddon.Toggle();
+    }
+
+    /// <summary>Closes the help if it is open (the main window closed).</summary>
+    internal void CloseHelp()
+    {
+        if (_helpAddon is { IsOpen: true } help) help.Close();
+    }
+
     /// <summary>Settings window title, in the language chosen for this tweak.</summary>
     public string SettingsTitle => $"{Text("Name")} — {Text("Settings")}";
 
@@ -539,38 +759,35 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         RespectCloseAll = false,
     };
 
-    /// <summary>Rebuilds the open settings window (its texts follow the language chosen in it).</summary>
-    internal void RefreshSettingsWindow()
-    {
-        var old = _settingsAddon;
-        if (old is not { IsOpen: true }) return;
-
-        // A moment later, never from inside the click of its own drop-down.
-        Svc.Framework.RunOnTick(() =>
-        {
-            old.Dispose();
-            if (_settingsAddon != old) return;
-            _settingsAddon = NewSettingsAddon();
-            Svc.Framework.RunOnTick(() => _settingsAddon?.Open(), delayTicks: 6);
-        }, delayTicks: 2);
-    }
-
-    // ── Access for the native settings window ─────────────────────────────────
+    // ── Access for the native windows ─────────────────────────────────────────
 
     internal Options Current => Settings;
 
     internal void SaveCurrent() => SaveSettings();
 
-    /// <summary>Text of this tweak in the language chosen for it (the window language), not the plugin language.</summary>
-    internal string Text(string key) => Loc.GetIn(WindowUiLang, $"Tweaks.{Id}.{key}");
+    /// <summary>Text of this tweak in the language chosen for its windows, not the plugin language.</summary>
+    internal string Text(string key) => T(key);
 
-    /// <summary>Language choices for the item and recipe names; the first follows the GoblinTweaks language.</summary>
-    internal IReadOnlyList<(string Code, string Text)> LanguageChoices
-        => DataLanguages.Select(l => (l.Code, l.Code.Length == 0 ? Text("Language.Same") : l.Label)).ToList();
+    /// <summary>Something unexpected happened in the window: the tweak is disabled safely.</summary>
+    internal void Fail(Exception exception) => ReportFailure(exception);
+
+    /// <summary>Stores the window's filters (in <see cref="Current"/>) without re-scanning the inventories.</summary>
+    internal void SaveFilters() => SaveSettings(notify: false);
+
+    /// <summary>The player's level in the crafter class of a recipe's craft type (0 if unknown).</summary>
+    public int CrafterLevel(uint craftTypeId)
+    {
+        // CraftType 0-7 (Woodworking … Cooking) are the classes Carpenter … Culinarian, ClassJob 8-15.
+        if (!Svc.PlayerState.IsLoaded || craftTypeId > 7) return 0;
+        return Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.ClassJob>().TryGetRow(8 + craftTypeId, out var job)
+            ? Svc.PlayerState.GetClassJobLevel(job)
+            : 0;
+    }
 
     // ── Inventory scanning ────────────────────────────────────────────────────
 
-    public unsafe InventorySnapshot ScanInventories()
+    /// <summary>Reads every source (the settings only decide what is shown, see <see cref="InventorySnapshot.Only"/>).</summary>
+    private unsafe InventorySnapshot ScanInventories()
     {
         var snap = new InventorySnapshot();
         var mgr  = InventoryManager.Instance();
@@ -578,45 +795,44 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
 
         snap.PlayerName = Svc.PlayerState.IsLoaded ? Svc.PlayerState.CharacterName : string.Empty;
 
-        ScanContainers(snap.Player, snap.PlayerHQ, mgr,
+        ScanContainers(snap.Player, snap.PlayerHQ, mgr, false,
             InventoryType.Inventory1, InventoryType.Inventory2,
             InventoryType.Inventory3, InventoryType.Inventory4,
             InventoryType.Crystals);
 
-        if (Settings.IncludeSaddlebag)
-            snap.HasSaddlebagData = ScanContainers(snap.Saddlebag, snap.SaddlebagHQ, mgr, requireLoaded: true,
-                InventoryType.SaddleBag1, InventoryType.SaddleBag2,
-                InventoryType.PremiumSaddleBag1, InventoryType.PremiumSaddleBag2);
+        snap.HasSaddlebagData = ScanContainers(snap.Saddlebag, snap.SaddlebagHQ, mgr, requireLoaded: true,
+            InventoryType.SaddleBag1, InventoryType.SaddleBag2,
+            InventoryType.PremiumSaddleBag1, InventoryType.PremiumSaddleBag2);
+        if (snap.HasSaddlebagData) snap.SaddlebagSeen = DateTime.UtcNow;
 
-        if (Settings.IncludeRetainers)
-            snap.HasRetainerData = ScanRetainers(snap.Retainer, snap.RetainerHQ, snap.RetainerDetails, mgr);
-
-        if (Settings.IncludeFCChest)
-            snap.HasFCData = ScanFCChest(snap, mgr);
+        snap.HasRetainerData = ScanRetainers(snap.Retainer, snap.RetainerHQ, snap.RetainerDetails, mgr);
+        snap.HasFCData       = ScanFCChest(snap, mgr);
 
         return snap;
     }
 
     // The FC chest containers exist in memory even when the chest was never opened, so only
     // count pages the game reports as loaded; otherwise an empty scan would wipe the saved data.
-    private static readonly HashSet<int> SeenFCPages = [];
+    // Pages seen with items, this session and for this character (cleared when the character changes).
+    private readonly HashSet<int> _seenFCPages = [];
 
-    private static unsafe bool ScanFCChest(InventorySnapshot snap, InventoryManager* mgr)
+    private unsafe bool ScanFCChest(InventorySnapshot snap, InventoryManager* mgr)
     {
-        InventoryType[] pages =
+        (InventoryType Type, int Page)[] pages =
         [
-            InventoryType.FreeCompanyPage1, InventoryType.FreeCompanyPage2,
-            InventoryType.FreeCompanyPage3, InventoryType.FreeCompanyPage4,
-            InventoryType.FreeCompanyPage5,
+            (InventoryType.FreeCompanyCrystals, 0),
+            (InventoryType.FreeCompanyPage1, 1), (InventoryType.FreeCompanyPage2, 2),
+            (InventoryType.FreeCompanyPage3, 3), (InventoryType.FreeCompanyPage4, 4),
+            (InventoryType.FreeCompanyPage5, 5),
         ];
 
         var anyLoaded = false;
-        for (var p = 0; p < pages.Length; p++)
+        foreach (var (type, page) in pages)
         {
-            var container = mgr->GetInventoryContainer(pages[p]);
+            var container = mgr->GetInventoryContainer(type);
             if (container == null || !container->IsLoaded) continue;
 
-                var items = new List<(int, uint, int, bool)>();
+            var items = new List<(int, uint, int, bool)>();
             for (var i = 0; i < container->Size; i++)
             {
                 var slot = container->GetInventorySlot(i);
@@ -625,22 +841,19 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             }
             // The game reports pages as loaded but empty after a restart and when the chest opens without visiting a tab.
             // An empty page only counts once we've seen it with items this session (i.e. it was really emptied).
-            if (items.Count > 0) SeenFCPages.Add(p + 1);
-            else if (!SeenFCPages.Contains(p + 1)) continue;
+            if (items.Count > 0) _seenFCPages.Add(page);
+            else if (!_seenFCPages.Contains(page)) continue;
 
             anyLoaded = true;
-            snap.FCChestPages[p + 1] = items;
+            snap.FCChestPages[page]    = items;
+            snap.FCChestPageSeen[page] = DateTime.UtcNow;
         }
         snap.RebuildFCChest();
         return anyLoaded;
     }
 
-    // Returns true if at least one container was non-null (data was accessible in memory).
-    private static unsafe bool ScanContainers(
-        Dictionary<uint, int> target, Dictionary<uint, int>? hqTarget, InventoryManager* mgr, params InventoryType[] types)
-        => ScanContainers(target, hqTarget, mgr, false, types);
-
     // requireLoaded: skip containers the game reports as not loaded (e.g. an unopened saddlebag).
+    // Returns true if at least one container was read.
     private static unsafe bool ScanContainers(
         Dictionary<uint, int> target, Dictionary<uint, int>? hqTarget, InventoryManager* mgr, bool requireLoaded, params InventoryType[] types)
     {
@@ -666,25 +879,38 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         return anyLoaded;
     }
 
-    // Retainer inventories are stored client-side after visiting the retainer bell.
-    // Only the currently active retainer window exposes real-time data; cached data
-    // from previous visits is available in RetainerPage1-7 of each retainer's slot.
-    // Returns true if any retainer data was available (Available == true for at least one retainer).
-    private static unsafe bool ScanRetainers(
+    // Right after picking another retainer its pages may still hold the previous one's items. They are only read
+    // once the same retainer has been open for a moment.
+    private static readonly TimeSpan RetainerSettleTime = TimeSpan.FromSeconds(1.5);
+    private ulong    _activeRetainerId;
+    private DateTime _activeRetainerSince;
+
+    /// <summary>Whether the open retainer has been open long enough for its pages to be its own.</summary>
+    private bool RetainerSettled(ulong retainerId)
+    {
+        if (retainerId != _activeRetainerId)
+        {
+            _activeRetainerId    = retainerId;
+            _activeRetainerSince = DateTime.UtcNow;
+        }
+        return DateTime.UtcNow - _activeRetainerSince >= RetainerSettleTime;
+    }
+
+    // The game keeps ONE retainer's inventory in memory (RetainerPage1-7 + its crystals): the one opened last.
+    // Reading it for any other retainer would attribute the wrong items, so only the open retainer is read.
+    // Returns true if its data was read.
+    private unsafe bool ScanRetainers(
         Dictionary<uint, int> aggregate, Dictionary<uint, int> aggregateHQ,
-        List<(string Name, Dictionary<uint, int> Items, Dictionary<uint, int> ItemsHQ)> details,
+        List<RetainerData> details,
         InventoryManager* mgr)
     {
         var retMgr = RetainerManager.Instance();
         if (retMgr == null) return false;
 
-        // The game keeps ONE retainer's inventory in memory (RetainerPage1-7): the one opened last.
-        // Reading it for any other retainer would attribute the wrong items.
-        // Right after picking another retainer from the list the pages still hold the previous one's items,
-        // so only trust them while a retainer is actually open.
         var activeRetainer = retMgr->GetActiveRetainer();
-        if (activeRetainer == null) return false;
+        if (activeRetainer == null) { _activeRetainerId = 0; return false; }
         var activeId = activeRetainer->RetainerId;
+        if (!RetainerSettled(activeId)) return false;
 
         var count = retMgr->GetRetainerCount();
         for (uint ri = 0; ri < count && ri < 10; ri++)
@@ -692,23 +918,19 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             var retainer = retMgr->GetRetainerBySortedIndex(ri);
             if (retainer == null || !retainer->Available || retainer->RetainerId != activeId) continue;
 
-            // Name is a Span<byte> with a null terminator — decode as UTF-8.
-            var nameSpan     = retainer->Name;
-            var nullIdx      = nameSpan.IndexOf((byte)0);
-            var retainerName = Encoding.UTF8.GetString(nullIdx >= 0 ? nameSpan[..nullIdx] : nameSpan);
-            if (string.IsNullOrWhiteSpace(retainerName))
-                retainerName = $"Retainer {ri + 1}";
-
-            var retainerItems   = new Dictionary<uint, int>();
-            var retainerItemsHQ = new Dictionary<uint, int>();
+            var data = new RetainerData { Id = activeId, Name = RetainerName(retainer, ri), Seen = DateTime.UtcNow };
+            var retainerItems   = data.Items;
+            var retainerItemsHQ = data.ItemsHQ;
             var anyPage         = false;
 
-            for (var page = 0; page < 7; page++)
+            for (var page = 0; page <= 7; page++)
             {
-                var type = (InventoryType)((uint)InventoryType.RetainerPage1 + (uint)page);
+                var type = page < 7
+                    ? (InventoryType)((uint)InventoryType.RetainerPage1 + (uint)page)
+                    : InventoryType.RetainerCrystals;
                 var container = mgr->GetInventoryContainer(type);
                 if (container == null || !container->IsLoaded) continue;
-                anyPage = true;
+                anyPage |= page < 7;
 
                 for (var s = 0; s < container->Size; s++)
                 {
@@ -729,7 +951,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
 
             // Keep empty retainers too, so a retainer that was emptied replaces its stale saved copy.
             if (anyPage)
-                details.Add((retainerName, retainerItems, retainerItemsHQ));
+                details.Add(data);
             break;
         }
 
@@ -738,45 +960,80 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
 
     // ── Recipe analysis ───────────────────────────────────────────────────────
 
-    public List<CraftableEntry> Analyze(InventorySnapshot snap)
+    /// <summary>What a recipe is, independent of the inventory: read once per game-data language.</summary>
+    private sealed record RecipeInfo(
+        uint RecipeId, uint ItemId, string Name, uint IconId, ushort ResultAmount,
+        string CraftClass, uint CraftTypeId, string CategoryName, int ItemLevel, int CraftLevel,
+        List<(uint Id, string Name, uint Icon, int Amount)> Ingredients);
+
+    private ClientLanguage?                  _recipesLanguage;
+    private List<RecipeInfo>                 _recipes    = [];
+    private Dictionary<uint, RecipeInfo>     _recipeById = [];
+
+    /// <summary>
+    /// The recipes the window lists, the ones that count for the crafting log (see <see cref="LogRecipeIds"/>), with their
+    /// ingredients. Built the first time, and again if the client language changes.
+    /// </summary>
+    private List<RecipeInfo> Recipes()
     {
-        // Load every sheet in the configured language so item/recipe/category names (and the
-        // RowRefs they resolve) all come back localized. RowRef.Value follows the owning sheet.
-        var lang        = DataLanguage;
-        var itemSheet   = Svc.Data.GetExcelSheet<LuminaItem>(lang);
+        var lang = DataLanguage;
+        if (_recipesLanguage == lang) return _recipes;
+
+        // Load every sheet in the same language so item/recipe/category names (and the RowRefs they resolve)
+        // all come back localized. RowRef.Value follows the owning sheet.
         var recipeSheet = Svc.Data.GetExcelSheet<LuminaRecipe>(lang);
-        if (itemSheet == null || recipeSheet == null) return [];
+        if (recipeSheet == null) return [];
 
         var craftTypeNames = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.CraftType>(lang)
             ?.ToDictionary(ct => ct.RowId, ct => ct.Name.ExtractText())
             ?? [];
 
         var logRecipeIds = LogRecipeIds();
-        var results = new List<CraftableEntry>();
+        var list = new List<RecipeInfo>();
 
         foreach (var recipe in recipeSheet)
         {
-            if (recipe.RowId == 0 || recipe.ItemResult.RowId == 0 || !recipe.ItemResult.IsValid)
+            if (!logRecipeIds.Contains(recipe.RowId) || recipe.ItemResult.RowId == 0 || !recipe.ItemResult.IsValid)
                 continue;
 
             var resultItem  = recipe.ItemResult.Value;
             var ingredients = BuildIngredients(recipe);
             if (ingredients.Count == 0) continue;
 
+            list.Add(new RecipeInfo(
+                recipe.RowId,
+                recipe.ItemResult.RowId,
+                resultItem.Name.ExtractText(),
+                resultItem.Icon,
+                recipe.AmountResult,
+                craftTypeNames.GetValueOrDefault(recipe.CraftType.RowId, string.Empty),
+                recipe.CraftType.RowId,
+                resultItem.ItemUICategory.IsValid ? resultItem.ItemUICategory.Value.Name.ExtractText() : string.Empty,
+                (int)resultItem.LevelItem.RowId,
+                recipe.RecipeLevelTable.IsValid ? recipe.RecipeLevelTable.Value.ClassJobLevel : 0,
+                ingredients));
+        }
+
+        _recipesLanguage = lang;
+        _recipes         = list;
+        _recipeById      = list.ToDictionary(r => r.RecipeId);
+        _otherRecipes.Clear();
+        return list;
+    }
+
+    public List<CraftableEntry> Analyze(InventorySnapshot snap)
+    {
+        var recipes = Recipes();
+        var results = new List<CraftableEntry>(recipes.Count);
+
+        foreach (var info in recipes)
+        {
             var missingCount = 0;
             var allInPlayer  = true;
-            var checks       = new List<IngredientCheck>(ingredients.Count);
+            var checks       = Checks(info.Ingredients, snap);
 
-            foreach (var (id, name, icon, required) in ingredients)
+            foreach (var check in checks)
             {
-                var inPlayer = snap.Get(id, InventorySource.Player);
-                var inOther  = snap.Get(id, InventorySource.Saddlebag)
-                             + snap.Get(id, InventorySource.Retainer)
-                             + snap.Get(id, InventorySource.FreeCompany);
-
-                var check = new IngredientCheck(id, name, icon, required, inPlayer, inOther);
-                checks.Add(check);
-
                 if (!check.Fulfilled)
                     missingCount++;
                 else if (check.InPlayer < check.Required)
@@ -795,33 +1052,21 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
                 _                   => CraftStatus.NotReady,
             };
 
-            var categoryName = resultItem.ItemUICategory.IsValid
-                ? resultItem.ItemUICategory.Value.Name.ExtractText()
-                : string.Empty;
-
-            // Counts for the in-game crafting log: basic recipes (IsSecondary=false) and
-            // special-category housing recipes (FilterGroup 14). Master recipes and other
-            // special-category recipes (seasonal/event) are not tracked by the log.
-            var isLogRecipe = recipe.SecretRecipeBook.RowId == 0
-                && (logRecipeIds is not null
-                    ? logRecipeIds.Contains(recipe.RowId) || (resultItem.FilterGroup == 14 && !recipe.IsExpert)
-                    : !recipe.IsSecondary || resultItem.FilterGroup == 14);
-
             results.Add(new CraftableEntry
             {
-                RecipeId     = recipe.RowId,
-                ItemId       = recipe.ItemResult.RowId,
-                Name         = resultItem.Name.ExtractText(),
-                IconId       = resultItem.Icon,
-                ResultAmount = recipe.AmountResult,
-                CraftClass   = craftTypeNames.GetValueOrDefault(recipe.CraftType.RowId, string.Empty),
-                CategoryName = categoryName,
+                RecipeId     = info.RecipeId,
+                ItemId       = info.ItemId,
+                Name         = info.Name,
+                IconId       = info.IconId,
+                ResultAmount = info.ResultAmount,
+                CraftClass   = info.CraftClass,
+                CraftTypeId  = info.CraftTypeId,
+                CategoryName = info.CategoryName,
                 Status       = status,
                 MissingCount = missingCount,
-                IsCrafted    = QuestManager.IsRecipeComplete(recipe.RowId),
-                IsLogRecipe  = isLogRecipe,
-                ItemLevel    = (int)resultItem.LevelItem.RowId,
-                CraftLevel   = recipe.RecipeLevelTable.IsValid ? recipe.RecipeLevelTable.Value.ClassJobLevel : 0,
+                IsCrafted    = QuestManager.IsRecipeComplete(info.RecipeId),
+                ItemLevel    = info.ItemLevel,
+                CraftLevel   = info.CraftLevel,
                 Ingredients  = checks,
             });
         }
@@ -829,22 +1074,54 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         return results;
     }
 
+    private static List<IngredientCheck> Checks(List<(uint Id, string Name, uint Icon, int Amount)> ingredients, InventorySnapshot snap)
+    {
+        var checks = new List<IngredientCheck>(ingredients.Count);
+        foreach (var (id, name, icon, required) in ingredients)
+        {
+            var inPlayer = snap.Get(id, InventorySource.Player);
+            var inOther  = snap.Get(id, InventorySource.Saddlebag)
+                         + snap.Get(id, InventorySource.Retainer)
+                         + snap.Get(id, InventorySource.FreeCompany);
+            checks.Add(new IngredientCheck(id, name, icon, required, inPlayer, inOther));
+        }
+        return checks;
+    }
+
     private HashSet<uint>? _logRecipeIds;
 
-    /// <summary>Recipes listed in the crafting log's class tabs (RecipeNotebookList); null if the sheet is unavailable.</summary>
-    private HashSet<uint>? LogRecipeIds()
+    // NotebookDivisionCategory of the "Housing" group of the Special Recipes.
+    private const uint HousingCategory = 2;
+
+    /// <summary>
+    /// The recipes that count for the crafting log: the level-based recipes of every class and, of the Special Recipes,
+    /// the Housing ones. Master recipes and the other special groups (sidequests, deliveries, collectables...) don't.
+    /// </summary>
+    /// <remarks>
+    /// RecipeNotebookList has one row per class and log division: <c>craftType * 40 + division</c> for the level-based
+    /// divisions (0-39), <c>1000 + (division - 1000) * 8 + craftType</c> for the rest, whose NotebookDivision row says
+    /// which group of the log it is under.
+    /// </remarks>
+    private HashSet<uint> LogRecipeIds()
     {
         if (_logRecipeIds is not null) return _logRecipeIds;
 
-        var sheet = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.RecipeNotebookList>();
-        if (sheet is null) return null;
+        var lists     = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.RecipeNotebookList>();
+        var divisions = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.NotebookDivision>();
 
         var set = new HashSet<uint>();
-        foreach (var page in sheet)
-            foreach (var r in page.Recipe)
-                if (r.RowId != 0) set.Add(r.RowId);
+        foreach (var list in lists)
+        {
+            var counts = list.RowId < 1000
+                || (divisions.TryGetRow(1000 + (list.RowId - 1000) / 8, out var division)
+                    && division.NotebookDivisionCategory.RowId == HousingCategory);
+            if (!counts) continue;
 
-        return set.Count > 0 ? _logRecipeIds = set : null;
+            foreach (var r in list.Recipe)
+                if (r.RowId != 0 && r.IsValid) set.Add(r.RowId);
+        }
+
+        return _logRecipeIds = set;
     }
 
     public int NearCompleteMissing => Settings.NearCompleteMissing;
@@ -853,16 +1130,26 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
 
     private Dictionary<uint, uint>? _recipeByResult; // result itemId -> recipe RowId (language-independent)
 
+    /// <summary>
+    /// The recipe of each craftable item. Several crafters can make the same item: the one in the crafting log
+    /// is preferred over master and special recipes, then the first one.
+    /// </summary>
     private Dictionary<uint, uint> RecipeByResult()
     {
         if (_recipeByResult is not null) return _recipeByResult;
 
         var map   = new Dictionary<uint, uint>();
+        var log   = LogRecipeIds();
         var sheet = Svc.Data.GetExcelSheet<LuminaRecipe>();
         if (sheet is not null)
             foreach (var r in sheet)
-                if (r.RowId != 0 && r.ItemResult.RowId != 0)
-                    map.TryAdd(r.ItemResult.RowId, r.RowId);
+            {
+                if (r.RowId == 0 || r.ItemResult.RowId == 0) continue;
+
+                if (!map.TryGetValue(r.ItemResult.RowId, out var current)
+                    || (log.Contains(r.RowId) && !log.Contains(current)))
+                    map[r.ItemResult.RowId] = r.RowId;
+            }
 
         return _recipeByResult = map;
     }
@@ -877,21 +1164,80 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     public List<IngredientCheck> SubIngredients(uint itemId, InventorySnapshot snap)
     {
         if (!RecipeByResult().TryGetValue(itemId, out var recipeId)) return [];
+        return RecipeParts(recipeId) is { } parts ? Checks(parts.Ingredients, snap) : [];
+    }
 
-        var sheet = Svc.Data.GetExcelSheet<LuminaRecipe>(DataLanguage);
-        if (sheet is null) return [];
+    // Recipes the window doesn't list (not in the crafting log) that an ingredient is made with, read when first needed.
+    private readonly Dictionary<uint, (ushort ResultAmount, List<(uint Id, string Name, uint Icon, int Amount)> Ingredients)> _otherRecipes = [];
 
-        var checks = new List<IngredientCheck>(8);
-        foreach (var (id, name, icon, required) in BuildIngredients(sheet.GetRow(recipeId)))
+    /// <summary>How many items a recipe makes and its ingredients, for any recipe; null if it doesn't exist.</summary>
+    private (ushort ResultAmount, List<(uint Id, string Name, uint Icon, int Amount)> Ingredients)? RecipeParts(uint recipeId)
+    {
+        Recipes();
+        if (_recipeById.TryGetValue(recipeId, out var info)) return (info.ResultAmount, info.Ingredients);
+        if (_otherRecipes.TryGetValue(recipeId, out var parts)) return parts;
+
+        if (!Svc.Data.GetExcelSheet<LuminaRecipe>(DataLanguage).TryGetRow(recipeId, out var recipe)) return null;
+        return _otherRecipes[recipeId] = (recipe.AmountResult, BuildIngredients(recipe));
+    }
+
+    /// <summary>Deepest level of sub-recipes followed (same as the ingredient tree of the window).</summary>
+    public const int MaxRecipeDepth = 6;
+
+    /// <summary>
+    /// The base materials one craft of a recipe needs, with every craftable ingredient you don't have broken down into
+    /// what it is made of (as many crafts of it as are needed, taking into account how many each craft makes). What you
+    /// already own is used first, intermediate items included, and the leftovers of a sub-craft serve the next one.
+    /// Each entry's <see cref="IngredientCheck.Required"/> is the total needed; the ones still missing come first.
+    /// </summary>
+    public List<IngredientCheck> ShoppingList(uint recipeId, InventorySnapshot snap)
+    {
+        if (RecipeParts(recipeId) is not { } root) return [];
+
+        var stock = new Dictionary<uint, int>();                                  // what is left to use, by item
+        var raw   = new Dictionary<uint, (string Name, uint Icon, int Need)>();   // base materials, in order of appearance
+        var path  = new HashSet<uint>();                                          // sub-recipes being followed (no loops)
+
+        int Take(uint id, int amount)
         {
-            var inPlayer = snap.Get(id, InventorySource.Player);
-            var inOther  = snap.Get(id, InventorySource.Saddlebag)
-                         + snap.Get(id, InventorySource.Retainer)
-                         + snap.Get(id, InventorySource.FreeCompany);
-            checks.Add(new IngredientCheck(id, name, icon, required, inPlayer, inOther));
+            var left = stock.TryGetValue(id, out var known) ? known : snap.GetTotal(id);
+            var used = Math.Min(left, amount);
+            stock[id] = left - used;
+            return used;
         }
 
-        return checks;
+        void Need(uint id, string name, uint icon, int amount, int depth)
+        {
+            if (depth < MaxRecipeDepth && !path.Contains(id) && RecipeByResult().TryGetValue(id, out var subId)
+                && RecipeParts(subId) is { } sub && sub.Ingredients.Count > 0)
+            {
+                var missing = amount - Take(id, amount);
+                if (missing <= 0) return;
+
+                var makes  = Math.Max(1, (int)sub.ResultAmount);
+                var crafts = (missing + makes - 1) / makes;
+                stock[id] = stock.GetValueOrDefault(id) + crafts * makes - missing; // what the crafts make beyond what is needed
+
+                path.Add(id);
+                foreach (var (subItem, subName, subIcon, subAmount) in sub.Ingredients)
+                    Need(subItem, subName, subIcon, subAmount * crafts, depth + 1);
+                path.Remove(id);
+                return;
+            }
+
+            raw[id] = (name, icon, raw.GetValueOrDefault(id).Need + amount);
+        }
+
+        foreach (var (id, name, icon, amount) in root.Ingredients)
+            Need(id, name, icon, amount, 1);
+
+        return raw
+            .Select(pair => new IngredientCheck(pair.Key, pair.Value.Name, pair.Value.Icon, pair.Value.Need,
+                snap.Get(pair.Key, InventorySource.Player),
+                snap.Get(pair.Key, InventorySource.Saddlebag) + snap.Get(pair.Key, InventorySource.Retainer) + snap.Get(pair.Key, InventorySource.FreeCompany)))
+            .OrderBy(check => check.Fulfilled)
+            .ThenBy(check => check.Name)
+            .ToList();
     }
 
     private static List<(uint Id, string Name, uint Icon, int Amount)> BuildIngredients(LuminaRecipe recipe)
@@ -902,11 +1248,6 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         {
             if (amount <= 0 || itemRef.RowId == 0 || !itemRef.IsValid) continue;
             var item = itemRef.Value;
-
-            // Discard the whole recipe if it requires collectables, untradeable items (includes
-            // mission/key items) — these are not regular crafting materials.
-            if (item.IsUntradable || item.IsCollectable) return [];
-
             list.Add((itemRef.RowId, item.Name.ExtractText(), item.Icon, amount));
         }
 

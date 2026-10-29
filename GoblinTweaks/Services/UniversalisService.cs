@@ -6,6 +6,9 @@ namespace GoblinTweaks.Services;
 
 public sealed class UniversalisData
 {
+    /// <summary>An item with no listings (or not sold on the market board).</summary>
+    public static readonly UniversalisData Empty = new();
+
     [JsonPropertyName("averagePrice")]   public float AveragePrice   { get; init; }
     [JsonPropertyName("averagePriceHQ")] public float AveragePriceHQ { get; init; }
     [JsonPropertyName("minPrice")]       public int   MinPrice        { get; init; }
@@ -36,8 +39,6 @@ public sealed class UniversalisService : IDisposable
     private const int MaxItemsPerRequest = 100;
     private const int MarketAttempts = 3;
     private static readonly TimeSpan MarketRetryDelay = TimeSpan.FromSeconds(3);
-
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(10) };
 
     // Universalis itself gives up after 10 s; a little more leaves room for slow connections.
     private static readonly HttpClient MarketHttp = new() { Timeout = TimeSpan.FromSeconds(20) };
@@ -245,39 +246,153 @@ public sealed class UniversalisService : IDisposable
     private static string? GetString(JsonElement element, string name)
         => element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 
-    private readonly ConcurrentDictionary<uint, UniversalisData?> _cache   = new();
-    private readonly ConcurrentDictionary<uint, byte>             _pending = new();
+    // ── Price cache for single items (Crafting Materials) ─────────────────────
+    // Requests are queued and sent one batch of up to MaxItemsPerRequest items at a time, so asking for the prices of
+    // thousands of recipes doesn't flood Universalis (it limits each client to a few requests per second).
 
+    private static readonly TimeSpan BatchInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan RateLimitWait = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan FailureRetry  = TimeSpan.FromSeconds(60);
+
+    private readonly ConcurrentDictionary<uint, UniversalisData> _cache       = new();
+    private readonly ConcurrentDictionary<uint, DateTime>        _failedUntil = new();
+    private readonly CancellationTokenSource                     _stop        = new();
+
+    private readonly object           _queueLock = new();
+    private readonly LinkedList<uint> _queue     = new();
+    private readonly HashSet<uint>    _queued    = []; // waiting or being fetched
+    private uint _worldId;
+    private bool _pumping;
+
+    /// <summary>The prices of the item were fetched (an item nobody sells has zero prices).</summary>
     public bool HasData(uint itemId)   => _cache.ContainsKey(itemId);
-    public bool IsPending(uint itemId) => _pending.ContainsKey(itemId);
 
-    /// <summary>Returns cached data (null if fetch failed), or null if not yet fetched.</summary>
+    public bool IsPending(uint itemId) { lock (_queueLock) return _queued.Contains(itemId); }
+
+    /// <summary>The last attempt failed; it is asked again once a minute has passed.</summary>
+    public bool HasFailed(uint itemId) => _failedUntil.TryGetValue(itemId, out var until) && until > DateTime.UtcNow;
+
+    /// <summary>Returns the cached prices, or null if not fetched yet.</summary>
     public UniversalisData? Get(uint itemId) =>
         _cache.TryGetValue(itemId, out var d) ? d : null;
 
-    public void RequestIfNeeded(uint itemId, uint worldId)
+    /// <summary>Queues the item unless its prices are known or waiting. <paramref name="urgent"/> puts it first in the queue.</summary>
+    public void RequestIfNeeded(uint itemId, uint worldId, bool urgent = false)
     {
-        if (worldId == 0 || HasData(itemId) || !_pending.TryAdd(itemId, 0)) return;
-        _ = FetchAsync(itemId, worldId);
+        if (worldId == 0 || itemId == 0) return;
+
+        lock (_queueLock)
+        {
+            // Prices are of the home world: another character's world makes them all stale.
+            if (worldId != _worldId)
+            {
+                _worldId = worldId;
+                _cache.Clear();
+                _failedUntil.Clear();
+            }
+
+            if (HasData(itemId) || HasFailed(itemId)) return;
+
+            if (_queued.Add(itemId))
+            {
+                if (urgent) _queue.AddFirst(itemId); else _queue.AddLast(itemId);
+            }
+            else if (urgent && _queue.Find(itemId) is { } node)
+            {
+                _queue.Remove(node);
+                _queue.AddFirst(node);
+            }
+
+            if (_pumping) return;
+            _pumping = true;
+        }
+
+        _ = Task.Run(PumpAsync);
     }
 
-    private async Task FetchAsync(uint itemId, uint worldId)
+    private async Task PumpAsync()
     {
-        try
+        while (!_stop.IsCancellationRequested)
         {
-            var url  = $"https://universalis.app/api/v2/{worldId}/{itemId}?fields=averagePrice,averagePriceHQ,minPrice,minPriceHQ";
-            var json = await Http.GetStringAsync(url).ConfigureAwait(false);
-            _cache[itemId] = JsonSerializer.Deserialize<UniversalisData>(json);
-        }
-        catch
-        {
-            _cache[itemId] = null;
-        }
-        finally
-        {
-            _pending.TryRemove(itemId, out _);
+            var  batch = new List<uint>(MaxItemsPerRequest);
+            uint world;
+            lock (_queueLock)
+            {
+                while (batch.Count < MaxItemsPerRequest && _queue.First is { } first)
+                {
+                    batch.Add(first.Value);
+                    _queue.RemoveFirst();
+                }
+
+                if (batch.Count == 0)
+                {
+                    _pumping = false;
+                    return;
+                }
+                world = _worldId;
+            }
+
+            var wait = BatchInterval;
+            try
+            {
+                var found = await FetchPricesAsync(world, batch, _stop.Token).ConfigureAwait(false);
+                if (world == _worldId)
+                    foreach (var id in batch)
+                        _cache[id] = found.GetValueOrDefault(id) ?? UniversalisData.Empty; // unlisted / not sold on the market
+            }
+            catch (OperationCanceledException) when (_stop.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                var until = DateTime.UtcNow + FailureRetry;
+                foreach (var id in batch) _failedUntil[id] = until;
+                if (ex is HttpRequestException { StatusCode: System.Net.HttpStatusCode.TooManyRequests }) wait = RateLimitWait;
+                Svc.Log.Debug(ex, $"Universalis: prices of {batch.Count} items could not be fetched; retrying later.");
+            }
+            finally
+            {
+                lock (_queueLock)
+                    foreach (var id in batch) _queued.Remove(id);
+            }
+
+            try { await Task.Delay(wait, _stop.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return; }
         }
     }
 
-    public void Dispose() { /* Http is shared static; don't dispose */ }
+    /// <summary>Average and lowest prices of up to <see cref="MaxItemsPerRequest"/> items. Throws on network or parse errors.</summary>
+    private static async Task<Dictionary<uint, UniversalisData>> FetchPricesAsync(uint worldId, List<uint> itemIds, CancellationToken token)
+    {
+        // Several items come wrapped in "items" (so do their field names); a single item is returned as the root object.
+        const string fields = "itemID,averagePrice,averagePriceHQ,minPrice,minPriceHQ";
+        var query = itemIds.Count == 1 ? fields : string.Join(',', fields.Split(',').Select(f => "items." + f));
+        var url   = $"https://universalis.app/api/v2/{worldId}/{string.Join(',', itemIds)}?fields={query}";
+
+        using var document = await GetJsonAsync(url, token).ConfigureAwait(false);
+        var root   = document.RootElement;
+        var result = new Dictionary<uint, UniversalisData>();
+
+        void Read(JsonElement item)
+        {
+            if (item.ValueKind != JsonValueKind.Object || !item.TryGetProperty("itemID", out var id) || !id.TryGetUInt32(out var itemId))
+                return;
+            if (item.Deserialize<UniversalisData>() is { } data)
+                result[itemId] = data;
+        }
+
+        if (root.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Object)
+            foreach (var item in items.EnumerateObject()) Read(item.Value);
+        else
+            Read(root);
+
+        return result;
+    }
+
+    public void Dispose()
+    {
+        // The HttpClients are shared statics; only the queue stops.
+        _stop.Cancel();
+    }
 }

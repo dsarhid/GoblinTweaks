@@ -95,7 +95,7 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
             _                          => ColorMuted,
         };
 
-        var lvl   = data.CraftLevel > 0 ? $"Lv {data.CraftLevel}" : string.Empty;
+        var lvl   = data.CraftLevel > 0 ? CraftLoc.Fmt("row.level", data.CraftLevel) : string.Empty;
         var cls   = data.CraftClass;
         _sub.String = (lvl, cls) switch
         {
@@ -105,18 +105,7 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
             _         => $"{lvl}  ·  {cls}",
         };
 
-        if (data.IsLogRecipe)
-        {
-            _check.String    = "✓";
-            _check.TextColor = ColorCheck;
-            _check.IsVisible = data.IsCrafted;
-        }
-        else
-        {
-            _check.String    = "●";
-            _check.TextColor = ColorMuted;
-            _check.IsVisible = true;
-        }
+        _check.IsVisible = data.IsCrafted;
 
         ItemTooltip = data.ItemId;
     }

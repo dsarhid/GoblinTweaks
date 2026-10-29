@@ -195,12 +195,12 @@ public abstract class Tweak<TSettings> : Tweak where TSettings : class, new()
 
     internal override void LoadSettings(ConfigStore store) => Settings = store.GetSettings<TSettings>(Id);
 
-    /// <summary>Persists <see cref="Settings"/> and notifies the tweak.</summary>
-    protected void SaveSettings()
+    /// <summary>Persists <see cref="Settings"/> and, unless <paramref name="notify"/> is false, notifies the tweak.</summary>
+    protected void SaveSettings(bool notify = true)
     {
         Manager.Store.SetSettings(Id, Settings);
 
-        if (State == TweakState.Enabled)
+        if (notify && State == TweakState.Enabled)
             OnSettingsChanged();
     }
 

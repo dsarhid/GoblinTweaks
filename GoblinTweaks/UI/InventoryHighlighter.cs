@@ -137,7 +137,7 @@ internal sealed unsafe class InventoryHighlighter : IDisposable
                 if (outline.Border is { } border) border.IsVisible = false;
             }
             _retired.Add((DateTime.UtcNow.AddSeconds(2), name, nodes));
-            Svc.Log.Information($"InventoryHighlighter: {nodes.Count} outlines of {name} taken off the screen; they are disposed in a moment.");
+            Svc.Log.Debug($"InventoryHighlighter: {nodes.Count} outlines of {name} taken off the screen; they are disposed in a moment.");
         }
 
         if (immediately)
@@ -225,13 +225,14 @@ internal sealed unsafe class InventoryHighlighter : IDisposable
             var items = 0;
             var keys  = new List<(long Key, bool Wanted)>();
             var byIcon = new Dictionary<uint, List<Candidate>>();
-            var dump  = new System.Text.StringBuilder();
+            // What the retainer's containers hold, only for the log (see below).
+            var dump  = group == Group.Retainer ? new System.Text.StringBuilder() : null;
             foreach (var (type, fallback) in ContainersOf(group))
             {
                 var container = manager->GetInventoryContainer(type);
                 var loaded    = container != null && container->IsLoaded;
                 var size      = loaded ? container->Size : fallback;
-                dump.Append($" {type}({(loaded ? size : -1)}):");
+                dump?.Append($" {type}({(loaded ? size : -1)}):");
                 for (var i = 0; i < size; i++)
                 {
                     var slot = loaded ? container->GetInventorySlot(i) : null;
@@ -245,7 +246,7 @@ internal sealed unsafe class InventoryHighlighter : IDisposable
                         if (!byIcon.TryGetValue(icon, out var same)) byIcon[icon] = same = [];
                         same.Add(new Candidate((slot->Flags & InventoryItem.ItemFlags.HighQuality) != 0, (int)slot->Quantity, wanted.Contains(slot->ItemId), SortKey(slot->ItemId), slot->ItemId));
                     }
-                    if (slot != null && slot->ItemId != 0) dump.Append($" {i}={slot->ItemId}{((slot->Flags & InventoryItem.ItemFlags.HighQuality) != 0 ? "hq" : "")}");
+                    if (dump is not null && slot != null && slot->ItemId != 0) dump.Append($" {i}={slot->ItemId}{((slot->Flags & InventoryItem.ItemFlags.HighQuality) != 0 ? "hq" : "")}");
                 }
             }
 
@@ -266,7 +267,7 @@ internal sealed unsafe class InventoryHighlighter : IDisposable
                     flags.AddRange(ResolveByOrder(Group.Player, entries));
                 }
             }
-            else if (group == Group.Retainer)
+            else if (dump is not null)
             {
                 // What the retainer's containers hold, to compare with what its window draws (see the log of its grid).
                 LogOnce("containers:" + dump, "InventoryHighlighter: retainer containers (slot=item id):" + dump);
@@ -666,9 +667,14 @@ internal sealed unsafe class InventoryHighlighter : IDisposable
         return start < end && int.TryParse(name[start..end], out var page) ? page : null;
     }
 
+    // Diagnostics of how a window was read: written once per distinct state, at Debug level so they don't fill the log.
+    // The keys hold what was read, so the set is emptied now and then instead of growing for the whole session.
+    private const int MaxLogged = 500;
+
     private void LogOnce(string key, string message)
     {
-        if (_logged.Add(key)) Svc.Log.Information(message);
+        if (_logged.Count >= MaxLogged) _logged.Clear();
+        if (_logged.Add(key)) Svc.Log.Debug(message);
     }
 
     private static string Describe(Dictionary<ComponentType, int> kinds)
