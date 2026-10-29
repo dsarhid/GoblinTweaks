@@ -34,6 +34,24 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.3.0", "2026-10-29",
+            "New Goblin Hotbar Icons: round, sphere-like hotbar icons. Plus fixes and new options in almost every tweak.",
+            [
+                "New: Goblin Hotbar Icons — round hotbar icons with a thin ring, an optional sphere look (bent and shaded, strength in the settings) and charge counters moved out of the circle; /ghi",
+                "New: Goblin Battle Text can announce each charge that comes back (\"charge ready (2/3)!\") and copy one character's options to all the others",
+                "New: Goblin Damage Done — click a player to see their damage by action, copy the table as text, show it only in combat or in a duty",
+                "Fix: Goblin Damage Done counted every player of Eureka, Bozja, Occult Crescent and Frontline and the fight never ended — only you, your party and your alliance count",
+                "Fix: Goblin Achievements shared pins and lists between characters and announced a false completion on a character change — now per character",
+                "New: Goblin Achievements can refresh the pinned achievements by itself, and a row of the tracker opens that achievement",
+                "Fix: AutoGoblinRetainer could list a new item for 1 gil after a bait listing — new listings are checked against the normal price too",
+                "New: AutoGoblinRetainer — \"Keep my price\" list, choose which retainers Pinch visits, undercut by a percentage, gil totals at the end",
+                "Fix: Goblin Loot looped through the list in raids with more than 8 items, hid players 7 and 8 and showed winners from another party as \"Nobody got it\"",
+                "New: Goblin Loot duty summary, \"Auto\" for timed-out rolls and your job icon on items you can wear",
+                "New: GoblinSniper announces new deals in the chat with a link, has a right-click menu (copy, Universalis, ignore) and marks new deals",
+                "New: Squadron and Venture timers say what finishes next and can tell you in the chat with a sound; their bar icons no longer show as \"=\"",
+                "Fix: Weapon pose per job shared poses between characters — now per character, with a Settings window",
+                "New: Recipe List completion marks can mark recipes never crafted with a gold \"!\"; Settings windows next to Help for every tweak",
+            ]),
         new("1.2.8", "2026-10-28",
             "Crafting Materials lists only crafting-log recipes, with a shopping list, crafts possible, material cost and margin.",
             [

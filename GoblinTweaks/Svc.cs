@@ -13,6 +13,7 @@ internal sealed class Svc
     [PluginService] public static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
     [PluginService] public static IDataManager Data { get; private set; } = null!;
     [PluginService] public static ITextureProvider Textures { get; private set; } = null!;
+    [PluginService] public static ITextureReadbackProvider TextureReadback { get; private set; } = null!;
     [PluginService] public static IGameGui     GameGui     { get; private set; } = null!;
     [PluginService] public static IPlayerState PlayerState { get; private set; } = null!;
     [PluginService] public static IContextMenu   ContextMenu   { get; private set; } = null!;

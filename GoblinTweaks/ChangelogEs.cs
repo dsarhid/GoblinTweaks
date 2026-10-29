@@ -8,6 +8,24 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.3.0"] = (
+            "Nuevo Goblin Hotbar Icons: íconos redondos con efecto esfera. Y arreglos y opciones nuevas en casi todos los tweaks.",
+            [
+                "New: Goblin Hotbar Icons — íconos redondos en las barras con un aro fino, aspecto de esfera opcional (curvado y sombreado, fuerza en los ajustes) y contadores de cargas fuera del círculo; /ghi",
+                "New: Goblin Battle Text puede avisar cada carga que vuelve (\"¡carga lista (2/3)!\") y copiar las opciones de un personaje a todos los demás",
+                "New: Goblin Damage Done — hacé clic en un jugador para ver su daño por acción, copiá la tabla como texto, mostrala solo en combate o en una duty",
+                "Fix: Goblin Damage Done contaba a todos los jugadores de Eureka, Bozja, Occult Crescent y Frontline y la pelea nunca terminaba — ahora solo cuentan vos, tu grupo y tu alianza",
+                "Fix: Goblin Achievements compartía pines y listas entre personajes y anunciaba un logro falso al cambiar de personaje — ahora es por personaje",
+                "New: Goblin Achievements puede actualizar solo los logros fijados, y una fila del seguimiento abre ese logro",
+                "Fix: AutoGoblinRetainer podía publicar un ítem nuevo a 1 gil después de una publicación trampa — ahora las publicaciones nuevas también se comparan con el precio normal",
+                "New: AutoGoblinRetainer — lista \"Mantener mi precio\", elegir qué retainers visita Pinch, rebajar por porcentaje y totales en gil al final",
+                "Fix: Goblin Loot recorría la lista en bucle en raids con más de 8 ítems, tapaba a los jugadores 7 y 8 y mostraba a ganadores de otro grupo como \"Nadie se lo quedó\"",
+                "New: resumen de la duty en Goblin Loot, \"Auto\" para las tiradas que vencieron y el ícono de tu job en los ítems que podés usar",
+                "New: GoblinSniper avisa las ofertas nuevas en el chat con un link, tiene menú de clic derecho (copiar, Universalis, ignorar) y marca las ofertas nuevas",
+                "New: los timers de Squadron y Ventures dicen qué termina primero y pueden avisarte en el chat con un sonido; sus íconos en la barra ya no se ven como \"=\"",
+                "Fix: Weapon pose per job compartía las poses entre personajes — ahora es por personaje, con una ventana de Ajustes",
+                "New: Recipe List completion marks puede marcar con un \"!\" dorado las recetas nunca fabricadas; ventanas de Ajustes al lado de Ayuda en cada tweak",
+            ]),
         ["1.2.8"] = (
             "Crafting Materials lista solo recetas del crafting log, con lista de compras, crafteos posibles, costo y margen.",
             [
