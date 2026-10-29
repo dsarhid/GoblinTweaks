@@ -99,7 +99,7 @@ internal sealed class DamageMeterNode : OverlayNode
     public const float IconSize   = 20f;
     public const float ButtonSize = 18f;
     private const float ButtonGap = 3f;
-    private const int Buttons     = 6;
+    private const int Buttons     = 7;
     public const float SideGap    = 4f;
 
     /// <summary>The header is this much of the opacity of the rest of the table.</summary>
@@ -146,6 +146,15 @@ internal sealed class DamageMeterNode : OverlayNode
     /// <summary>Clicked the list: opens or closes the history of fights.</summary>
     public Action? OnToggleHistory { get; set; }
 
+    /// <summary>Clicked the two sheets: copies the table.</summary>
+    public Action? OnCopy { get; set; }
+
+    /// <summary>Clicked a line of the table (its index, from the top).</summary>
+    public Action<int>? OnRow { get; set; }
+
+    /// <summary>Whether the lines of the table can be clicked.</summary>
+    public bool RowsClickable { get; set; }
+
     /// <summary>The title, which is also what drags the table. Add it to the overlay next to this node.</summary>
     public DamageMeterHandleNode Handle { get; }
 
@@ -164,9 +173,12 @@ internal sealed class DamageMeterNode : OverlayNode
         _buttonsBackground.AttachNode(this);
 
         for (var i = 0; i < MaxRows; i++)
-            _rows[i] = MeterRows.Build(this, PanelWidth, i, null);
+        {
+            var index = i;
+            _rows[i] = MeterRows.Build(this, PanelWidth, i, () => OnRow?.Invoke(index));
+        }
 
-        // Header buttons, left to right: leaf, plus, list, padlock, cog, X.
+        // Header buttons, left to right: leaf, plus, list, padlock, cog, sheets, X.
         var y0 = (HeaderH - ButtonSize) / 2f;
         float X(int index) => titleW + 4f + index * (ButtonSize + ButtonGap);
 
@@ -175,14 +187,16 @@ internal sealed class DamageMeterNode : OverlayNode
         DrawList(new Vector2(X(2), y0));
         (_lockOpen, _lockClosed) = DrawPadlock(new Vector2(X(3), y0));
         DrawCog(new Vector2(X(4), y0));
-        DrawCross(new Vector2(X(5), y0));
+        DrawCopy(new Vector2(X(5), y0));
+        DrawCross(new Vector2(X(6), y0));
 
         AddHitArea(new Vector2(X(0), y0), () => OnToggleMode?.Invoke());
         AddHitArea(new Vector2(X(1), y0), () => OnToggleExtra?.Invoke());
         AddHitArea(new Vector2(X(2), y0), () => OnToggleHistory?.Invoke());
         AddHitArea(new Vector2(X(3), y0), () => OnToggleLock?.Invoke());
         AddHitArea(new Vector2(X(4), y0), () => OnOpenSettings?.Invoke());
-        AddHitArea(new Vector2(X(5), y0), () => OnClear?.Invoke());
+        AddHitArea(new Vector2(X(5), y0), () => OnCopy?.Invoke());
+        AddHitArea(new Vector2(X(6), y0), () => OnClear?.Invoke());
 
         // Over the end of the title, where it is cut: it shows the title whole. It is on this node, not on the one that drags,
         // and when the table can be dragged it leaves the start of the title free for it.
@@ -249,7 +263,7 @@ internal sealed class DamageMeterNode : OverlayNode
         }
     }
 
-    /// <summary>The tooltips of the four buttons, in order: leaf, padlock, cog, X.</summary>
+    /// <summary>The tooltips of the buttons, in order: leaf, plus, list, padlock, cog, sheets, X.</summary>
     public void SetTooltips(IReadOnlyList<string> texts)
     {
         for (var i = 0; i < _hitAreas.Count && i < texts.Count; i++)
@@ -298,6 +312,7 @@ internal sealed class DamageMeterNode : OverlayNode
         {
             var row = _rows[i];
             row.Visible = i < count;
+            if (row.Hit is not null) row.Hit.IsVisible = i < count && RowsClickable;
             if (i >= count) continue;
 
             var data = rows[i];
@@ -399,6 +414,16 @@ internal sealed class DamageMeterNode : OverlayNode
         Piece(host, 1f, 8f, 16f, 2f, Glyph, 0.785f);
         Piece(host, 4f, 4f, 10f, 10f, Glyph);               // ring
         Piece(host, 7f, 7f, 4f, 4f, HeaderColor);           // hole
+    }
+
+    /// <summary>Two sheets, one over the other: copy.</summary>
+    private void DrawCopy(Vector2 position)
+    {
+        var host = Glyphs(position);
+        Piece(host, 2f, 2f, 10f, 11f, Glyph);           // the sheet behind
+        Piece(host, 3.5f, 3.5f, 7f, 8f, HeaderColor);
+        Piece(host, 6f, 5f, 10f, 11f, Glyph);           // the sheet in front
+        Piece(host, 7.5f, 6.5f, 7f, 8f, HeaderColor);
     }
 
     private void DrawCross(Vector2 position)

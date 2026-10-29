@@ -11,6 +11,7 @@ using FFXIVClientStructs.FFXIV.Client.Game.Object;
 using FFXIVClientStructs.FFXIV.Client.UI.Info;
 using GoblinTweaks.Core;
 using GoblinTweaks.Localization;
+using GoblinTweaks.Native;
 using GoblinTweaks.UI;
 using GoblinTweaks.UI.Nodes;
 using KamiToolKit.UiOverlay;
@@ -37,7 +38,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
 {
     public enum Meter { Damage, Heal, Taken }
 
-    private enum SideView { None, History, Detail }
+    private enum SideView { None, History, Detail, Breakdown }
 
     public sealed class Options
     {
@@ -82,6 +83,12 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
 
         /// <summary>Count what a heal wasted on a target that was already full. Off: healing is what was really restored.</summary>
         public bool IncludeOverheal { get; set; }
+
+        /// <summary>Clicking a player of the table shows their damage by action at the side.</summary>
+        public bool BreakdownOnClick { get; set; } = true;
+
+        /// <summary>The table only shows in combat or in a duty (and while a fight is going on).</summary>
+        public bool OnlyWhenRelevant { get; set; }
     }
 
     private sealed class Stat
@@ -191,6 +198,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
     private bool _seedExtra;
     private Vector2? _placedExtra;
     private readonly List<uint> _mainIds = [];
+    private uint _breakdownId;
     private int _fightCount;
     private DateTime _nextPoll = DateTime.MinValue;
     private Exception? _failure;
@@ -230,6 +238,8 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
             },
             OnToggleExtra   = ToggleExtra,
             OnToggleHistory = () => SetSide(_side == SideView.None ? SideView.History : SideView.None),
+            OnCopy          = CopyTable,
+            OnRow           = OpenBreakdown,
             OnToggleLock = () =>
             {
                 Settings.Locked = !Settings.Locked;
@@ -240,7 +250,11 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         _historyPanel = new SidePanelNode(HistoryWidth, pin: false)
         {
             OnRow    = OpenFight,
-            OnHeader = () => { if (_side == SideView.Detail) SetSide(SideView.History); },
+            OnHeader = () =>
+            {
+                if (_side == SideView.Detail) SetSide(SideView.History);
+                else if (_side == SideView.Breakdown) SetSide(SideView.None);
+            },
         };
         _extraOpen = false;
         _side = SideView.None;
@@ -264,6 +278,10 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         {
             _tickHook = Svc.GameInterop.HookFromAddress<StatusManager.Delegates.ProcessHotDot>((nint)tickAddress, OnTick);
             _tickHook.Enable();
+        }
+        else
+        {
+            Svc.Log.Warning("GoblinDamageDone: the game function of damage and healing over time was not found (game updated?); only what actions do is counted.");
         }
 
         Svc.Framework.Update += OnUpdate;
@@ -301,7 +319,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
 
     public override IReadOnlyList<TweakButton> Buttons =>
     [
-        new(TMain("Button.Settings"), TMain("Open.Help"), () => _addon?.Toggle()),
+        new(Loc.Get("Window.Settings"), TMain("Open.Help"), () => _addon?.Toggle()),
         new(TMain("Button.ResetPosition"), TMain("ResetPosition.Help"), ResetPosition),
     ];
 
@@ -370,7 +388,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
     private DamageDoneSettingsAddon NewAddon() => new()
     {
         InternalName = "GtkDamageDone",
-        Title        = T("Title"),
+        Title        = $"{T("Title")} — {Loc.GetIn(UiLanguage, "Window.Settings")}",
         Size         = new Vector2(520f, 520f),
         Tweak        = this,
     };
@@ -386,7 +404,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
     }
 
     private void ApplyTooltips() => _node?.SetTooltips(
-        [T("Tooltip.Mode"), T("Tooltip.Extra"), T("Tooltip.History"), T("Tooltip.Lock"), T("Tooltip.Settings"), T("Tooltip.Clear")]);
+        [T("Tooltip.Mode"), T("Tooltip.Extra"), T("Tooltip.History"), T("Tooltip.Lock"), T("Tooltip.Settings"), T("Tooltip.Copy"), T("Tooltip.Clear")]);
 
     private void ToggleExtra()
     {
@@ -416,6 +434,42 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         _detail = view == SideView.Detail ? detail ?? _detail : null;
         _dirty = true;
         _nextRefresh = DateTime.MinValue;
+    }
+
+    /// <summary>Clicked a player of the main table: their damage by action at the side, or closes it when it already shows them.</summary>
+    private void OpenBreakdown(int line)
+    {
+        if (!Settings.BreakdownOnClick || Previewing || line < 0 || line >= _mainIds.Count) return;
+
+        var id = _mainIds[line];
+        if (_side == SideView.Breakdown && _breakdownId == id)
+        {
+            SetSide(SideView.None);
+            return;
+        }
+
+        _breakdownId = id;
+        SetSide(SideView.Breakdown);
+    }
+
+    /// <summary>
+    /// Copies the table of the fight as text, one player per line, to paste in Discord or a chat: what it shows, the boss
+    /// and how long it lasted, then each line as the table writes it.
+    /// </summary>
+    private void CopyTable()
+    {
+        if (Previewing || _fight is not { } fight || fight.Players.Count == 0)
+        {
+            Svc.Chat.Print(T("Chat.NothingToCopy"), Name);
+            return;
+        }
+
+        var mode  = Settings.Mode;
+        var rows  = RowsOf(fight, mode, Math.Clamp(Settings.Rows, 1, MaxRows), null);
+        var title = $"{TitleOf(mode)} · {(fight.Boss.Length > 0 ? fight.Boss : T("Side.Unknown"))} · {Length(fight.Length)}";
+        var text  = string.Join("\n", rows.Select(row => $"{row.Name}  {row.Value}").Prepend(title));
+
+        Svc.Chat.Print(T(ClipboardHelper.SetText(text) ? "Chat.Copied" : "Chat.CopyFailed"), Name);
     }
 
     /// <summary>Clicked a fight of the history: opens its details.</summary>
@@ -1074,17 +1128,30 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         => Svc.Condition[ConditionFlag.BoundByDuty] || Svc.Condition[ConditionFlag.BoundByDuty56];
 
     /// <summary>
-    /// Whether a player counts: in a duty everyone around is in it; out of one, only you and your party, so the
-    /// strangers fighting nearby stay out.
+    /// Whether a player counts: you, your party, and in a duty your alliance. Not everyone around: Eureka, Bozja, Occult
+    /// Crescent and Frontline are duties too, full of players who are not with you.
     /// </summary>
     private static bool Counts(uint entityId)
     {
-        if (InDuty()) return true;
-
         var player = Control.GetLocalPlayer();
         if (player != null && entityId == player->EntityId) return true;
 
-        return InParty(entityId);
+        return InParty(entityId) || (InDuty() && InAlliance(entityId));
+    }
+
+    /// <summary>Whether a player is in one of the other groups of your alliance.</summary>
+    private static bool InAlliance(uint entityId)
+    {
+        if (entityId is 0 or NoEntity) return false;
+
+        var groups = GroupManager.Instance();
+        if (groups == null || !groups->MainGroup.IsAlliance) return false;
+
+        var group = &groups->MainGroup;
+        for (var i = 0; i < group->AllianceMembers.Length; i++)
+            if (group->AllianceMembers[i].EntityId == entityId) return true;
+
+        return false;
     }
 
     /// <summary>
@@ -1149,13 +1216,17 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
             _fightCount = 0;
             _detail = null;
             if (_side == SideView.Detail) _side = SideView.History;
+
+            // What was learned of the ticks is of entities of the last zone, which are gone.
+            _tickWeights.Clear();
+            _lastTick.Clear();
         }
 
         var fight = _fight = new Fight { Number = ++_fightCount, Start = now, Last = now, Territory = territory };
         _history.Add(fight);
         if (_history.Count > HistoryLimit) _history.RemoveAt(0);
         _skipped = default;
-        Svc.Log.Information($"GoblinDamageDone: fight #{fight.Number} started.");
+        Svc.Log.Debug($"GoblinDamageDone: fight #{fight.Number} started.");
         return fight;
     }
 
@@ -1242,20 +1313,28 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
             .OrderByDescending(stat => stat.Damage)
             .Select(stat => $"{stat.Name} dmg {stat.Damage:N0} heal {stat.Heal:N0} taken {stat.Taken:N0} hits {stat.Hits} (crit {stat.Crits}, direct {stat.DirectHits}) "
                 + $"by action [{string.Join("; ", stat.Actions.OrderByDescending(pair => pair.Value.Damage).Take(12).Select(pair => $"{ActionLabel(pair.Key)} {pair.Value.Damage:N0} x{pair.Value.Hits}"))}]"));
-        Svc.Log.Information($"GoblinDamageDone: fight #{fight.Number} ended after {fight.Length:m\\:ss} against {(fight.Boss.Length > 0 ? fight.Boss : "-")}; "
+        Svc.Log.Debug($"GoblinDamageDone: fight #{fight.Number} ended after {fight.Length:m\\:ss} against {(fight.Boss.Length > 0 ? fight.Boss : "-")}; "
             + $"{players}. Left out: effects with no caster {_skipped.NoCaster}, caster not of the duty {_skipped.NotOfTheDuty}, "
             + $"target not found {_skipped.NoTarget}, target not an enemy {_skipped.NotEnemy}; "
             + $"damage over time counted {_skipped.TickCounted:N0}, not credited {_skipped.TickLost:N0}.");
     }
 
     /// <summary>Puts the panel where it was left, and takes its new place when the user has dragged it.</summary>
+    /// <summary>
+    /// Whether the table is on screen: on, and with "only when it matters" also in combat, in a duty or during a fight.
+    /// While the settings are open it always is, to show the example.
+    /// </summary>
+    private bool ShownNow => Previewing
+        || Settings.Visible && (!Settings.OnlyWhenRelevant || Svc.Condition[ConditionFlag.InCombat] || InDuty() || _fight is { Ended: false });
+
     private void PlacePanel(DamageMeterNode node)
     {
         var device = FFXIVClientStructs.FFXIV.Client.Graphics.Kernel.Device.Instance();
         if (device == null) return;
 
         var anchor = new Vector2(device->Width / 2f, device->Height / 2f);
-        node.Shown   = Settings.Visible || Previewing;
+        node.Shown   = ShownNow;
+        node.RowsClickable = Settings.BreakdownOnClick && !Previewing;
         node.Locked  = Settings.Locked;
         node.Opacity  = Settings.Opacity / 100f;
         node.FontSize = Settings.FontSize;
@@ -1290,7 +1369,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
             history.SetFontSize(Settings.FontSize);
             history.SetZoom(zoom);
             history.Position  = docked;
-            history.IsVisible = Settings.Visible && _side != SideView.None && !Previewing;
+            history.IsVisible = ShownNow && _side != SideView.None && !Previewing;
         }
 
         if (_extra is not { } extra) return;
@@ -1329,7 +1408,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
             _placedExtra   = null;
         }
 
-        extra.IsVisible        = (Settings.Visible || Previewing) && (_extraOpen || Previewing);
+        extra.IsVisible        = ShownNow && (_extraOpen || Previewing);
         extra.Handle!.IsVisible = extra.IsVisible && Settings.ExtraDetached;
     }
 
@@ -1464,6 +1543,9 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
                 case SideView.Detail:
                     ShowDetail(history);
                     break;
+                case SideView.Breakdown:
+                    ShowBreakdown(history);
+                    break;
             }
         }
 
@@ -1562,6 +1644,45 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
 
         node.SetHeader($"< {title}", true);
         node.SetRows(RowsOf(fight, mode, MaxRows, before), false);
+    }
+
+    /// <summary>
+    /// The damage of one player of the fight by action, the biggest first: each with its icon, the total, how many hits
+    /// and its share of the player's damage. Damage over time is one line. A click on the title closes it.
+    /// </summary>
+    private void ShowBreakdown(SidePanelNode node)
+    {
+        if (!Settings.BreakdownOnClick || _fight is not { } fight || !fight.Players.TryGetValue(_breakdownId, out var stat))
+        {
+            SetSide(SideView.None);
+            return;
+        }
+
+        var name = stat.IsLimitBreak ? T("LimitBreak") : stat.Name;
+        node.SetHeader($"< {name} · {T("Side.Breakdown")}", true);
+
+        var actions = stat.Actions.Where(pair => pair.Value.Damage > 0).OrderByDescending(pair => pair.Value.Damage).ToList();
+        var total   = actions.Sum(pair => pair.Value.Damage);
+        var rows    = new List<DamageMeterRow>();
+        if (total > 0)
+        {
+            var top   = actions[0].Value.Damage;
+            var sheet = Svc.Data.GetExcelSheet<LuminaAction>();
+            foreach (var (actionId, (damage, hits)) in actions.Take(MaxRows))
+            {
+                var row   = actionId is TickAction or 0 ? null : sheet?.GetRowOrDefault(actionId);
+                var label = actionId == TickAction ? T("Side.Dot")
+                          : row?.Name.ExtractText() is { Length: > 0 } actionName
+                              ? row.Value.ActionCategory.RowId == 1 ? $"{actionName} ({T("Side.Auto")})" : actionName
+                              : "?";
+                var share = (damage * 100d / total).ToString("0.0", CultureInfo.InvariantCulture);
+
+                rows.Add(new DamageMeterRow(label, stat.JobId, $"{Short(damage)} ({hits}x, {share}%)",
+                    (float)((double)damage / top), ColorOf(stat.JobId), IconId: row?.Icon ?? 0u));
+            }
+        }
+
+        node.SetRows(rows, false);
     }
 
     /// <summary>1.55M, 320.93M, 12.4K: the way damage meters write big numbers.</summary>

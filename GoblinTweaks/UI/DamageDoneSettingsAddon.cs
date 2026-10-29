@@ -42,8 +42,12 @@ internal sealed class DamageDoneSettingsAddon : SettingsPanelAddon
         Section(Tweak.Text("Section.Table"));
         Toggle(Tweak.Text("Setting.Visible"), Tweak.Text("Setting.Visible.Help"), options.Visible,
             on => { options.Visible = on; Tweak.Changed(); });
+        Toggle(Tweak.Text("Setting.OnlyWhenRelevant"), Tweak.Text("Setting.OnlyWhenRelevant.Help"), options.OnlyWhenRelevant,
+            on => { options.OnlyWhenRelevant = on; Tweak.Changed(); });
         Number(Tweak.Text("Setting.Rows"), Tweak.Text("Setting.Rows.Help"), 1, GoblinDamageDone.MaxRows, 1, options.Rows,
             value => { options.Rows = value; Tweak.Changed(); });
+        Toggle(Tweak.Text("Setting.Breakdown"), Tweak.Text("Setting.Breakdown.Help"), options.BreakdownOnClick,
+            on => { options.BreakdownOnClick = on; Tweak.Changed(); });
 
         Section(Tweak.Text("Section.Appearance"));
         Number(Tweak.Text("Setting.Opacity"), Tweak.Text("Setting.Opacity.Help"), 0, 100, 5, options.Opacity,
