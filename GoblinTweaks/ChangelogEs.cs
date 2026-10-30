@@ -8,6 +8,14 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.3.2"] = (
+            "GoblinSniper puede ocultar los coleccionables que ya tenés, y el contraataque de Damnation sale con su nombre.",
+            [
+                "New: GoblinSniper puede ocultar las monturas, minions, rollos de orchestrion, peinados y demás coleccionables que este personaje ya tiene (activado por defecto)",
+                "Fix: Goblin Battle Text mostraba el contraataque de Damnation y Vengeance con la acción del enemigo (\"Critical Bite\") — ahora sale como Damnation",
+                "New: Goblin Damage Done — elegí cuántos segundos fuera de combate terminan una pelea",
+                "Fix: cerrar algunas ventanas con desplegables (GoblinSniper, Crafting Materials, Goblin Battle Text) podía crashear el juego — ahora sus opciones se cargan después de agregar el desplegable",
+            ]),
         ["1.3.1"] = (
             "GoblinSniper: escanear todo el data center ya no oculta las ofertas de tu mundo.",
             [

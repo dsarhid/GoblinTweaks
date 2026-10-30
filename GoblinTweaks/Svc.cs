@@ -26,6 +26,7 @@ internal sealed class Svc
     [PluginService] public static ICondition Condition { get; private set; } = null!;
     [PluginService] public static IPartyList Party { get; private set; } = null!;
     [PluginService] public static IClientState ClientState { get; private set; } = null!;
+    [PluginService] public static IUnlockState UnlockState { get; private set; } = null!;
 
     public static void Initialize(IDalamudPluginInterface pluginInterface) => pluginInterface.Create<Svc>();
 

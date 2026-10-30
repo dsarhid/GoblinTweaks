@@ -55,6 +55,10 @@ internal unsafe class BattleTextAddon : NativeAddon
 
     // Drop-downs are attached last, bottom one first, so an open list draws over the rows below it.
     private readonly List<(NodeBase Node, ResNode Parent)> _dropDowns = [];
+
+    // Run once the drop-downs are attached. Options that change later must be set only then: option buttons built
+    // before attaching are left behind in the window's node list when replaced, and closing the window then crashes.
+    private readonly List<Action> _afterAttach = [];
     private Page? _page;
 
     // A part of the page being built that is shown or hidden as one; null to build on the page itself.
@@ -131,6 +135,7 @@ internal unsafe class BattleTextAddon : NativeAddon
 
         _pages.Clear();
         _dropDowns.Clear();
+        _afterAttach.Clear();
         _page      = null;
         _group     = null;
         _areaPage   = null;
@@ -724,6 +729,10 @@ internal unsafe class BattleTextAddon : NativeAddon
         for (var i = _dropDowns.Count - 1; i >= 0; i--)
             _dropDowns[i].Node.AttachNode(_dropDowns[i].Parent);
         _dropDowns.Clear();
+
+        foreach (var action in _afterAttach)
+            action();
+        _afterAttach.Clear();
     }
 
     // ── Rows ────────────────────────────────────────────────────────────────────
@@ -911,15 +920,12 @@ internal unsafe class BattleTextAddon : NativeAddon
     private void AddAnimationAt(Vector2 groupPosition, float groupWidth, Vector2 position, float width,
         GoblinBattleText.BattleTextHighlight kind, GoblinBattleText.HighlightOptions options)
     {
-        var shown = GoblinBattleText.AnimationsOf(GoblinBattleText.GroupOf(options.Animation));
+        // Its options change with the kind chosen, so they are set only once it is attached.
         var animation = new EnumDropDownNode<GoblinBattleText.BattleTextAnimation>
         {
             Position         = position,
             Size             = new Vector2(width, 24f),
-            MaxListOptions   = Math.Min(shown.Count, 12),
             GetLabelFunction = option => Tweak.Text($"Animation.{option}"),
-            Options          = shown,
-            SelectedOption   = options.Animation,
             TextTooltip      = Tweak.Text("Highlight.Animation.Help"),
         };
 
@@ -962,6 +968,7 @@ internal unsafe class BattleTextAddon : NativeAddon
 
         _dropDowns.Add((groups, Target));
         _dropDowns.Add((animation, Target));
+        _afterAttach.Add(() => ShowAnimations(GoblinBattleText.AnimationsOf(GoblinBattleText.GroupOf(options.Animation)), options.Animation));
         _page!.Refresh.Add(() =>
         {
             var group = GoblinBattleText.GroupOf(options.Animation);

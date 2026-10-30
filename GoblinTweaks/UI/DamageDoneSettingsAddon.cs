@@ -69,5 +69,8 @@ internal sealed class DamageDoneSettingsAddon : SettingsPanelAddon
             on => { options.IncludeOverTime = on; Tweak.Changed(); });
         Toggle(Tweak.Text("Setting.Overheal"), Tweak.Text("Setting.Overheal.Help"), options.IncludeOverheal,
             on => { options.IncludeOverheal = on; Tweak.Changed(); });
+        Number(Tweak.Text("Setting.EndSeconds"), Tweak.Text("Setting.EndSeconds.Help"),
+            GoblinDamageDone.MinEndSeconds, GoblinDamageDone.MaxEndSeconds, 1, options.EndSeconds,
+            value => { options.EndSeconds = value; Tweak.Changed(); });
     }
 }

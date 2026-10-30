@@ -999,12 +999,15 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             Position         = new Vector2(pos.X + 606f, cy),
             Size             = new Vector2(170f, 24f),
             MaxListOptions   = 10,
-            Options          = [AllClasses],
-            SelectedOption   = _classFilter,
             GetLabelFunction = key => key == AllClasses ? CraftLoc.Get("class.all") : key,
         };
         _classDropdown.OnOptionSelected = s => { _classFilter = s; _pendingFilter = true; };
         _classDropdown.AttachNode(this);
+
+        // Its options change after each rescan, so they are set only once it is attached: option buttons built before
+        // attaching are left behind in the window's node list when replaced, and closing the window then crashes.
+        _classDropdown.Options        = [AllClasses];
+        _classDropdown.SelectedOption = _classFilter;
     }
 
     private static string SortLabel(string key) => key switch

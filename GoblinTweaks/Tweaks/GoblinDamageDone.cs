@@ -89,7 +89,14 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
 
         /// <summary>The table only shows in combat or in a duty (and while a fight is going on).</summary>
         public bool OnlyWhenRelevant { get; set; }
+
+        /// <summary>Seconds out of combat (and with nobody doing anything) before the fight ends; the next hit starts a new one.</summary>
+        public int EndSeconds { get; set; } = DefaultEndSeconds;
     }
+
+    internal const int DefaultEndSeconds = 6;
+    internal const int MinEndSeconds     = 1;
+    internal const int MaxEndSeconds     = 60;
 
     private sealed class Stat
     {
@@ -159,8 +166,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
     /// <summary>The most players that can be in a duty: an alliance raid.</summary>
     internal const int MaxRows = DamageMeterNode.MaxRows;
 
-    private static readonly TimeSpan EndGrace  = TimeSpan.FromSeconds(6);
-    private static readonly TimeSpan Refresh   = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan Refresh  = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan SaveDelay = TimeSpan.FromMilliseconds(600);
 
     // Colors of the bars, by the role of the job.
@@ -1279,7 +1285,10 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         }
     }
 
-    /// <summary>The fight is over when you have been out of combat a few seconds (a phase change does not take you out of it).</summary>
+    /// <summary>
+    /// The fight is over when you have been out of combat a few seconds, <see cref="Options.EndSeconds"/> (a phase change
+    /// does not take you out of it).
+    /// </summary>
     private void EndFightWhenOver()
     {
         if (_fight is not { Ended: false } fight) return;
@@ -1291,12 +1300,13 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         }
 
         var now = DateTime.UtcNow;
+        var grace = TimeSpan.FromSeconds(Math.Clamp(Settings.EndSeconds, MinEndSeconds, MaxEndSeconds));
         if (_outOfCombatSince == DateTime.MinValue) _outOfCombatSince = now;
-        if (now - _outOfCombatSince < EndGrace) return;
+        if (now - _outOfCombatSince < grace) return;
 
         // Being out of combat is only about you: dead (or raised and not yet back in it), you are out while the
         // fight goes on. It is over when nobody has done or taken anything for a moment either, like other meters.
-        if (now - fight.Last < EndGrace) return;
+        if (now - fight.Last < grace) return;
 
         fight.Ended = true;
         _dirty = true;

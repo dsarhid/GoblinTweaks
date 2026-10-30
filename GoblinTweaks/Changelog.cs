@@ -34,6 +34,14 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.3.2", "2026-10-30",
+            "GoblinSniper can hide collectibles you already have, and Damnation's counter shows under its own name.",
+            [
+                "New: GoblinSniper can hide the mounts, minions, orchestrion rolls, hairstyles and other collectibles this character already has (on by default)",
+                "Fix: Goblin Battle Text showed the counter of Damnation and Vengeance under the enemy's action (\"Critical Bite\") — it now shows as Damnation",
+                "New: Goblin Damage Done — choose how many seconds out of combat end a fight",
+                "Fix: closing some windows with drop-downs (GoblinSniper, Crafting Materials, Goblin Battle Text) could crash the game — their options are now set after the drop-down is attached",
+            ]),
         new("1.3.1", "2026-10-29",
             "GoblinSniper: scanning the whole data center no longer hides the deals found on your home world.",
             [

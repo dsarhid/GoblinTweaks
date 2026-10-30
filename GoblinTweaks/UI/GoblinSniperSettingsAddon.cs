@@ -67,6 +67,8 @@ internal sealed unsafe class GoblinSniperSettingsAddon : SettingsPanelAddon
         Section(Tweak.Text("Types"));
         Note(Tweak.Text("Types.Help"), Pad, ContentW, Muted);
         Space(6f);
+        Toggle(Tweak.Text("HideOwned"), Tweak.Text("HideOwned.Help"), options.HideOwned,
+            on => { options.HideOwned = on; Tweak.SaveCurrent(); });
         foreach (var (key, _) in GoblinSniper.Categories)
         {
             var label = Tweak.Text($"Category.{key}");

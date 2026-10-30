@@ -218,18 +218,21 @@ internal unsafe class GoblinSniperAddon : NativeAddon
         _sortDropdown.OnOptionSelected = mode => { _sortMode = mode; FilterChanged(); };
         _sortDropdown.AttachNode(this);
 
-        // Filter by world: its options are the worlds that have a deal right now.
+        // Filter by world: its options are the worlds that have a deal right now. They change while the window is
+        // open, so they are set only once it is attached: KamiToolKit (2.2.38 and later) loses track of option buttons
+        // built before attaching, and when a new count replaces them the freed buttons stay in the window's node list,
+        // which crashes the game when the window closes.
         _worldDropdown = new StringDropDownNode
         {
             GetLabelFunction = world => world == AllWorlds ? Tweak.Text("Filter.AllWorlds") : world,
             Position         = new Vector2(pos.X + 474f, cy + 1f),
             Size             = new Vector2(150f, 24f),
             MaxListOptions   = 10,
-            Options          = [AllWorlds, .. _worlds],
-            SelectedOption   = _worldFilter,
         };
         _worldDropdown.OnOptionSelected = world => { _worldFilter = world; FilterChanged(); };
         _worldDropdown.AttachNode(this);
+        _worldDropdown.Options        = [AllWorlds, .. _worlds];
+        _worldDropdown.SelectedOption = _worldFilter;
 
         // Filter by how recently the price was uploaded.
         _ageDropdown = new StringDropDownNode

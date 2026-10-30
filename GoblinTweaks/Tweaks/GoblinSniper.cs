@@ -10,6 +10,7 @@ using GoblinTweaks.Core;
 using GoblinTweaks.Localization;
 using GoblinTweaks.Services;
 using GoblinTweaks.UI;
+using Lumina.Excel;
 using LuminaItem = Lumina.Excel.Sheets.Item;
 
 namespace GoblinTweaks.Tweaks;
@@ -95,6 +96,9 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         /// <summary>Keys of <see cref="Categories"/> to watch.</summary>
         public HashSet<string> Categories { get; set; } = ["Mounts", "Minions"];
 
+        /// <summary>Skip collectibles (mounts, minions, orchestrion rolls...) this character already has.</summary>
+        public bool HideOwned { get; set; } = true;
+
         /// <summary>Individual item ids to watch, whatever their category.</summary>
         public List<uint> Items { get; set; } = [];
 
@@ -154,14 +158,17 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
     private static readonly TimeSpan RescanDelay = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan RetryDelay = TimeSpan.FromMinutes(2);
 
-    private sealed record ScanRequest(string Scope, string HomeWorld, int WorldsInDataCenter, bool WholeDataCenter, int Discount, int MinAveragePrice, TimeSpan MaxAge, TimeSpan MaxTimeWithoutSale, HashSet<string> Categories, HashSet<uint> Items, HashSet<uint> Ignored, ClientLanguage Language);
+    private sealed record ScanRequest(string Scope, string HomeWorld, int WorldsInDataCenter, bool WholeDataCenter, int Discount, int MinAveragePrice, TimeSpan MaxAge, TimeSpan MaxTimeWithoutSale, HashSet<string> Categories, HashSet<uint> Items, HashSet<uint> Ignored, bool HideOwned, ClientLanguage Language);
 
-    private sealed class Catalog(ClientLanguage language, Dictionary<uint, SniperItem> items)
+    private sealed class Catalog(ClientLanguage language, Dictionary<uint, SniperItem> items, HashSet<uint> usable)
     {
         /// <summary>Language of the item names.</summary>
         public ClientLanguage Language { get; } = language;
 
         public Dictionary<uint, SniperItem> Items { get; } = items;
+
+        /// <summary>Items that do something when used: the only ones that can unlock a collectible.</summary>
+        public HashSet<uint> Usable { get; } = usable;
 
         public SniperItem[] ByName { get; } = [.. items.Values.OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase)];
 
@@ -258,10 +265,12 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         _settingsAddon = NewSettingsAddon();
 
         Svc.Framework.Update += OnUpdate;
+        Svc.UnlockState.Unlock += OnUnlock;
     }
 
     protected internal override void Disable()
     {
+        Svc.UnlockState.Unlock -= OnUnlock;
         Svc.Framework.Update -= OnUpdate;
         CancelScan();
 
@@ -517,7 +526,7 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         var request = new ScanRequest(scope, homeWorld, Math.Max(1, worlds), Settings.WholeDataCenter, Math.Clamp(Settings.DiscountPercent, 1, 99), Settings.MinAveragePrice,
             TimeSpan.FromHours(Math.Clamp(Settings.MaxAgeHours, 1, 72)),
             TimeSpan.FromDays(Math.Clamp(Settings.MaxDaysWithoutSale, 1, 365)),
-            [.. Settings.Categories], [.. Settings.Items], [.. Settings.Ignored], DataLanguage);
+            [.. Settings.Categories], [.. Settings.Items], [.. Settings.Ignored], Settings.HideOwned, DataLanguage);
 
         _scanQueued = false;
         _cancel = new CancellationTokenSource();
@@ -538,11 +547,19 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         try
         {
             var catalog = GetCatalog(request.Language);
-            var ids = catalog.Items.Values
+            var candidates = catalog.Items.Values
                 .Where(item => (item.Category != null && request.Categories.Contains(item.Category)) || request.Items.Contains(item.Id))
                 .Where(item => !request.Ignored.Contains(item.Id))
                 .Select(item => item.Id)
                 .ToArray();
+
+            // Collectibles already owned are not even asked for. What is unlocked lives in game memory, read on the game thread.
+            HashSet<uint> owned = request.HideOwned
+                ? await Svc.Framework.RunOnFrameworkThread(() => OwnedItems(candidates.Where(catalog.Usable.Contains))).ConfigureAwait(false)
+                : [];
+            token.ThrowIfCancellationRequested();
+
+            var ids = candidates.Where(id => !owned.Contains(id)).ToArray();
             var watched = ids.ToHashSet();
 
             // Deals of the previous scan stay listed until their item is looked at again, as long as it is still
@@ -693,7 +710,8 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
 
     private static Catalog BuildCatalog(ClientLanguage language)
     {
-        var items = new Dictionary<uint, SniperItem>();
+        var items  = new Dictionary<uint, SniperItem>();
+        var usable = new HashSet<uint>();
 
         foreach (var item in Svc.Data.GetExcelSheet<LuminaItem>(language))
         {
@@ -701,6 +719,8 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
 
             var name = item.Name.ExtractText();
             if (string.IsNullOrEmpty(name)) continue;
+
+            if (item.ItemAction.RowId != 0) usable.Add(item.RowId);
 
             string? category = null;
             foreach (var (key, matches) in Categories)
@@ -713,7 +733,44 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
             items[item.RowId] = new SniperItem(item.RowId, name, item.Icon, (int)item.LevelItem.RowId, category);
         }
 
-        return new Catalog(language, items);
+        return new Catalog(language, items, usable);
+    }
+
+    /// <summary>Of the given items, the collectibles this character already has. Reads game memory: game thread only.</summary>
+    private static HashSet<uint> OwnedItems(IEnumerable<uint> ids)
+    {
+        var sheet = Svc.Data.GetExcelSheet<LuminaItem>();
+        var owned = new HashSet<uint>();
+        foreach (var id in ids)
+        {
+            if (sheet.GetRowOrDefault(id) is { } item && Svc.UnlockState.IsItemUnlockable(item) && Svc.UnlockState.IsItemUnlocked(item))
+                owned.Add(id);
+        }
+
+        return owned;
+    }
+
+    /// <summary>
+    /// Something was unlocked, say the minion just bought from a deal: its deals go away at once instead of at the next
+    /// scan. A scan in progress started while it was not owned yet, so it is started again.
+    /// </summary>
+    private void OnUnlock(RowRef _)
+    {
+        if (!Settings.HideOwned) return;
+
+        try
+        {
+            var deals = _deals;
+            var owned = OwnedItems(deals.Select(deal => deal.ItemId).Distinct());
+            if (owned.Count == 0) return;
+
+            lock (_scanLock) _deals = [.. deals.Where(deal => !owned.Contains(deal.ItemId))];
+            if (_status.Scanning) RequestScan();
+        }
+        catch (Exception ex)
+        {
+            ReportFailure(ex);
+        }
     }
 
     private void EnsureCatalog()

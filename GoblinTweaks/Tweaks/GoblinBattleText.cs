@@ -1292,12 +1292,13 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
         var action = actionKind == ActionKindAction ? LookupAction(actionId) : default;
 
-        // The attack an effect of yours answers a hit with (Vengeance, Damnation...) comes as a plain "Attack",
-        // not as the action that gave the effect: it takes its name and icon. Your own auto-attacks come as
-        // such, with their own action, and are left alone.
+        // The attack an effect of yours answers a hit with (Vengeance, Damnation...) comes with the action of that
+        // hit, not with the one that gave the effect: a plain "Attack", or the enemy's own action (Critical Bite...),
+        // which no job has. It takes the name and icon of the effect. Your own auto-attacks come as such, with
+        // their own action, and are left alone.
         uint countering = 0;
         if (damage && outgoing && from == player && !tick && action.Name is not null
-            && (action.IconId == 0 || action.Name == LookupAction(AttackAction).Name)
+            && (action.IconId == 0 || action.Name == LookupAction(AttackAction).Name || !IsPlayerAction(actionId))
             && (!autoAttack || actionId is not (AttackAction or ShotAction)))
         {
             countering = CounterOf(player);
@@ -1690,16 +1691,10 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         if (noEffect) _noEffectAction = (header->ActionId, DateTime.UtcNow);
         if (shown || noEffect || !Event(BattleTextEvent.ActionUsed).Enabled) return;
 
+        // Only the actions of a job: not mounting, teleporting, using an item...
         var actionId = header->ActionId;
-        if (!_playerActions.TryGetValue(actionId, out var isPlayerAction))
-        {
-            // Only the actions of a job: not mounting, teleporting, using an item...
-            isPlayerAction = Svc.Data.GetExcelSheet<LuminaAction>().TryGetRow(actionId, out var row) && row.IsPlayerAction;
-            _playerActions[actionId] = isPlayerAction;
-        }
-
-        var action = LookupAction(actionId);
-        if (!isPlayerAction || action.Name is null) return;
+        var action   = LookupAction(actionId);
+        if (!IsPlayerAction(actionId) || action.Name is null) return;
 
         var message = new BattleTextMessage
         {
@@ -2205,6 +2200,18 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         message.Static    = options.Motion == BattleTextMotion.Static;
         _pending.Add((options.Area, message));
         return true;
+    }
+
+    /// <summary>Whether an action is one a job uses, not an enemy's, a mount, a teleport or an item.</summary>
+    private bool IsPlayerAction(uint actionId)
+    {
+        if (!_playerActions.TryGetValue(actionId, out var isPlayerAction))
+        {
+            isPlayerAction = Svc.Data.GetExcelSheet<LuminaAction>().TryGetRow(actionId, out var row) && row.IsPlayerAction;
+            _playerActions[actionId] = isPlayerAction;
+        }
+
+        return isPlayerAction;
     }
 
     private (string? Name, uint IconId) LookupAction(uint actionId)
