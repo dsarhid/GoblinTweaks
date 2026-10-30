@@ -593,26 +593,29 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
                     continue;
                 }
 
-                var found = deals.Count;
+                var found = new List<SniperDeal>();
                 foreach (var snapshot in market)
                 {
                     if (!catalog.Items.TryGetValue(snapshot.ItemId, out var item)) continue;
 
                     var deal = Evaluate(item, snapshot, request);
-                    if (deal != null) deals.Add(deal);
+                    if (deal != null) found.Add(deal);
 
                     // Scanning the data center must not hide what scanning only the home world finds: a listing that is
                     // cheap for the home world can lose against cheaper listings or a lower average elsewhere.
                     if (snapshot.Home is { } home && Evaluate(item, home, request) is { } homeDeal && homeDeal.Key != deal?.Key)
-                        deals.Add(homeDeal);
+                        found.Add(homeDeal);
                 }
+
+                var confirmed = await ConfirmWithSalesAsync(found, request, token).ConfigureAwait(false);
+                deals.AddRange(confirmed);
 
                 done += batch.Length;
                 token.ThrowIfCancellationRequested();
 
                 // Publish as soon as this batch changes the list: a new deal, or an old one that is gone.
                 scanned.UnionWith(batch);
-                if (deals.Count > found || previous.Any(deal => batch.Contains(deal.ItemId)))
+                if (confirmed.Count > 0 || previous.Any(deal => batch.Contains(deal.ItemId)))
                     Publish(generation, [.. deals, .. previous.Where(deal => !scanned.Contains(deal.ItemId))]);
             }
 
@@ -693,9 +696,73 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         var competitor = market.Listings.Skip(1).FirstOrDefault(listing => listing.Retainer != cheapest.Retainer || listing.World != cheapest.World);
         if (competitor != null && cheapest.Price * 100 > competitor.Price * keep) return null;
 
+        // Every listing received is the same seller's and there are more: the other sellers' prices are unknown,
+        // and they may well be just as low.
+        if (competitor == null && market.Listings.Count >= UniversalisService.MarketListings) return null;
+
         return new SniperDeal(item.Id, item.Name, item.IconId, item.ItemLevel, item.Category,
             average, cheapest.Price, competitor?.Price ?? 0, cheapest.Quantity,
             cheapest.World ?? request.HomeWorld, cheapest.Hq, cheapest.Reviewed, salesPerDay);
+    }
+
+    // Universalis needs about a second per item for sale history and gives up beyond a handful: few items per request.
+    private const int HistoryBatchSize = 5;
+
+    /// <summary>
+    /// The average Universalis gives is a plain mean, so one absurd sale (gil passed between characters, a typo)
+    /// can make it many times the real price. The deals found are checked against the median of the real sales in
+    /// the scanned area: those it doesn't confirm are dropped, and the others take it as their normal price when it
+    /// is lower. Only the few items that look like deals are asked for, so the scan stays fast.
+    /// </summary>
+    private async Task<List<SniperDeal>> ConfirmWithSalesAsync(List<SniperDeal> deals, ScanRequest request, CancellationToken token)
+    {
+        if (deals.Count == 0) return deals;
+
+        var keep      = 100 - request.Discount;
+        var confirmed = new List<SniperDeal>(deals.Count);
+        foreach (var batch in deals.Select(deal => deal.ItemId).Distinct().Chunk(HistoryBatchSize))
+        {
+            var batchDeals = deals.Where(deal => batch.Contains(deal.ItemId)).ToList();
+
+            Dictionary<uint, List<SaleEntry>> history;
+            try
+            {
+                history = await UniversalisService.GetRecentSalesAsync(request.Scope, batch, request.MaxTimeWithoutSale, token).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (!token.IsCancellationRequested && UniversalisService.IsTransient(ex))
+            {
+                // Without the history the deals stand on the average alone, as before this check existed.
+                Svc.Log.Debug(ex, "{tweak}: sale history unavailable, deals not confirmed", Id);
+                confirmed.AddRange(batchDeals);
+                continue;
+            }
+
+            foreach (var deal in batchDeals)
+            {
+                // No sale in the period to go by: nothing to contradict the average.
+                if (MedianPrice(history.GetValueOrDefault(deal.ItemId) ?? [], deal.Hq) is not { } median)
+                {
+                    confirmed.Add(deal);
+                    continue;
+                }
+
+                if (median < request.MinAveragePrice || deal.Price * 100 > median * keep) continue;
+                confirmed.Add(median < deal.AveragePrice ? deal with { AveragePrice = median } : deal);
+            }
+        }
+
+        return confirmed;
+    }
+
+    /// <summary>Median unit price of the sales of the same quality, or of all of them when that quality never sold; null without sales.</summary>
+    private static long? MedianPrice(List<SaleEntry> sales, bool hq)
+    {
+        var same   = sales.Where(sale => sale.Hq == hq).ToList();
+        var prices = (same.Count > 0 ? same : sales).Select(sale => sale.PricePerUnit).Order().ToArray();
+        if (prices.Length == 0) return null;
+
+        var middle = prices.Length / 2;
+        return prices.Length % 2 == 1 ? prices[middle] : (prices[middle - 1] + prices[middle]) / 2;
     }
 
     /// <summary>Indexes every item that can be sold on the market board. Runs on a background thread.</summary>

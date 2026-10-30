@@ -323,6 +323,8 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     {
         Svc.Log.Information("CraftingMaterials: window finalizing.");
         _statusItems.Clear();
+        // The search box is rebuilt empty when the window opens again, so the search it filtered by goes with it.
+        _searchText     = string.Empty;
         _searchInput    = null;
         _refreshBtn     = null;
         _recipeList     = null;

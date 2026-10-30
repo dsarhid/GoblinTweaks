@@ -86,8 +86,14 @@ public sealed class UniversalisService : IDisposable
             .Select(snapshot => snapshot with { Home = homeSnapshots.GetValueOrDefault(snapshot.ItemId) })];
     }
 
+    /// <summary>
+    /// Cheapest listings asked for per item. Enough to get past one seller who lists the same item many times at the
+    /// same price and reach the next seller.
+    /// </summary>
+    public const int MarketListings = 20;
+
     private static string ListingsUrl(string scope, string ids)
-        => $"https://universalis.app/api/v2/{Uri.EscapeDataString(scope)}/{ids}?listings=5&entries=0";
+        => $"https://universalis.app/api/v2/{Uri.EscapeDataString(scope)}/{ids}?listings={MarketListings}&entries=0";
 
     /// <summary>Sales figures of each item in the "aggregated" answer, prices taken from the first of <paramref name="areas"/> that has them.</summary>
     private static Dictionary<uint, MarketSales> ReadSales(JsonDocument averages, string[] areas)

@@ -34,6 +34,13 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.3.4", "2026-10-30",
+            "GoblinSniper no longer lists items whose average is inflated by one absurd sale; Crafting Materials search fix.",
+            [
+                "Fix: GoblinSniper listed items as deals when one absurd sale inflated their average price — deals are now checked against the median of real recent sales, and that median is shown when it is lower",
+                "Fix: GoblinSniper skipped the next-seller check when one seller held all the cheapest listings — it now reads 20 listings, and if they are all one seller's it is not a deal",
+                "Fix: Crafting Materials kept filtering by the last search after closing and reopening the window, with the search box empty — the search is now cleared with the window",
+            ]),
         new("1.3.3", "2026-10-30",
             "Crafting Materials highlights wanted items in shops and lists recipes by job; venture times show right after logging in.",
             [

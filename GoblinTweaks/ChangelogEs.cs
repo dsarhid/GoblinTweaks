@@ -8,6 +8,13 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.3.4"] = (
+            "GoblinSniper ya no lista items con el promedio inflado por una venta absurda; arreglo en la búsqueda de Crafting Materials.",
+            [
+                "Fix: GoblinSniper listaba como oferta items cuyo precio promedio estaba inflado por una sola venta absurda — ahora las ofertas se confirman con la mediana de las ventas reales recientes, y se muestra esa mediana cuando es menor",
+                "Fix: GoblinSniper no comparaba con el siguiente vendedor cuando uno solo tenía todas las publicaciones más baratas — ahora lee 20 publicaciones, y si son todas del mismo vendedor no es oferta",
+                "Fix: Crafting Materials seguía filtrando por la última búsqueda después de cerrar y abrir la ventana, con el buscador vacío — ahora la búsqueda se borra al cerrar la ventana",
+            ]),
         ["1.3.3"] = (
             "Crafting Materials resalta lo que necesitás en las tiendas y lista las recetas por job; los ventures salen apenas entrás.",
             [
