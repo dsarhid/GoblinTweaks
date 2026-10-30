@@ -20,7 +20,8 @@ namespace GoblinTweaks.Tweaks;
 /// </summary>
 /// <remarks>
 /// The game only knows the retainers once the server has sent them: at a summoning bell, or when its Timers window
-/// asks for them. Until then the list is empty, so after logging in the tweak asks the same way the Timers window does.
+/// asks for them. Until then the list is empty, so after logging in the tweak asks the same way the Timers window does,
+/// and meanwhile shows the ventures it last saw for the character.
 /// </remarks>
 [Tweak(TweakCategory.Interface)]
 public sealed class RetainerVentureTimer : Tweak<RetainerVentureTimer.Options>
@@ -32,7 +33,16 @@ public sealed class RetainerVentureTimer : Tweak<RetainerVentureTimer.Options>
 
         /// <summary>Play a sound when a retainer comes back from a venture.</summary>
         public bool SoundAlert { get; set; } = true;
+
+        /// <summary>
+        /// The ventures of each character (by content id) as last seen, shown after logging in until the server sends
+        /// the retainers again.
+        /// </summary>
+        public Dictionary<ulong, List<SavedVenture>> Characters { get; set; } = [];
     }
+
+    /// <summary>A retainer on a venture, as last seen. <see cref="CompleteAt"/> is a Unix timestamp.</summary>
+    public sealed record SavedVenture(ulong RetainerId, string Name, uint CompleteAt);
 
     // Fixed, not translated: Dalamud remembers whether an entry is hidden and where it goes by its title.
     private const string DtrTitle = "GoblinTweaks: Ventures";
@@ -141,7 +151,15 @@ public sealed class RetainerVentureTimer : Tweak<RetainerVentureTimer.Options>
     private unsafe void Refresh()
     {
         var retMgr = RetainerManager.Instance();
-        if (retMgr == null || !Svc.PlayerState.IsLoaded) { _away.Clear(); Hide(); return; }
+        if (retMgr == null || !Svc.PlayerState.IsLoaded)
+        {
+            // Logged out: the game forgets the retainers, so the next login asks for them again, same character or not.
+            _requestedFor = 0;
+            _character    = 0;
+            _away.Clear();
+            Hide();
+            return;
+        }
 
         // Another character: what was followed belongs to the previous one.
         var character = Svc.PlayerState.ContentId;
@@ -154,25 +172,17 @@ public sealed class RetainerVentureTimer : Tweak<RetainerVentureTimer.Options>
         var count = retMgr->GetRetainerCount();
         if (count == 0) RequestRetainers(retMgr);
 
+        // Until the server sends the retainers, the ventures last seen for this character stand in for them.
+        var ventures = count > 0 ? LiveVentures(retMgr, count) : SavedVentures(character);
+        if (count > 0) SaveVentures(character, ventures);
+
         var nowUnix  = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var ventures = new List<(string Name, uint CompleteAt)>();
         var seen     = new HashSet<ulong>();
         var finished = new List<string>();
 
-        for (uint i = 0; i < count && i < 10; i++)
+        foreach (var (id, name, at) in ventures)
         {
-            var ret = retMgr->GetRetainerBySortedIndex(i);
-            if (ret == null || !ret->Available || ret->VentureComplete == 0) continue;
-
-            var span = ret->Name;
-            var end  = span.IndexOf((byte)0);
-            var name = Encoding.UTF8.GetString(end >= 0 ? span[..end] : span);
-            if (string.IsNullOrWhiteSpace(name)) name = string.Format(T("Unnamed"), i + 1);
-
-            var id = ret->RetainerId;
-            var at = ret->VentureComplete;
             seen.Add(id);
-            ventures.Add((name, at));
 
             if (at > nowUnix) _away[id] = at;
             else if (_away.TryGetValue(id, out var expected) && expected == at)
@@ -190,11 +200,12 @@ public sealed class RetainerVentureTimer : Tweak<RetainerVentureTimer.Options>
 
         if (ventures.Count == 0) { Hide(); return; }
 
-        ventures.Sort((a, b) => a.CompleteAt.CompareTo(b.CompleteAt));
+        ventures = [.. ventures.OrderBy(v => v.CompleteAt)];
 
         var ready   = ventures.Count(v => v.CompleteAt <= nowUnix);
+        // None left when every retainer is back.
         var next    = ventures.FirstOrDefault(v => v.CompleteAt > nowUnix);
-        var nextIn  = next.CompleteAt > 0 ? FormatTime(TimeSpan.FromSeconds(next.CompleteAt - nowUnix)) : null;
+        var nextIn  = next is not null ? FormatTime(TimeSpan.FromSeconds(next.CompleteAt - nowUnix)) : null;
         var readyTx = ready > 0 ? string.Format(T("ReadyCount"), ready) : null;
 
         var text = $"{Clock} {T("Short")} " + (readyTx, nextIn) switch
@@ -205,7 +216,7 @@ public sealed class RetainerVentureTimer : Tweak<RetainerVentureTimer.Options>
         };
 
         var tip = new StringBuilder(T("TooltipHeader"));
-        foreach (var (name, at) in ventures)
+        foreach (var (_, name, at) in ventures)
             tip.Append($"\n  {name}: {(at <= nowUnix ? T("Ready") : FormatTime(TimeSpan.FromSeconds(at - nowUnix)))}");
         var tooltip = tip.ToString();
 
@@ -222,6 +233,39 @@ public sealed class RetainerVentureTimer : Tweak<RetainerVentureTimer.Options>
             _entry.Tooltip = new SeStringBuilder().AddText(tooltip).Build();
             _shownTooltip  = tooltip;
         }
+    }
+
+    /// <summary>The retainers on a venture, as the game has them now.</summary>
+    private unsafe List<SavedVenture> LiveVentures(RetainerManager* retMgr, uint count)
+    {
+        var ventures = new List<SavedVenture>();
+        for (uint i = 0; i < count && i < 10; i++)
+        {
+            var ret = retMgr->GetRetainerBySortedIndex(i);
+            if (ret == null || !ret->Available || ret->VentureComplete == 0) continue;
+
+            var span = ret->Name;
+            var end  = span.IndexOf((byte)0);
+            var name = Encoding.UTF8.GetString(end >= 0 ? span[..end] : span);
+            if (string.IsNullOrWhiteSpace(name)) name = string.Format(T("Unnamed"), i + 1);
+
+            ventures.Add(new SavedVenture(ret->RetainerId, name, ret->VentureComplete));
+        }
+
+        return ventures;
+    }
+
+    private List<SavedVenture> SavedVentures(ulong character)
+        => Settings.Characters.TryGetValue(character, out var saved) ? saved : [];
+
+    /// <summary>Keeps the ventures of the character for the next login. Written only when they change.</summary>
+    private void SaveVentures(ulong character, List<SavedVenture> ventures)
+    {
+        if (character == 0) return;
+        if (Settings.Characters.TryGetValue(character, out var saved) && saved.SequenceEqual(ventures)) return;
+
+        Settings.Characters[character] = ventures;
+        SaveSettings(notify: false);
     }
 
     private void Hide()
@@ -260,6 +304,7 @@ public sealed class RetainerVentureTimer : Tweak<RetainerVentureTimer.Options>
 
         _requests++;
         _nextRequest = DateTime.UtcNow + RequestRetry;
+        Svc.Log.Debug($"RetainerVentureTimer: asking the server for the retainers ({_requests}/{MaxRequests}).");
         retainers->RequestVenturesTimers();
     }
 

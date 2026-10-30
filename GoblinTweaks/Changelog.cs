@@ -34,6 +34,15 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.3.3", "2026-10-30",
+            "Crafting Materials highlights wanted items in shops and lists recipes by job; venture times show right after logging in.",
+            [
+                "New: Crafting Materials — \"Highlight items in shops\" dims the rows of an open shop that don't sell anything you need (shops with no match stay as they are)",
+                "Change: Crafting Materials — the side list shows Disciples of the Hand and Land jobs instead of categories: what each crafter makes, and the gear only that gatherer wears",
+                "New: Crafting Materials — sort by required craft level, for items without an item level",
+                "Fix: Crafting Materials — the recipe list jumped back to the top while crafting — it now keeps its scroll",
+                "Fix: Retainer Venture Timer showed nothing in the Server Info Bar until a summoning bell was opened — it now asks for the retainers after logging in and shows the last known times meanwhile",
+            ]),
         new("1.3.2", "2026-10-30",
             "GoblinSniper can hide collectibles you already have, and Damnation's counter shows under its own name.",
             [

@@ -190,8 +190,8 @@ internal sealed class LootRolls(Func<List<LootPlayer>> roster, Func<uint, (strin
         return entry;
     }
 
-    /// <summary>The game says a player has chosen for an item.</summary>
-    public void Cast(string name, uint itemId)
+    /// <summary>The game says a player has chosen for an item. Returns why it was not taken, or null when it was.</summary>
+    public string? Cast(string name, uint itemId)
     {
         var entry = Entries.Where(e => !e.Resolved && e.ItemId == itemId && e.Players.Any(p => p.Name == name && p.Pending))
                            .OrderBy(e => e.Id).FirstOrDefault();
@@ -199,16 +199,28 @@ internal sealed class LootRolls(Func<List<LootPlayer>> roster, Func<uint, (strin
         if (entry is null)
         {
             // Said before the item was seen in the list: make it now, the list fills in.
-            if (Entries.Any(e => !e.Resolved && e.ItemId == itemId)) return;
+            var open = Entries.Where(e => !e.Resolved && e.ItemId == itemId).ToList();
+            if (open.Count > 0)
+                return open.Any(e => e.Players.Any(p => p.Name == name))
+                    ? $"already cast on every open copy ({open.Count})"
+                    : $"not in the party of any open copy ({open.Count}); party: {string.Join(", ", open[0].Players.Select(p => p.Name))}";
             entry = Create(itemId, 0, 0, 1, inList: false);
         }
 
         var player = entry.Players.FirstOrDefault(p => p.Name == name);
-        if (player is null || player.Cast) return;
+        if (player is null) return $"not in the party; party: {string.Join(", ", entry.Players.Select(p => p.Name))}";
+        if (player.Cast) return "already cast";
 
         player.Cast = true;
         Version++;
+        return null;
     }
+
+    /// <summary>Whether a roll is open for the item.</summary>
+    public bool IsOpen(uint itemId) => Entries.Any(e => !e.Resolved && e.ItemId == itemId);
+
+    /// <summary>Whether any roll is open.</summary>
+    public bool AnyOpen => Entries.Any(e => !e.Resolved);
 
     /// <summary>The game says what a player rolled.</summary>
     public void Roll(string name, uint itemId, LootChoice choice, int value)

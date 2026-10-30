@@ -7,9 +7,9 @@ namespace GoblinTweaks.UI.Nodes;
 
 /// <summary>
 /// Shared data type for category sidebar entries.
-/// Crafted = recipes crafted at least once; Total = recipes in the category.
+/// Key = what the entry filters by; Crafted = recipes crafted at least once; Total = recipes in the category.
 /// </summary>
-internal readonly record struct CategoryEntry(string Name, int Crafted, int Total);
+internal readonly record struct CategoryEntry(string Key, string Name, int Crafted, int Total);
 
 /// <summary>
 /// One row in the category sidebar list.

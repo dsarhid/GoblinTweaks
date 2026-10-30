@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using Dalamud.Game;
@@ -240,7 +242,8 @@ public sealed class CraftableEntry
     public string                CraftClass      = string.Empty;
     /// <summary>CraftType row (0 Woodworking … 7 Cooking).</summary>
     public uint                  CraftTypeId;
-    public string                CategoryName    = string.Empty;
+    /// <summary>The Disciples of the Hand and Land (ClassJob rows) that can equip the item made.</summary>
+    public uint[]                ForJobs         = [];
     public CraftStatus           Status;
     public int                   MissingCount;
     public bool                  IsCrafted;
@@ -262,13 +265,15 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         /// <summary>Outline, in the FC chest, the bags, the retainers and the saddlebag, what holds the selected recipe's ingredients.</summary>
         [System.Text.Json.Serialization.JsonPropertyName("HighlightFCChest")]
         public bool Highlight          { get; set; } = true;
+        /// <summary>Dim, in the shop that is open, the rows that do not sell an ingredient of the selected recipe.</summary>
+        public bool HighlightShops     { get; set; } = true;
         /// <summary>Max missing ingredient types before a recipe moves from NearComplete → NotReady.</summary>
         public int  NearCompleteMissing { get; set; } = 2;
         /// <summary>Old per-tweak window language. Only read to move it to the common language choice of the tweak.</summary>
         public string DataLanguage { get; set; } = string.Empty;
 
         // What the window shows, remembered between sessions and when the window is rebuilt (language change).
-        /// <summary>Status view ("all", "ready", "near", "notReady") or category ("cat:&lt;name&gt;").</summary>
+        /// <summary>Status view ("all", "ready", "near", "notReady") or job ("job:&lt;ClassJob row&gt;").</summary>
         public string View           { get; set; } = "ready";
         public string SortMode       { get; set; } = string.Empty;
         public bool   SortDescending { get; set; }
@@ -287,6 +292,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     private UniversalisService?         _universalis;
     private readonly FCChestHighlighter _fcHighlighter = new();
     private readonly InventoryHighlighter _bagHighlighter = new();
+    private readonly ShopHighlighter _shopHighlighter = new();
 
     public UniversalisService      Universalis     => _universalis!;
     public uint WorldId => Svc.PlayerState.IsLoaded ? Svc.PlayerState.HomeWorld.RowId : 0u;
@@ -319,6 +325,11 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
             ? a.IngredientItemIds()
             : [];
         _bagHighlighter.Start();
+
+        _shopHighlighter.Source = () => Settings.HighlightShops && _addon is { IsOpen: true } a
+            ? a.IngredientItemIds()
+            : [];
+        _shopHighlighter.Start();
     }
 
     protected internal override void Disable()
@@ -329,6 +340,8 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PreFinalize,  "RetainerList",         OnRetainerUiClosed);
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup,    "SynthesisSimpleResult", OnSynthesisResult);
 
+        _shopHighlighter.Stop();
+        _shopHighlighter.Source = null;
         _bagHighlighter.Stop();
         _bagHighlighter.Source = null;
         _fcHighlighter.Stop();
@@ -963,7 +976,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     /// <summary>What a recipe is, independent of the inventory: read once per game-data language.</summary>
     private sealed record RecipeInfo(
         uint RecipeId, uint ItemId, string Name, uint IconId, ushort ResultAmount,
-        string CraftClass, uint CraftTypeId, string CategoryName, int ItemLevel, int CraftLevel,
+        string CraftClass, uint CraftTypeId, uint[] ForJobs, int ItemLevel, int CraftLevel,
         List<(uint Id, string Name, uint Icon, int Amount)> Ingredients);
 
     private ClientLanguage?                  _recipesLanguage;
@@ -1008,7 +1021,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
                 recipe.AmountResult,
                 craftTypeNames.GetValueOrDefault(recipe.CraftType.RowId, string.Empty),
                 recipe.CraftType.RowId,
-                resultItem.ItemUICategory.IsValid ? resultItem.ItemUICategory.Value.Name.ExtractText() : string.Empty,
+                ForJobsOf(resultItem),
                 (int)resultItem.LevelItem.RowId,
                 recipe.RecipeLevelTable.IsValid ? recipe.RecipeLevelTable.Value.ClassJobLevel : 0,
                 ingredients));
@@ -1019,6 +1032,58 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         _recipeById      = list.ToDictionary(r => r.RecipeId);
         _otherRecipes.Clear();
         return list;
+    }
+
+    // ClassJobCategory rows of the Disciples of the Hand and of the Land, as ClassJob tells each job's.
+    private const uint HandCategory = 33;
+    private const uint LandCategory = 32;
+
+    /// <summary>
+    /// A Disciple of the Hand or Land: its ClassJob row, its name in the language of the game, whether it crafts, its
+    /// craft (the CraftType row, for a crafter) and its column of ClassJobCategory (one boolean per job, named after
+    /// its abbreviation).
+    /// </summary>
+    public sealed record HandOrLandJob(uint Id, string Name, bool Crafter, uint CraftTypeId, PropertyInfo Column);
+
+    private static HandOrLandJob[]? _handAndLand;
+    private static ClientLanguage? _handAndLandLanguage;
+
+    /// <summary>The Disciples of the Hand, then of the Land, in the game's order.</summary>
+    public static HandOrLandJob[] HandAndLandJobs()
+    {
+        var lang = DataLanguage;
+        if (_handAndLand is not null && _handAndLandLanguage == lang) return _handAndLand;
+
+        var local = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.ClassJob>(lang);
+        var jobs  = new List<HandOrLandJob>();
+        foreach (var job in Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.ClassJob>(ClientLanguage.English))
+        {
+            var kind = job.ClassJobCategory.RowId;
+            if (kind is not (HandCategory or LandCategory) || job.DohDolJobIndex < 0) continue;
+
+            if (typeof(Lumina.Excel.Sheets.ClassJobCategory).GetProperty(job.Abbreviation.ExtractText()) is not { } column
+                || column.PropertyType != typeof(bool))
+                continue;
+
+            var name = local.TryGetRow(job.RowId, out var row) ? row.Name.ExtractText() : string.Empty;
+            if (name.Length == 0) continue;
+
+            // A crafter's index among the Disciples of the Hand is its craft: 0 Woodworking (Carpenter) … 7 Cooking.
+            jobs.Add(new HandOrLandJob(job.RowId, char.ToUpper(name[0], CultureInfo.CurrentCulture) + name[1..],
+                kind == HandCategory, (uint)job.DohDolJobIndex, column));
+        }
+
+        _handAndLandLanguage = lang;
+        return _handAndLand = [.. jobs.OrderBy(job => job.Crafter ? 0 : 1).ThenBy(job => job.Id)];
+    }
+
+    /// <summary>The Disciples of the Hand and Land that can equip an item; none for what is not worn.</summary>
+    private static uint[] ForJobsOf(LuminaItem item)
+    {
+        if (item.ClassJobCategory.RowId == 0 || !item.ClassJobCategory.IsValid) return [];
+
+        var category = item.ClassJobCategory.Value;
+        return [.. HandAndLandJobs().Where(job => job.Column.GetValue(category) is true).Select(job => job.Id)];
     }
 
     public List<CraftableEntry> Analyze(InventorySnapshot snap)
@@ -1061,7 +1126,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
                 ResultAmount = info.ResultAmount,
                 CraftClass   = info.CraftClass,
                 CraftTypeId  = info.CraftTypeId,
-                CategoryName = info.CategoryName,
+                ForJobs      = info.ForJobs,
                 Status       = status,
                 MissingCount = missingCount,
                 IsCrafted    = QuestManager.IsRecipeComplete(info.RecipeId),

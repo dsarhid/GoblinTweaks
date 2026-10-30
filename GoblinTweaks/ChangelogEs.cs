@@ -8,6 +8,15 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.3.3"] = (
+            "Crafting Materials resalta lo que necesitás en las tiendas y lista las recetas por job; los ventures salen apenas entrás.",
+            [
+                "New: Crafting Materials — \"Resaltar items en tiendas\" oscurece las filas de la tienda abierta que no venden nada que necesitás (si no hay coincidencia, la tienda queda normal)",
+                "Change: Crafting Materials — la lista lateral muestra los jobs de Disciples of the Hand y Land en vez de categorías: lo que craftea cada crafter, y el equipo que solo usa ese gatherer",
+                "New: Crafting Materials — ordenar por nivel de crafteo, para los items que no tienen item level",
+                "Fix: Crafting Materials — la lista de recetas volvía al principio mientras crafteabas — ahora mantiene el scroll",
+                "Fix: Retainer Venture Timer no mostraba nada en la Server Info Bar hasta abrir una summoning bell — ahora pide los retainers al entrar y mientras tanto muestra los últimos tiempos conocidos",
+            ]),
         ["1.3.2"] = (
             "GoblinSniper puede ocultar los coleccionables que ya tenés, y el contraataque de Damnation sale con su nombre.",
             [

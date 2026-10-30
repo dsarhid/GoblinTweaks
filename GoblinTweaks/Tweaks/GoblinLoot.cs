@@ -42,6 +42,9 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
     private const uint CastLotMessage = 5180;   // "X casts their lot for item"
     private const uint RollMessage    = 1231;   // "X rolls Need on item. 34!"
     private const uint ObtainMessage  = 1232;   // "X obtains item"
+
+    // Kinds of message from the party already written to the log while the rolls are open (see LogUnknown).
+    private readonly HashSet<uint> _unknownLogged = [];
     private const int  MaxSlots       = 16;
 
     private static readonly TimeSpan AutoCloseDelay = TimeSpan.FromSeconds(10);
@@ -206,17 +209,27 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
         try
         {
             var id = message.LogMessageId;
-            if (id is not (CastLotMessage or RollMessage or ObtainMessage)) return;
+            if (id is not (CastLotMessage or RollMessage or ObtainMessage))
+            {
+                LogUnknown(message);
+                return;
+            }
+
             if (!message.TryGetIntParameter(0, out var item) || item <= 0) return;
 
             var name = message.SourceEntity?.Name.ExtractText();
-            if (string.IsNullOrEmpty(name)) return;
+            if (string.IsNullOrEmpty(name))
+            {
+                Svc.Log.Info($"GoblinLoot: message {id} for item {item} came with no player ({Describe(message)}).");
+                return;
+            }
 
             var rolls = Rolls;
             switch (id)
             {
                 case CastLotMessage:
-                    rolls.Cast(name, (uint)item);
+                    if (rolls.Cast(name, (uint)item) is { } why)
+                        Svc.Log.Info($"GoblinLoot: \"{name}\" cast their lot for item {item}, not taken: {why}.");
                     break;
 
                 case RollMessage:
@@ -231,6 +244,41 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
             }
         }
         catch (Exception ex) { ReportFailure(ex); }
+    }
+
+    /// <summary>
+    /// While a roll is open, a message of another kind about one of its items, or from someone of the party, is written
+    /// to the log: a choice the game tells in some other way would be missed, and this shows which one it is.
+    /// </summary>
+    private void LogUnknown(ILogMessage message)
+    {
+        if (_rolls is not { AnyOpen: true } rolls)
+        {
+            _unknownLogged.Clear();
+            return;
+        }
+
+        var about = message.TryGetIntParameter(0, out var item) && item > 0 && rolls.IsOpen((uint)item);
+        var name  = message.SourceEntity?.Name.ExtractText();
+        var party = !string.IsNullOrEmpty(name) && rolls.Entries.Any(e => !e.Resolved && e.Players.Any(p => p.Name == name));
+
+        // What the party does in a fight is said in messages too: of those, each kind once while the rolls are open.
+        if (!about && (!party || !_unknownLogged.Add(message.LogMessageId))) return;
+
+        Svc.Log.Info($"GoblinLoot: message {message.LogMessageId} during a roll ({Describe(message)}).");
+    }
+
+    /// <summary>Who a message is from and its parameters, for the log.</summary>
+    private static string Describe(ILogMessage message)
+    {
+        var parts = new List<string> { $"from \"{message.SourceEntity?.Name.ExtractText()}\"" };
+        for (var i = 0; i < message.ParameterCount; i++)
+        {
+            if (message.TryGetIntParameter(i, out var number)) parts.Add($"#{i}={number}");
+            else if (message.TryGetStringParameter(i, out var text)) parts.Add($"#{i}=\"{text.ExtractText()}\"");
+        }
+
+        return string.Join(", ", parts);
     }
 
     /// <summary>The roll message names what was rolled in the language of the game: it is told by the words of the game's own buttons.</summary>

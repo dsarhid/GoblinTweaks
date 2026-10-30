@@ -32,6 +32,8 @@ internal sealed class CraftingSettingsAddon : SettingsPanelAddon
             on => { options.IncludeFCChest = on; Tweak.SaveCurrent(); });
         Toggle(Tweak.Text("Highlight"), Tweak.Text("Highlight.Help"), options.Highlight,
             on => { options.Highlight = on; Tweak.SaveCurrent(); });
+        Toggle(Tweak.Text("HighlightShops"), Tweak.Text("HighlightShops.Help"), options.HighlightShops,
+            on => { options.HighlightShops = on; Tweak.SaveCurrent(); });
 
         Section(Tweak.Text("Status"));
 

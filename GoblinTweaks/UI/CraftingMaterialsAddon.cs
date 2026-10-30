@@ -82,6 +82,9 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     private uint   _pendingOpenRecipeId; // deferred crafting-log open (0 = none)
     private string _selectedView   = "ready";
 
+    // A view of the recipes of what a job can equip: this, then the ClassJob row.
+    private const string JobView = "job:";
+
     // Auto-refresh when inventory changes while the window is open
     private DateTime _inventoryChangedAt = DateTime.MinValue;
     // Count of filtered items with market data at last sort pass; used to detect new arrivals.
@@ -93,6 +96,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     // Set once an error was reported, so it is not reported again every frame until the tweak is disabled.
     private bool     _failed;
     private uint     _pendingRestoreId;   // RecipeId to re-select after a refresh
+    private bool     _keepScroll;         // a refresh of the data, not a change of filter: the list stays where it was
     private const double InventoryDebounceMs = 1500.0;
 
     // Filter / sort state (driven by the top bar)
@@ -110,6 +114,9 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     private const string SortName    = "Name";
     private const string SortStatus  = "Craft status";
     private const string SortLevel   = "Item level";
+    private const string SortCraft   = "Craft level";
+
+    private static List<string> SortModes => [SortName, SortStatus, SortLevel, SortCraft, SortMissing, SortMarket];
     private const string SortMissing = "Fewest missing";
     private const string SortMarket  = "Market price";
     private const string AllClasses  = "All classes";
@@ -244,6 +251,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         {
             _inventoryChangedAt = DateTime.MinValue;
             _pendingRestoreId   = _selectedEntry?.RecipeId ?? 0;
+            _keepScroll         = true;
             _pendingRefresh     = true;
         }
 
@@ -269,8 +277,9 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     {
         if (Tweak?.Current is not { } options) return;
 
-        _selectedView   = string.IsNullOrEmpty(options.View) ? "ready" : options.View;
-        _sortMode       = options.SortMode is SortName or SortStatus or SortLevel or SortMissing or SortMarket ? options.SortMode : SortName;
+        // A view of an item category is from before the list was by job: it shows everything.
+        _selectedView   = string.IsNullOrEmpty(options.View) ? "ready" : options.View.StartsWith("cat:") ? "all" : options.View;
+        _sortMode       = options.SortMode is SortName or SortStatus or SortLevel or SortCraft or SortMissing or SortMarket ? options.SortMode : SortName;
         _sortDescending = options.SortDescending;
         _classFilter    = string.IsNullOrEmpty(options.ClassFilter) ? AllClasses : options.ClassFilter;
         _hideCrafted    = options.HideCrafted;
@@ -303,6 +312,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     public void RequestRefresh()
     {
         _pendingRestoreId = _selectedEntry?.RecipeId ?? 0;
+        _keepScroll       = true;
         _pendingRefresh   = true;
     }
 
@@ -494,18 +504,29 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
 
     private void UpdateCategoryList()
     {
-        var cats = _entries
-            .Where(e => !string.IsNullOrEmpty(e.CategoryName))
-            .GroupBy(e => e.CategoryName)
-            .Select(g => new CategoryEntry(g.Key, g.Count(e => e.IsCrafted), g.Count()))
-            .OrderBy(c => c.Name)
-            .ToList();
+        // One entry per Disciple of the Hand and Land, in the game's order.
+        var cats = new List<CategoryEntry>();
+        foreach (var job in CraftingMaterials.HandAndLandJobs())
+        {
+            var recipes = _entries.Where(e => IsOfJob(e, job)).ToList();
+            if (recipes.Count > 0)
+                cats.Add(new CategoryEntry($"{JobView}{job.Id}", job.Name, recipes.Count(e => e.IsCrafted), recipes.Count));
+        }
 
         if (_catListNode is not null)
             _catListNode.OptionsList = cats;
 
         RequestCollisionRebuild();
     }
+
+    /// <summary>
+    /// Whether a recipe goes under a job: for a crafter, the recipes it crafts; for a gatherer, which crafts nothing,
+    /// what only that gatherer can equip (its tools). Gear every gatherer shares would put the same list under each.
+    /// </summary>
+    private static bool IsOfJob(CraftableEntry entry, CraftingMaterials.HandOrLandJob job)
+        => job.Crafter
+            ? entry.CraftTypeId == job.CraftTypeId
+            : entry.ForJobs is [var only] && only == job.Id;
 
     private void ApplyFilter()
     {
@@ -514,6 +535,10 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         // A re-sort because prices arrived keeps the selected recipe, its open ingredients and the scroll position.
         var resort = _marketResort;
         _marketResort = false;
+
+        // So does a refresh of the data (the inventory changed while crafting): the recipe is selected again after it.
+        var keepScroll = resort || _keepScroll;
+        _keepScroll = false;
         if (!resort)
         {
             _selectedEntry = null;
@@ -526,8 +551,9 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             "ready"    => _entries.Where(e => e.Status is CraftStatus.Ready or CraftStatus.ReadyElsewhere).ToList(),
             "near"     => _entries.Where(e => e.Status == CraftStatus.NearComplete).ToList(),
             "notReady" => _entries.Where(e => e.Status == CraftStatus.NotReady).ToList(),
-            var v when v.StartsWith("cat:")
-                       => _entries.Where(e => e.CategoryName == v[4..]).ToList(),
+            var v when v.StartsWith(JobView) && uint.TryParse(v[JobView.Length..], out var id)
+                       && CraftingMaterials.HandAndLandJobs().FirstOrDefault(j => j.Id == id) is { } job
+                       => _entries.Where(e => IsOfJob(e, job)).ToList(),
             _          => _entries.ToList(),
         };
 
@@ -578,6 +604,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             {
                 SortStatus  => _filtered.OrderBy(e => (int)e.Status).ThenBy(e => e.Name),
                 SortLevel   => _filtered.OrderBy(e => e.ItemLevel).ThenBy(e => e.Name),
+                SortCraft   => _filtered.OrderBy(e => e.CraftLevel).ThenBy(e => e.ItemLevel).ThenBy(e => e.Name),
                 SortMissing => _filtered.OrderBy(e => e.MissingCount).ThenBy(e => e.Name),
                 _           => _filtered.OrderBy(e => e.Name),
             };
@@ -589,7 +616,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
 
         if (_recipeList is not null)
         {
-            _recipeList.AutoResetScroll = !resort;
+            _recipeList.AutoResetScroll = !keepScroll;
             _recipeList.OptionsList     = _filtered;
             _recipeList.AutoResetScroll = true;
         }
@@ -968,13 +995,16 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         {
             Position         = new Vector2(pos.X + 368f, cy),
             Size             = new Vector2(150f, 24f),
-            MaxListOptions   = 6,
-            Options          = [SortName, SortStatus, SortLevel, SortMissing, SortMarket],
-            SelectedOption   = _sortMode,
+            MaxListOptions   = SortModes.Count,
             GetLabelFunction = key => SortLabel(key),
         };
         _sortDropdown.OnOptionSelected = s => { _sortMode = s; _pendingFilter = true; };
         _sortDropdown.AttachNode(this);
+
+        // Its options are set again when the language changes, so they are set only once it is attached: option buttons
+        // built before attaching are left behind in the window's node list when replaced, and closing the window then crashes.
+        _sortDropdown.Options        = SortModes;
+        _sortDropdown.SelectedOption = _sortMode;
 
         // Sort-direction toggle (native up/down arrow button)
         _sortDirBtn = new CircleButtonNode
@@ -1014,6 +1044,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     {
         SortStatus  => CraftLoc.Get("sort.status"),
         SortLevel   => CraftLoc.Get("sort.level"),
+        SortCraft   => CraftLoc.Get("sort.craft"),
         SortMissing => CraftLoc.Get("sort.missing"),
         SortMarket  => CraftLoc.Get("sort.market"),
         _           => CraftLoc.Get("sort.name"),
@@ -1038,7 +1069,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         // Force the sort dropdown to re-render its localized labels.
         if (_sortDropdown is not null)
         {
-            _sortDropdown.Options        = [SortName, SortStatus, SortLevel, SortMissing, SortMarket];
+            _sortDropdown.Options        = SortModes;
             _sortDropdown.SelectedOption = _sortMode;
         }
     }
@@ -1141,6 +1172,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         _refreshBtn.OnClick = () =>
         {
             _pendingRestoreId = _selectedEntry?.RecipeId ?? 0;
+            _keepScroll       = true;
             _pendingRefresh   = true;
         };
         _refreshBtn.AttachNode(this);
@@ -1178,7 +1210,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         {
             foreach (var si in _statusItems) { si.IsSelected = false; si.TextNode.TextColor = BodyGrey; }
             _catListNode?.ClearSelection();
-            _selectedView  = $"cat:{cat.Name}";
+            _selectedView  = cat.Key;
             _pendingFilter = true;
         };
         _catListNode.AttachNode(this);
