@@ -39,7 +39,29 @@ public sealed unsafe class GoblinAntiMachinist : Tweak<GoblinAntiMachinist.Optio
 
         /// <summary>The warnings also go to the chat, besides the screen.</summary>
         public bool WarnInChat { get; set; }
+
+        /// <summary>Uses Purify by itself when a Stun, Deep Freeze, Miracle of Nature or Silence is put on you. Off by default.</summary>
+        public bool AutoPurify { get; set; }
+
+        /// <summary>Purify by itself for Heavy and Bind too, which only slow or stop your movement.</summary>
+        public bool PurifyMovement { get; set; }
     }
+
+    private const uint Purify = 29056;
+
+    // Controls Purify removes, by their English names (read in English whatever the client's language): those that
+    // stop every action, Silence, and those that only slow or stop movement.
+    private static readonly string[] BlockingNames = ["Stun", "Deep Freeze", "Miracle of Nature"];
+    private static readonly string[] SilenceNames  = ["Silence"];
+    private static readonly string[] MovementNames = ["Heavy", "Bind"];
+
+    // Purify is not tried again for this long after asking for it: the game may still be using it.
+    private static readonly TimeSpan PurifyRetry = TimeSpan.FromMilliseconds(300);
+
+    private HashSet<uint> _blocking = [];
+    private HashSet<uint> _silence = [];
+    private HashSet<uint> _movement = [];
+    private DateTime _nextPurify = DateTime.MinValue;
 
     private const uint Guard = 29054;
     // A second Guard of the game (2.5 s recast), used where the usual one is missing.
@@ -71,8 +93,11 @@ public sealed unsafe class GoblinAntiMachinist : Tweak<GoblinAntiMachinist.Optio
     private string _block = string.Empty;
     private bool _blockLogged;
 
-    // Auto Guard: used once per danger.
+    // Auto Guard: done once its status is on you, asked for again until then.
     private bool _autoGuardDone;
+    private int _guardAsks;
+    private DateTime _nextGuard = DateTime.MinValue;
+    private static readonly TimeSpan GuardRetry = TimeSpan.FromMilliseconds(150);
 
     // Machinists targeting you, and when each was last warned about.
     private DateTime _nextTargetScan = DateTime.MinValue;
@@ -90,6 +115,9 @@ public sealed unsafe class GoblinAntiMachinist : Tweak<GoblinAntiMachinist.Optio
         _failure = null;
         _active = false;
         _autoGuardDone = false;
+        _blocking = StatusIds(BlockingNames);
+        _silence  = StatusIds(SilenceNames);
+        _movement = StatusIds(MovementNames);
         _targeting.Clear();
         _warnedAt.Clear();
         _watch.Reset();
@@ -144,8 +172,50 @@ public sealed unsafe class GoblinAntiMachinist : Tweak<GoblinAntiMachinist.Optio
             Option("WarnTargeted", () => Settings.WarnTargeted, on => Settings.WarnTargeted = on),
             Option("WarnNoGuard",  () => Settings.WarnNoGuard,  on => Settings.WarnNoGuard  = on),
             Option("WarnInChat",   () => Settings.WarnInChat,   on => Settings.WarnInChat   = on),
+            Option("AutoPurify",     () => Settings.AutoPurify,     on => Settings.AutoPurify     = on),
+            Option("PurifyMovement", () => Settings.PurifyMovement, on => Settings.PurifyMovement = on),
         ],
+        HelpClick       = ToggleHelpWindow,
+        HelpTooltip     = Loc.GetIn(UiLanguage, "Window.Help"),
     };
+
+    /// <summary>Every harmful status with one of these English names: the game has many of each (PvE, PvP, modes).</summary>
+    private static HashSet<uint> StatusIds(string[] names)
+        => [.. Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Status>(Dalamud.Game.ClientLanguage.English)
+            .Where(status => status.StatusCategory == 2 && names.Contains(status.Name.ToString()))
+            .Select(status => status.RowId)];
+
+    /// <summary>The controls Purify removes that are on you now: those that stop every action, and any it is asked to remove.</summary>
+    private (bool Blocking, bool ToPurify) ControlsOn(BattleChara* player)
+    {
+        var statuses = player->GetStatusManager();
+        if (statuses == null) return (false, false);
+
+        bool blocking = false, toPurify = false;
+        foreach (ref readonly var status in statuses->Status)
+        {
+            var id = status.StatusId;
+            if (id == 0) continue;
+
+            if (_blocking.Contains(id)) blocking = toPurify = true;
+            else if (_silence.Contains(id) || (Settings.PurifyMovement && _movement.Contains(id))) toPurify = true;
+        }
+
+        return (blocking, toPurify);
+    }
+
+    /// <summary>Uses Purify by itself, if it can go off now.</summary>
+    private void TryPurify(string why)
+    {
+        var now = DateTime.UtcNow;
+        var actions = ActionManager.Instance();
+        if (now < _nextPurify || actions == null) return;
+        if (actions->GetActionStatus(ActionType.Action, Purify) != 0) return;
+
+        _nextPurify = now + PurifyRetry;
+        if (actions->UseAction(ActionType.Action, Purify, SelfTarget))
+            Svc.Log.Info($"GoblinAntiMachinist: used Purify by itself ({why}).");
+    }
 
     private TweakToggle Option(string key, Func<bool> get, Action<bool> set)
         => new(T(key), T(key + ".Help"), get, on =>
@@ -176,13 +246,31 @@ public sealed unsafe class GoblinAntiMachinist : Tweak<GoblinAntiMachinist.Optio
         {
             _watch.Update();
             var danger = _watch.Incoming;
-            var canGuard = danger && GuardReady(out _guard);
+
+            // Guard already on (used by you or by this tweak): nothing to offer and nothing to warn about, even
+            // though Guard itself is now on cooldown. Guard used by itself only counts once its status is on you:
+            // the game can accept the request and still not use it (while stunned), which let a Spite through.
+            var player = (BattleChara*)Control.GetLocalPlayer();
+            var hasGuard = PvP.HasGuard((GameObject*)player);
+            if (danger && hasGuard && !_autoGuardDone)
+            {
+                _autoGuardDone = true;
+                if (_guardAsks > 0) Svc.Log.Info($"GoblinAntiMachinist: Guard is on, after asking for it {_guardAsks} time(s).");
+            }
+
+            var guarded = danger && (_autoGuardDone || hasGuard);
+            var canGuard = danger && !guarded && GuardReady(out _guard);
             _active = canGuard && Settings.SwapButtons;
 
             if (!danger)
             {
                 _blockLogged = false;
                 _autoGuardDone = false;
+                _guardAsks = 0;
+            }
+            else if (guarded)
+            {
+                _blockLogged = true;
             }
             else if (!canGuard && !_blockLogged)
             {
@@ -191,7 +279,14 @@ public sealed unsafe class GoblinAntiMachinist : Tweak<GoblinAntiMachinist.Optio
                 if (Settings.WarnNoGuard) Warn(T("Warn.NoGuard"));
             }
 
-            if (danger && Settings.AutoGuard && !_autoGuardDone) TryAutoGuard();
+            // Controls: with Marksman's Spite on its way and Guard to be used by itself, a control that stops Guard is
+            // removed first, at once; otherwise Purify by itself, when asked for.
+            var (blocking, toPurify) = Svc.ClientState.IsPvP && player != null ? ControlsOn(player) : (false, false);
+            if (danger && Settings.AutoGuard && !_autoGuardDone && blocking) TryPurify("before Guard, against Marksman's Spite");
+            else if (Settings.AutoPurify && toPurify) TryPurify("control on you");
+
+            // Not while a control stops it: the request would be taken and dropped. Purify goes first.
+            if (danger && Settings.AutoGuard && !_autoGuardDone && !blocking) TryAutoGuard();
 
             if (Settings.WarnTargeted) WatchTargeting();
         }
@@ -240,20 +335,25 @@ public sealed unsafe class GoblinAntiMachinist : Tweak<GoblinAntiMachinist.Optio
 
     private ReadOnlySpan<uint> GuardIds(ActionManager* actions) => (uint[])[_adjustHook!.Original(actions, Guard), OtherGuard];
 
-    /// <summary>Uses Guard by itself, the moment it can be used; tried again every frame while the danger lasts.</summary>
+    /// <summary>
+    /// Asks for Guard by itself, the moment it can be used, and again every <see cref="GuardRetry"/> until its status
+    /// is on you or the danger is over.
+    /// </summary>
     private void TryAutoGuard()
     {
+        var now = DateTime.UtcNow;
         var actions = ActionManager.Instance();
-        if (actions == null || _adjustHook == null) return;
+        if (now < _nextGuard || actions == null || _adjustHook == null) return;
 
         foreach (var id in GuardIds(actions))
         {
             // Every check this time, cooldown and animation lock included: only a Guard that goes off now.
             if (actions->GetActionStatus(ActionType.Action, id) != 0) continue;
+
+            _nextGuard = now + GuardRetry;
             if (!actions->UseAction(ActionType.Action, id, SelfTarget)) continue;
 
-            _autoGuardDone = true;
-            Svc.Log.Info($"GoblinAntiMachinist: used Guard {id} by itself.");
+            if (++_guardAsks == 1) Svc.Log.Info($"GoblinAntiMachinist: asked for Guard {id} by itself.");
             return;
         }
     }
@@ -277,10 +377,10 @@ public sealed unsafe class GoblinAntiMachinist : Tweak<GoblinAntiMachinist.Optio
         foreach (var entry in manager->Objects.IndexSorted)
         {
             var obj = entry.Value;
-            if (obj == null || obj == player || obj->ObjectKind != ObjectKind.Pc) continue;
+            if (obj == null || obj == player || !PvP.IsEnemy(obj)) continue;
 
             var character = (Character*)obj;
-            if (!((BattleChara*)obj)->IsHostile || character->CharacterData.ClassJob != MachinistJob) continue;
+            if (character->CharacterData.ClassJob != MachinistJob) continue;
             if (character->TargetId.ObjectId != player->EntityId) continue;
 
             var id = obj->EntityId;

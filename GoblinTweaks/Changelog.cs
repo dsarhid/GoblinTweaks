@@ -34,6 +34,18 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.4.4", "2026-10-31",
+            "Goblin Enemy Guard follows enemy cooldowns and Limit Breaks over their name plate; Goblin Anti Machinist can use Purify by itself.",
+            [
+                "New: Goblin Enemy Guard shows, besides Guard, the cooldowns of each enemy's job you choose in the settings (one section per job, with icons and tooltips) and their Limit Break, timed from the Gauge Charge Time of its description",
+                "New: Goblin Enemy Guard shows actions that share a cooldown (Drill, Bioblaster, Air Anchor, Chain Saw) as one icon that turns to the next action of the chain",
+                "New: Goblin Enemy Guard icons can be moved with X and Y, placed from the character instead of the name plate, or shown in a fixed place on screen with each enemy's name",
+                "New: Goblin Anti Machinist can use Purify by itself when you are stunned, frozen or silenced (and for Heavy and Bind if asked); against Marksman's Spite it purifies first and then uses Guard",
+                "New: /geg opens the Goblin Enemy Guard settings, and the settings of both PvP tweaks have a ? button that opens their help",
+                "Fix: Goblin Enemy Guard icons shook over moving enemies and while the camera turned — they now move with the game's name plate, pixel for pixel",
+                "Fix: Goblin Enemy Guard counted Guard's cooldown from 26 seconds — it always starts at 30, from the moment Guard is used",
+                "Fix: Goblin Anti Machinist's automatic Guard could fail while you were stunned — it now purifies first and tries again until Guard is on",
+            ]),
         new("1.4.3", "2026-10-31",
             "Goblin Anti Machinist and Goblin Enemy Guard get settings, new warnings and work in every PvP area, Wolves' Den duels included.",
             [

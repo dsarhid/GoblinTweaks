@@ -10,11 +10,11 @@ internal sealed class LootSettingsAddon : SettingsPanelAddon
 {
     public GoblinLoot? Tweak { get; init; }
 
-    private const float FooterHeight = 34f;
+    private const float ButtonsHeight = 34f;
 
     protected override float HeaderHeight => 40f;
 
-    protected override Vector2 ScrollSize => base.ScrollSize - new Vector2(0f, FooterHeight);
+    protected override Vector2 ScrollSize => base.ScrollSize - new Vector2(0f, ButtonsHeight);
 
     protected override void BuildHeader(Vector2 origin, float width)
     {
@@ -26,7 +26,7 @@ internal sealed class LootSettingsAddon : SettingsPanelAddon
         var help = new CircleButtonNode
         {
             Icon        = CircleButtonIcon.QuestionMark,
-            Position    = ContentStartPosition + new Vector2(Pad, ContentSize.Y - FooterHeight + 6f),
+            Position    = ContentStartPosition + new Vector2(Pad, ContentSize.Y - ButtonsHeight + 6f),
             Size        = new Vector2(22f, 22f),
             TextTooltip = Tweak.Text("Help.Tooltip"),
         };

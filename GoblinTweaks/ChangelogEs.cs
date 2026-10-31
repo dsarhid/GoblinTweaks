@@ -8,6 +8,18 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.4.4"] = (
+            "Goblin Enemy Guard sigue los cooldowns y Limit Breaks enemigos sobre su nameplate; Goblin Anti Machinist puede usar Purify solo.",
+            [
+                "New: Goblin Enemy Guard muestra, además de Guard, los cooldowns del job de cada enemigo que elijas en la configuración (una sección por job, con íconos y tooltips) y su Limit Break, contado con el Gauge Charge Time de su descripción",
+                "New: Goblin Enemy Guard muestra las habilidades que comparten cooldown (Drill, Bioblaster, Air Anchor, Chain Saw) como un solo ícono que pasa a la siguiente de la cadena",
+                "New: los íconos de Goblin Enemy Guard se pueden mover con X e Y, ubicar desde el personaje en vez de la nameplate, o mostrar en un lugar fijo de la pantalla con el nombre de cada enemigo",
+                "New: Goblin Anti Machinist puede usar Purify solo cuando estás aturdido, congelado o silenciado (y con Heavy y Bind si lo pedís); ante un Marksman's Spite primero purifica y después usa Guard",
+                "New: /geg abre la configuración de Goblin Enemy Guard, y la configuración de los dos tweaks PvP tiene un botón ? que abre su ayuda",
+                "Fix: los íconos de Goblin Enemy Guard temblaban sobre enemigos en movimiento y al girar la cámara — ahora se mueven con la nameplate del juego, píxel por píxel",
+                "Fix: Goblin Enemy Guard contaba el cooldown de Guard desde 26 segundos — ahora siempre arranca en 30, desde que se usa Guard",
+                "Fix: el Guard automático de Goblin Anti Machinist podía fallar si estabas aturdido — ahora primero purifica y reintenta hasta que Guard esté puesto",
+            ]),
         ["1.4.3"] = (
             "Goblin Anti Machinist y Goblin Enemy Guard suman configuración, avisos nuevos y funcionan en toda zona PvP, duelos del Wolves' Den incluidos.",
             [

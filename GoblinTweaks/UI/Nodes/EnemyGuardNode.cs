@@ -8,8 +8,8 @@ using KamiToolKit.UiOverlay;
 namespace GoblinTweaks.UI.Nodes;
 
 /// <summary>
-/// The Guard icon over one enemy: bright while they have it, and with the game's clock hand and the seconds
-/// left while it is on cooldown, as in the hotbars.
+/// One action icon over an enemy (Guard, or another action followed): bright while it is ready, and with the
+/// game's clock hand and the seconds left while it is on cooldown, as in the hotbars.
 /// </summary>
 /// <remarks>
 /// Built from plain image and text nodes, laid out like the game's action icon: the game's own hotbar slot is
@@ -71,6 +71,19 @@ internal sealed class EnemyGuardNode : OverlayNode
 
     // Under the windows, over the name plates.
     public override OverlayLayer OverlayLayer => OverlayLayer.BehindUserInterface;
+
+    /// <summary>The action icon shown: nodes are reused from one action to another.</summary>
+    public void SetIcon(uint iconId)
+    {
+        if (_icon.IconId != iconId) _icon.IconId = iconId;
+    }
+
+    /// <summary>The size the icon is drawn at, in the overlay's pixels.</summary>
+    public void SetSize(float size)
+    {
+        var scale = new Vector2(size / FullSize);
+        if (Scale != scale) Scale = scale;
+    }
 
     /// <summary>Guard ready: the icon alone.</summary>
     public void ShowReady()

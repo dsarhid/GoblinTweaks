@@ -36,6 +36,12 @@ internal abstract unsafe class SettingsPanelAddon : NativeAddon
     /// <summary>Fills the fixed strip; <paramref name="origin"/> is its top-left corner in the window.</summary>
     protected virtual void BuildHeader(Vector2 origin, float width) { }
 
+    /// <summary>Height of a fixed strip under the scrolling options (0 = none), for buttons that must always show.</summary>
+    protected virtual float FooterHeight => 0f;
+
+    /// <summary>Fills the fixed strip at the bottom; <paramref name="origin"/> is its top-left corner in the window.</summary>
+    protected virtual void BuildFooter(Vector2 origin, float width) { }
+
     /// <summary>Adds every option, top to bottom.</summary>
     protected abstract void Build();
 
@@ -46,7 +52,7 @@ internal abstract unsafe class SettingsPanelAddon : NativeAddon
     protected virtual Vector2 ScrollPosition => ContentStartPosition + new Vector2(0f, HeaderHeight);
 
     /// <summary>Size of the scrolling area.</summary>
-    protected virtual Vector2 ScrollSize => ContentSize - new Vector2(0f, HeaderHeight);
+    protected virtual Vector2 ScrollSize => ContentSize - new Vector2(0f, HeaderHeight + FooterHeight);
 
     private bool _rebuild;
 
@@ -61,6 +67,7 @@ internal abstract unsafe class SettingsPanelAddon : NativeAddon
 
         // After the scrolling area, so its drop-down opens on top of the options.
         if (HeaderHeight > 0f) BuildHeader(ContentStartPosition, ContentSize.X);
+        if (FooterHeight > 0f) BuildFooter(ContentStartPosition + new Vector2(0f, ContentSize.Y - FooterHeight), ContentSize.X);
 
         BuildContent();
     }
@@ -178,6 +185,36 @@ internal abstract unsafe class SettingsPanelAddon : NativeAddon
             Note(help, Pad + 24f, ContentW - 24f, Muted);
 
         Y += 8f;
+        return box;
+    }
+
+    /// <summary>A checkbox with an icon on its left; the tooltip shows over both.</summary>
+    protected CheckboxNode IconToggle(uint iconId, string label, string? tooltip, bool value, Action<bool> set)
+    {
+        const float iconSize = 28f;
+
+        var icon = new IconImageNode
+        {
+            IconId     = iconId,
+            FitTexture = true,
+            Position   = new Vector2(Pad, Y),
+            Size       = new Vector2(iconSize, iconSize),
+        };
+        if (!string.IsNullOrEmpty(tooltip)) icon.TextTooltip = tooltip;
+        icon.AttachNode(Host);
+
+        var box = new CheckboxNode
+        {
+            String    = label,
+            Position  = new Vector2(Pad + iconSize + 6f, Y + 2f),
+            Size      = new Vector2(ContentW - iconSize - 6f, 24f),
+            IsChecked = value,
+        };
+        if (!string.IsNullOrEmpty(tooltip)) box.TextTooltip = tooltip;
+        box.OnClick = set;
+        box.AttachNode(Host);
+
+        Y += iconSize + 6f;
         return box;
     }
 
