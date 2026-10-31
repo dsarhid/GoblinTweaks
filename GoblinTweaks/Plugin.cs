@@ -68,6 +68,7 @@ public sealed class Plugin(IDalamudPluginInterface dalamud) : IAsyncDalamudPlugi
             _mainWindow?.Dispose();
             _settingsWindow?.Dispose();
             _changelogWindow?.Dispose();
+            SharedOverlay.Dispose();
             KamiToolKitLibrary.Dispose();
             ScreenshotStore.Dispose();
         });

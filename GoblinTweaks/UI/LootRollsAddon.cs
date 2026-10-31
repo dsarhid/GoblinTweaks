@@ -124,6 +124,7 @@ internal unsafe class LootRollsAddon : NativeAddon
 
     protected override void OnFinalize(AtkUnitBase* addon)
     {
+        NativeFocus.Forget(addon);
         _side.Clear();
         _table.Clear();
         Array.Clear(_columns);

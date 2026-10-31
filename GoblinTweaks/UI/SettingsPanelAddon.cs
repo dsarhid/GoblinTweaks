@@ -94,10 +94,12 @@ internal abstract unsafe class SettingsPanelAddon : NativeAddon
         _scroll.Dispose();
         CreateScroll();
         BuildContent();
+        NativeFocus.RefreshCollisions(addon);
     }
 
     protected override void OnFinalize(AtkUnitBase* addon)
     {
+        NativeFocus.Forget(addon);
         _scroll = null;
         OnClosed();
         base.OnFinalize(addon);

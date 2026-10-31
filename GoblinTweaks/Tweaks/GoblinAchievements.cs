@@ -144,7 +144,7 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
 
     private List<AchievementInfo>? _catalog;
     private Dictionary<uint, AchievementInfo>? _byId;
-    private OverlayController? _overlay;
+    private OverlayNodes? _overlay;
     private AchievementTrackerNode? _tracker;
     private AchievementsAddon? _addon;
     private AchievementsSettingsAddon? _settingsAddon;
@@ -209,7 +209,7 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
         _none = new AchievementCharacter();
         _progress.Clear();
 
-        _overlay = new OverlayController();
+        _overlay = new OverlayNodes();
         _tracker = new AchievementTrackerNode { OnRowClick = ShowInWindow };
         _overlay.AddNode(_tracker);
 
@@ -230,7 +230,7 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
         _help?.Dispose();
         _help = null;
 
-        // Disposing the controller frees the nodes it owns.
+        // Takes its nodes off the shared overlay and frees them; the overlay itself stays.
         _overlay?.Dispose();
         _overlay = null;
         _tracker = null;

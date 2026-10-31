@@ -34,6 +34,15 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.4.2", "2026-10-31",
+            "Fixes game crashes after turning tweaks on or off in the GoblinTweaks window, and after updating the plugin.",
+            [
+                "Fix: the game could crash on the next click after turning a tweak on or off and clicking another one — the game kept the button last clicked as the window's focus after the window rebuilt and freed it; it is now cleared first, and the window's clickable areas are refreshed",
+                "Fix: the game could crash on a click after GoblinTweaks was updated or reloaded, or its language changed, with one of its windows open — closing windows now clear every reference the game keeps to them",
+                "Fix: the game could crash (\"CLR error\") after turning Goblin Enemy Guard, Goblin Battle Text, Goblin Damage Done or Goblin Achievements on and off — they now share one HUD overlay that is never freed while playing",
+                "Fix: AutoGoblinRetainer — after clicking its buttons in the retainer windows, turning the tweak off with those windows open could crash the game on the next click there",
+                "Change: GoblinTweaks-crash.txt now records errors the moment they happen, with the full stack, so crashes that leave nothing in the Dalamud log can be traced",
+            ]),
         new("1.4.1", "2026-10-31",
             "Goblin Enemy Guard and Goblin Anti Machinist now have their own icons in the GoblinTweaks window.",
             [

@@ -257,6 +257,7 @@ internal unsafe class AchievementsAddon : NativeAddon
 
     protected override void OnFinalize(AtkUnitBase* addon)
     {
+        NativeFocus.Forget(addon);
         _searchInput = null;
         _stateDropdown = null;
         _sortDropdown = null;

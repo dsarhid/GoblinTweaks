@@ -8,6 +8,15 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.4.2"] = (
+            "Arregla crashes del juego al activar o desactivar tweaks en la ventana de GoblinTweaks y al actualizar el plugin.",
+            [
+                "Fix: el juego podía crashear en el clic siguiente después de activar o desactivar un tweak y hacer clic en otro — el juego seguía recordando como foco de la ventana el último botón clickeado, aunque la ventana lo había liberado al reconstruirse; ahora se borra antes, y las zonas clickeables de la ventana se actualizan",
+                "Fix: el juego podía crashear al hacer clic después de que GoblinTweaks se actualizara, se recargara o cambiara de idioma con alguna de sus ventanas abierta — al cerrarse, las ventanas ahora borran toda referencia que el juego guarda de ellas",
+                "Fix: el juego podía crashear (\"CLR error\") después de activar y desactivar Goblin Enemy Guard, Goblin Battle Text, Goblin Damage Done o Goblin Achievements — ahora comparten un solo overlay del HUD que nunca se libera mientras jugás",
+                "Fix: AutoGoblinRetainer — después de hacer clic en sus botones en las ventanas de retainers, desactivar el tweak con esas ventanas abiertas podía crashear el juego en el siguiente clic ahí",
+                "Change: GoblinTweaks-crash.txt ahora anota los errores en el momento en que ocurren, con la pila completa, para poder rastrear crashes que no dejan nada en el log de Dalamud",
+            ]),
         ["1.4.1"] = (
             "Goblin Enemy Guard y Goblin Anti Machinist ahora tienen su propio ícono en la ventana de GoblinTweaks.",
             [

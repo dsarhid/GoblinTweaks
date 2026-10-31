@@ -102,6 +102,7 @@ internal unsafe class WeaponPoseAddon : NativeAddon
 
     protected override void OnFinalize(AtkUnitBase* addon)
     {
+        NativeFocus.Forget(addon);
         _rows.Clear();
         base.OnFinalize(addon);
     }

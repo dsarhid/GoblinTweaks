@@ -371,6 +371,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
 
     protected override void OnFinalize(AtkUnitBase* addon)
     {
+        NativeFocus.Forget(addon);
         Svc.Log.Information("CraftingMaterials: window finalizing.");
         FlushCartSave();
         _statusItems.Clear();

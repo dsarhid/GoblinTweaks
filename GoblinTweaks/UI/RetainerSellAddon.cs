@@ -104,6 +104,7 @@ internal sealed unsafe class RetainerSellAddon : NativeAddon
 
     protected override void OnFinalize(AtkUnitBase* addon)
     {
+        NativeFocus.Forget(addon);
         _priceGeneration++;
         SellItemRowNode.Live.Clear();
         SellItemRowNode.PriceOf = null;

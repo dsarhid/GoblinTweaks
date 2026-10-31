@@ -126,6 +126,7 @@ internal unsafe class BattleTextAddon : NativeAddon
 
     protected override void OnFinalize(AtkUnitBase* addon)
     {
+        NativeFocus.Forget(addon);
         Tweak.Preview   = false;
         Tweak.AreaMoved = null;
         Tweak.FlushSettings();

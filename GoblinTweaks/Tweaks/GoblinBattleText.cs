@@ -470,7 +470,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
     private const uint NoEntity = 0xE0000000;
     private readonly Dictionary<uint, bool> _playerActions = [];
-    private OverlayController? _overlay;
+    private OverlayNodes? _overlay;
     private BattleTextAddon? _addon;
     private Exception? _failure;
     private DateTime? _saveAt;
@@ -734,7 +734,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         _effectsLevel = -1;
         Repair();
 
-        _overlay = new OverlayController();
+        _overlay = new OverlayNodes();
         foreach (var area in Enum.GetValues<BattleTextArea>())
         {
             var node = new BattleTextAreaNode { Options = Settings, Area = Area(area), Format = Format };
@@ -813,7 +813,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         foreach (var handle in _handles)
             handle?.Shown = false;
 
-        // Disposing the controller frees the nodes it owns.
+        // Takes its nodes off the shared overlay and frees them; the overlay itself stays.
         _overlay?.Dispose();
         _overlay = null;
         Array.Clear(_areas);

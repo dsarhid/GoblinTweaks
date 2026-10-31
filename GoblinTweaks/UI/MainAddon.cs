@@ -409,9 +409,11 @@ internal sealed unsafe class MainAddon : SettingsPanelAddon
             }
         }
 
+        var rebuilt = _tabsDirty || _rowsDirty || _headerDirty;
         if (_tabsDirty)   { _tabsDirty = false;   RebuildTabs(); }
         if (_rowsDirty)   { _rowsDirty = false;   RebuildRows(); }
         if (_headerDirty) { _headerDirty = false; RefreshHeader(); }
+        if (rebuilt) NativeFocus.RefreshCollisions(addon);
     }
 
     private string TabLabel(string key, string text, int count) => $"{text}    {count}";
@@ -684,6 +686,7 @@ internal sealed unsafe class MainAddon : SettingsPanelAddon
             _status.String    = string.Empty;
             foreach (var icon in _icons.Values) icon.IsVisible = false;
             if (_newsIcon is not null) _newsIcon.IsVisible = WhatsNewPending;
+            if (_tagNodes.Count > 0) NativeFocus.Release(InternalAddon);
             foreach (var node in _tagNodes) node.Dispose();
             _tagNodes.Clear();
             _tagCategory = null;
@@ -707,6 +710,7 @@ internal sealed unsafe class MainAddon : SettingsPanelAddon
         // The category as a tag under the name, then memory and state next to it.
         if (_tagCategory != tweak.Category)
         {
+            if (_tagNodes.Count > 0) NativeFocus.Release(InternalAddon);
             foreach (var node in _tagNodes) node.Dispose();
             _tagNodes.Clear();
             _tagCategory = tweak.Category;

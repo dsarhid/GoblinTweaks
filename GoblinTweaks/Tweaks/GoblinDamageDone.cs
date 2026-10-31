@@ -190,7 +190,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
 
     private Hook<ActionEffectHandler.Delegates.Receive>? _hook;
     private Hook<StatusManager.Delegates.ProcessHotDot>? _tickHook;
-    private OverlayController? _overlay;
+    private OverlayNodes? _overlay;
     private DamageMeterNode? _node;
     private DamageDoneSettingsAddon? _addon;
     private TextHelpAddon? _help;
@@ -232,7 +232,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         _dirty = true;
         _outOfCombatSince = DateTime.MinValue;
 
-        _overlay = new OverlayController();
+        _overlay = new OverlayNodes();
         _node = new DamageMeterNode
         {
             OnClear        = ClearTable,
@@ -307,7 +307,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         _help?.Dispose();
         _help = null;
 
-        // Disposing the controller frees the nodes it owns.
+        // Takes its nodes off the shared overlay and frees them; the overlay itself stays.
         _overlay?.Dispose();
         _overlay = null;
         _node = null;

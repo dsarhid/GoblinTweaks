@@ -137,6 +137,7 @@ internal unsafe class CraftingHelpAddon : NativeAddon
 
     protected override void OnFinalize(AtkUnitBase* addon)
     {
+        NativeFocus.Forget(addon);
         _navItems.Clear();
         _contentNodes.Clear();
         _title = null;

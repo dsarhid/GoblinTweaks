@@ -144,6 +144,7 @@ internal unsafe class GoblinSniperAddon : NativeAddon
 
     protected override void OnFinalize(AtkUnitBase* addon)
     {
+        NativeFocus.Forget(addon);
         _searchInput    = null;
         _sortDropdown   = null;
         _worldDropdown  = null;

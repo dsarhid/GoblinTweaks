@@ -35,7 +35,7 @@ public sealed unsafe class GoblinEnemyGuard : Tweak
     private const float IconSize = 36f;
     private const float LiftAboveHead = 56f;      // over the name plate, in pixels
 
-    private OverlayController? _overlay;
+    private OverlayNodes? _overlay;
 
     // Reused from frame to frame and match to match: the n-th enemy on the list takes the n-th node.
     private readonly List<EnemyGuardNode> _nodes = [];
@@ -56,7 +56,7 @@ public sealed unsafe class GoblinEnemyGuard : Tweak
 
     protected internal override void Enable()
     {
-        _overlay = new OverlayController();
+        _overlay = new OverlayNodes();
         _territory = 0;
         _inMatch = false;
         Svc.Framework.Update += OnUpdate;
@@ -66,7 +66,7 @@ public sealed unsafe class GoblinEnemyGuard : Tweak
     {
         Svc.Framework.Update -= OnUpdate;
 
-        // Disposing the controller frees the nodes it owns.
+        // Takes its nodes off the shared overlay and frees them; the overlay itself stays.
         _overlay?.Dispose();
         _overlay = null;
         _nodes.Clear();

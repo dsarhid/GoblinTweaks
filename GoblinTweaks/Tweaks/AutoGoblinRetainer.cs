@@ -70,6 +70,12 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
     private TextButtonNode?     _sellListPinch;
     private TextButtonNode?     _pinchButton;
     private TextButtonNode?     _sellButton;
+
+    // The game windows the buttons were put on, to make the game forget a button before it is freed.
+    private nint                _buttonsWindow;
+    private ushort              _buttonsWindowId;
+    private nint                _sellListWindow;
+    private ushort              _sellListWindowId;
     private RetainerSellAddon?  _window;
     private AutoGoblinRetainerSettingsAddon? _settingsWindow;
     private TextHelpAddon?      _helpWindow;
@@ -229,10 +235,18 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
             OnClick     = ToggleWindow,
         };
         _sellButton.AttachNode(addon);
+
+        _buttonsWindow   = (nint)addon;
+        _buttonsWindowId = addon->Id;
     }
 
     private void DetachButtons()
     {
+        // A button clicked stays the game window's focus: freed with the window open, the next click in it crashed.
+        if (_pinchButton is not null) NativeFocus.ReleaseNode(_buttonsWindow, _buttonsWindowId, _pinchButton);
+        if (_sellButton is not null) NativeFocus.ReleaseNode(_buttonsWindow, _buttonsWindowId, _sellButton);
+        _buttonsWindow = 0;
+
         _pinchButton?.Dispose();
         _pinchButton = null;
         _sellButton?.Dispose();
@@ -295,10 +309,16 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
             OnClick     = PinchOpenRetainer,
         };
         _sellListPinch.AttachNode(addon);
+
+        _sellListWindow   = (nint)addon;
+        _sellListWindowId = addon->Id;
     }
 
     private void DetachSellListButton()
     {
+        if (_sellListPinch is not null) NativeFocus.ReleaseNode(_sellListWindow, _sellListWindowId, _sellListPinch);
+        _sellListWindow = 0;
+
         _sellListPinch?.Dispose();
         _sellListPinch = null;
     }

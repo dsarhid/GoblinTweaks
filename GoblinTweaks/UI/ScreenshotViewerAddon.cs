@@ -105,6 +105,7 @@ internal sealed unsafe class ScreenshotViewerAddon : NativeAddon
 
     protected override void OnFinalize(AtkUnitBase* addon)
     {
+        NativeFocus.Forget(addon);
         _images.Clear();
         _counter = null;
         _stage = null;

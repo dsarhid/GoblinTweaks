@@ -115,6 +115,7 @@ internal unsafe class TextHelpAddon : NativeAddon
 
     protected override void OnFinalize(AtkUnitBase* addon)
     {
+        NativeFocus.Forget(addon);
         _navItems.Clear();
         _title = null;
         _body  = null;
