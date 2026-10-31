@@ -6,14 +6,16 @@ using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.Game.Object;
 using GoblinTweaks.Core;
 using GoblinTweaks.Localization;
+using GoblinTweaks.UI;
 using GoblinTweaks.UI.Nodes;
+using Dalamud.Hooking;
+using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using KamiToolKit.UiOverlay;
-using TerritoryRow = Lumina.Excel.Sheets.TerritoryType;
 
 namespace GoblinTweaks.Tweaks;
 
 /// <summary>
-/// Crystalline Conflict: a Guard icon over every enemy, bright while they have it and with the clock hand and
+/// PvP (Crystalline Conflict, Frontline, Rival Wings, Wolves' Den duels): a Guard icon over every enemy, bright while they have it and with the clock hand and
 /// the seconds left while it is on cooldown.
 /// </summary>
 /// <remarks>
@@ -22,15 +24,39 @@ namespace GoblinTweaks.Tweaks;
 /// it was used. An enemy never seen using it shows it ready. No hooks: statuses are read once a frame.
 /// </remarks>
 [Tweak(TweakCategory.PvP)]
-public sealed unsafe class GoblinEnemyGuard : Tweak
+public sealed unsafe class GoblinEnemyGuard : Tweak<GoblinEnemyGuard.Options>
 {
+    public sealed class Options
+    {
+        /// <summary>The Guard icon over every enemy, in every PvP area.</summary>
+        public bool ShowIcons { get; set; } = true;
+
+        /// <summary>Warns when you use your Limit Break on a target that has Guard.</summary>
+        public bool WarnLimitBreak { get; set; } = true;
+
+        /// <summary>Stops your Limit Break on a target that has Guard; pressing it again soon after uses it anyway.</summary>
+        public bool BlockLimitBreak { get; set; }
+
+        /// <summary>The warning also goes to the chat, besides the screen.</summary>
+        public bool WarnInChat { get; set; }
+    }
+
+    // Limit Break, in the ActionCategory sheet.
+    private const uint LimitBreakCategory = 9;
+
+    // A Limit Break stopped is let through if pressed again within this time.
+    private static readonly TimeSpan PressAgainWindow = TimeSpan.FromSeconds(2);
+
+    private Hook<ActionManager.Delegates.UseAction>? _useActionHook;
+    private SimpleSettingsAddon? _settingsAddon;
+    private readonly Dictionary<uint, bool> _isLimitBreak = [];
+    private uint _stoppedAction;
+    private DateTime _stoppedAt = DateTime.MinValue;
+
     private const uint GuardIcon = 9581;          // the icon of the Guard action
     private const float GuardRecast = 30f;
     private const float GuardDuration = 4f;       // how long the status lasts when nothing ends it early
     private static readonly uint[] GuardStatuses = [3054, 3673];
-
-    // TerritoryIntendedUse rows of Crystalline Conflict: matches, and custom matches.
-    private static readonly uint[] CrystallineConflictUses = [37, 28];
 
     private const float IconSize = 36f;
     private const float LiftAboveHead = 56f;      // over the name plate, in pixels
@@ -52,19 +78,33 @@ public sealed unsafe class GoblinEnemyGuard : Tweak
     private ushort _territory;
     private bool _inMatch;
     private int _mostSeen;
-    private readonly Dictionary<ushort, bool> _isCrystallineConflict = [];
 
     protected internal override void Enable()
     {
+        var useAction = ActionManager.Addresses.UseAction.Value;
+        if (useAction == 0)
+            throw new InvalidOperationException("The game function for using actions was not found (game updated?).");
+
         _overlay = new OverlayNodes();
         _territory = 0;
         _inMatch = false;
+        _stoppedAction = 0;
+
+        _useActionHook = Svc.GameInterop.HookFromAddress<ActionManager.Delegates.UseAction>((nint)useAction, OnUseAction);
+        _useActionHook.Enable();
+
+        _settingsAddon = NewSettingsAddon();
         Svc.Framework.Update += OnUpdate;
     }
 
     protected internal override void Disable()
     {
         Svc.Framework.Update -= OnUpdate;
+
+        _useActionHook?.Dispose();
+        _useActionHook = null;
+        _settingsAddon?.Dispose();
+        _settingsAddon = null;
 
         // Takes its nodes off the shared overlay and frees them; the overlay itself stays.
         _overlay?.Dispose();
@@ -76,6 +116,122 @@ public sealed unsafe class GoblinEnemyGuard : Tweak
 
     public override TweakButton? HelpButton => new(Loc.Get("Window.Help"), null, ToggleHelpWindow);
 
+    public override IReadOnlyList<TweakButton> Buttons =>
+    [
+        new(Loc.Get("Window.Settings"), TMain("Settings.Help"), ToggleSettings),
+    ];
+
+    private void ToggleSettings()
+    {
+        if (_settingsAddon is not { } window) return;
+        if (window.IsOpen) window.Close(); else window.Open();
+    }
+
+    private SimpleSettingsAddon NewSettingsAddon() => new()
+    {
+        InternalName    = "GtkEnemyGuardSettings",
+        Title           = $"{T("Name")} — {Loc.GetIn(UiLanguage, "Window.Settings")}",
+        Size            = new System.Numerics.Vector2(580f, 380f),
+        RespectCloseAll = false,
+        Tweak           = this,
+        Heading         = T("Settings.Heading"),
+        Toggles         = () =>
+        [
+            Option("ShowIcons",       () => Settings.ShowIcons,       on => Settings.ShowIcons       = on),
+            Option("WarnLimitBreak",  () => Settings.WarnLimitBreak,  on => Settings.WarnLimitBreak  = on),
+            Option("BlockLimitBreak", () => Settings.BlockLimitBreak, on => Settings.BlockLimitBreak = on),
+            Option("WarnInChat",      () => Settings.WarnInChat,      on => Settings.WarnInChat      = on),
+        ],
+    };
+
+    private TweakToggle Option(string key, Func<bool> get, Action<bool> set)
+        => new(T(key), T(key + ".Help"), get, on =>
+        {
+            set(on);
+            SaveSettings();
+        });
+
+    protected override void OnLanguageChanged()
+    {
+        if (State == TweakState.Enabled) Rebuild(ref _settingsAddon, NewSettingsAddon);
+    }
+
+    /// <summary>
+    /// The game using an action (a button pressed, a macro). Runs inside the game's own code: it must never throw.
+    /// A Limit Break on a target that has Guard is warned about, and stopped when asked, unless pressed again soon.
+    /// </summary>
+    private bool OnUseAction(ActionManager* actions, ActionType type, uint actionId, ulong targetId, uint extraParam,
+        ActionManager.UseActionMode mode, uint comboRouteId, bool* outOptAreaTargeted)
+    {
+        try
+        {
+            if ((Settings.WarnLimitBreak || Settings.BlockLimitBreak) && type == ActionType.Action
+                && Svc.ClientState.IsPvP && IsLimitBreak(actionId) && TargetHasGuard(targetId) is { } name)
+            {
+                var now = DateTime.UtcNow;
+                var pressedAgain = _stoppedAction == actionId && now - _stoppedAt < PressAgainWindow;
+
+                if (Settings.BlockLimitBreak && !pressedAgain)
+                {
+                    _stoppedAction = actionId;
+                    _stoppedAt     = now;
+                    Warn(string.Format(T("Warn.LimitBreakStopped"), name));
+                    Svc.Log.Info($"GoblinEnemyGuard: stopped Limit Break {actionId} on {name}, who has Guard.");
+                    return false;
+                }
+
+                _stoppedAction = 0;
+                if (Settings.WarnLimitBreak && !pressedAgain) Warn(string.Format(T("Warn.LimitBreak"), name));
+            }
+        }
+        catch (Exception ex)
+        {
+            Svc.Log.Error(ex, "GoblinEnemyGuard: checking a Limit Break failed; the action goes ahead.");
+        }
+
+        return _useActionHook!.Original(actions, type, actionId, targetId, extraParam, mode, comboRouteId, outOptAreaTargeted);
+    }
+
+    private bool IsLimitBreak(uint actionId)
+    {
+        if (!_isLimitBreak.TryGetValue(actionId, out var result))
+        {
+            result = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Action>().TryGetRow(actionId, out var row)
+                && row.IsPvP && row.ActionCategory.RowId == LimitBreakCategory;
+            _isLimitBreak[actionId] = result;
+        }
+
+        return result;
+    }
+
+    /// <summary>The name of the enemy the action goes to, if it has Guard; null otherwise.</summary>
+    private static string? TargetHasGuard(ulong targetId)
+    {
+        // A button aims at the current target; a macro or a call may name one.
+        var target = targetId is 0 or 0xE0000000
+            ? TargetSystem.Instance() is var system && system != null ? system->GetTargetObject() : null
+            : GameObjectManager.Instance() is var manager && manager != null ? manager->Objects.GetObjectByGameObjectId(targetId) : null;
+        if (target == null || target->ObjectKind != ObjectKind.Pc || !((BattleChara*)target)->IsHostile) return null;
+
+        var statuses = ((BattleChara*)target)->GetStatusManager();
+        if (statuses == null) return null;
+
+        foreach (ref readonly var status in statuses->Status)
+        {
+            if (GuardStatuses.Contains(status.StatusId))
+                return ((Character*)target)->NameString;
+        }
+
+        return null;
+    }
+
+    /// <summary>A warning on screen, and in the chat too when asked for.</summary>
+    private void Warn(string text)
+    {
+        Svc.Toasts.ShowError(text);
+        if (Settings.WarnInChat) Svc.Chat.Print(text, Name);
+    }
+
     protected override IReadOnlyList<string> CommandNames => ["/geg", "/genemyguard"];
 
     protected override void OnCommand() => ToggleHelpWindow();
@@ -85,7 +241,7 @@ public sealed unsafe class GoblinEnemyGuard : Tweak
         try
         {
             CheckTerritory();
-            if (_inMatch) Track(); else HideAll();
+            if (_inMatch && Settings.ShowIcons) Track(); else HideAll();
         }
         catch (Exception ex)
         {
@@ -93,30 +249,24 @@ public sealed unsafe class GoblinEnemyGuard : Tweak
         }
     }
 
-    /// <summary>A new zone starts with no Guard seen: the enemies of the last match are not the ones of this one.</summary>
+    /// <summary>
+    /// Every PvP area: Crystalline Conflict, Frontline, Rival Wings and the Wolves' Den Pier, where duels are fought
+    /// (Dalamud counts it as PvP too). Only hostile players get an icon, so on the pier that is the one you duel.
+    /// A new zone starts with no Guard seen: the enemies of the last match are not the ones of this one.
+    /// </summary>
     private void CheckTerritory()
     {
+        _inMatch = Svc.ClientState.IsPvP;
+
         var territory = (ushort)Svc.ClientState.TerritoryType;
         if (territory == _territory) return;
 
         _territory = territory;
-        _inMatch = IsCrystallineConflict(territory);
+        Svc.Log.Info($"GoblinEnemyGuard: zone {territory}, PvP {_inMatch}.");
         _mostSeen = 0;
         _usedAt.Clear();
         _guarding.Clear();
         HideAll();
-    }
-
-    private bool IsCrystallineConflict(ushort territory)
-    {
-        if (!_isCrystallineConflict.TryGetValue(territory, out var result))
-        {
-            result = Svc.Data.GetExcelSheet<TerritoryRow>().TryGetRow(territory, out var row)
-                && row.IsPvpZone && CrystallineConflictUses.Contains(row.TerritoryIntendedUse.RowId);
-            _isCrystallineConflict[territory] = result;
-        }
-
-        return result;
     }
 
     private void Track()

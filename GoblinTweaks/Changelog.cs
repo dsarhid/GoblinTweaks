@@ -34,6 +34,13 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.4.3", "2026-10-31",
+            "Goblin Anti Machinist and Goblin Enemy Guard get settings, new warnings and work in every PvP area, Wolves' Den duels included.",
+            [
+                "New: Goblin Anti Machinist settings — turn every button into Guard, use Guard by itself (off by default, at your own risk), warn when a machinist targets you, warn when Guard can't save you, warnings in the chat too",
+                "New: Goblin Enemy Guard settings — Guard icon over enemies, warn when your Limit Break goes to a target with Guard, stop it (press again within 2 seconds to use it anyway), warnings in the chat too",
+                "Change: Goblin Enemy Guard works in every PvP area — Crystalline Conflict, Frontline, Rival Wings and duels on the Wolves' Den Pier — not only Crystalline Conflict",
+            ]),
         new("1.4.2", "2026-10-31",
             "Fixes game crashes after turning tweaks on or off in the GoblinTweaks window, and after updating the plugin.",
             [

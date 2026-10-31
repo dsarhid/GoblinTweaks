@@ -8,6 +8,13 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.4.3"] = (
+            "Goblin Anti Machinist y Goblin Enemy Guard suman configuración, avisos nuevos y funcionan en toda zona PvP, duelos del Wolves' Den incluidos.",
+            [
+                "New: configuración de Goblin Anti Machinist — convertir todos los botones en Guard, usar Guard solo (desactivado por defecto, bajo tu responsabilidad), avisar cuando un machinist te pone de objetivo, avisar cuando Guard no te puede salvar, avisos también en el chat",
+                "New: configuración de Goblin Enemy Guard — ícono de Guard sobre los enemigos, avisar si tu Limit Break va a un objetivo con Guard, frenarlo (tocalo de nuevo en menos de 2 segundos para usarlo igual), avisos también en el chat",
+                "Change: Goblin Enemy Guard funciona en toda zona PvP — Crystalline Conflict, Frontline, Rival Wings y los duelos del Wolves' Den Pier — no solo en Crystalline Conflict",
+            ]),
         ["1.4.2"] = (
             "Arregla crashes del juego al activar o desactivar tweaks en la ventana de GoblinTweaks y al actualizar el plugin.",
             [
