@@ -93,6 +93,10 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     // When a My List box was last clicked: a row selection right after it came from the same click.
     private DateTime _cartToggledAt = DateTime.MinValue;
     private static readonly TimeSpan CartClickWindow = TimeSpan.FromMilliseconds(250);
+    // Row under the recipe list for the "Clear list" button, and the list's full height without it.
+    private const float ClearRowH = 34f;
+    private float _recipeListH;
+    private TextButtonNode? _clearCartBtn;
 
     // Auto-refresh when inventory changes while the window is open
     private DateTime _inventoryChangedAt = DateTime.MinValue;
@@ -206,6 +210,8 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         IngredientRowNode.OnItemRightClick = id => OpenItemContextMenu(id);
         RecipeRowNode.IsInCart             = id => CraftCart.Contains(Cart, id);
         RecipeRowNode.OnToggleCart         = ToggleCart;
+        RecipeRowNode.CountOf              = id => Cart.Find(i => i.RecipeId == id)?.Count ?? CraftCart.MinCount;
+        RecipeRowNode.OnCountChanged       = SetCartCount;
     }
 
     protected override void OnUpdate(AtkUnitBase* addon)
@@ -370,6 +376,10 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         IngredientRowNode.OnItemRightClick = null;
         RecipeRowNode.IsInCart             = null;
         RecipeRowNode.OnToggleCart         = null;
+        RecipeRowNode.CountOf              = null;
+        RecipeRowNode.OnCountChanged       = null;
+        RecipeRowNode.ShowCounter          = false;
+        _clearCartBtn                      = null;
 
         base.OnFinalize(addon);
     }
@@ -544,6 +554,51 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         }
     }
 
+    /// <summary>Sets how many times a recipe of My List will be crafted.</summary>
+    private void SetCartCount(uint recipeId, int count)
+    {
+        if (Tweak is null) return;
+
+        var before = Cart.Find(i => i.RecipeId == recipeId)?.Count;
+        CraftCart.SetCount(Tweak.Current.Cart, recipeId, count);
+        if (Cart.Find(i => i.RecipeId == recipeId)?.Count == before) return;
+
+        Tweak.SaveFilters();
+    }
+
+    /// <summary>Empties My List.</summary>
+    private void ClearCart()
+    {
+        if (Tweak is null || Cart.Count == 0) return;
+
+        Tweak.Current.Cart.Clear();
+        Tweak.SaveFilters();
+        UpdateCartCount();
+        _pendingFilter = true;
+    }
+
+    /// <summary>
+    /// Shows the controls of My List (counters, the clear button) in its view and hides them elsewhere. The recipe list
+    /// gives up the height of the button while it shows.
+    /// </summary>
+    private void UpdateCartControls()
+    {
+        RecipeRowNode.ShowCounter = InCartView;
+
+        var showClear = InCartView && Cart.Count > 0;
+        if (_clearCartBtn is not null) _clearCartBtn.IsVisible = showClear;
+
+        if (_recipeList is not null)
+        {
+            var height = showClear ? _recipeListH - ClearRowH : _recipeListH;
+            if (Math.Abs(_recipeList.Height - height) > 0.5f)
+            {
+                _recipeList.Height = height;
+                RequestCollisionRebuild();
+            }
+        }
+    }
+
     /// <summary>The recipes of My List, in the order they were added (the ones the game no longer lists are skipped).</summary>
     private List<CraftableEntry> CartEntries()
     {
@@ -669,6 +724,8 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
                 _filtered.Reverse();
             _marketDataReadyCount = -1;
         }
+
+        UpdateCartControls();
 
         if (_recipeList is not null)
         {
@@ -1009,6 +1066,18 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             ShowDetailPanel(entry);
         };
         _recipeList.AttachNode(this);
+        _recipeListH = colH;
+
+        // My List: "Clear list" under the recipes (the list gives up this row while it shows).
+        _clearCartBtn = new TextButtonNode
+        {
+            String    = CraftLoc.Get("cart.clear"),
+            Position  = new Vector2(listX + (RecipeListW - 160f) / 2f, colTop + colH - ClearRowH + 4f),
+            Size      = new Vector2(160f, 26f),
+            IsVisible = false,
+        };
+        _clearCartBtn.OnClick = ClearCart;
+        _clearCartBtn.AttachNode(this);
 
         // Divider 2: recipe list | detail panel (below the filter bar)
         var div2X = listX + RecipeListW;
@@ -1126,6 +1195,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         if (_myLevelCheck is not null)     _myLevelCheck.String    = CraftLoc.Get("filter.mylevel");
         UpdateShoppingTexts();
         if (_detailPlaceholder is not null) _detailPlaceholder.String = CraftLoc.Get("detail.placeholder");
+        if (_clearCartBtn is not null)      _clearCartBtn.String      = CraftLoc.Get("cart.clear");
 
         // Force the sort dropdown to re-render its localized labels.
         if (_sortDropdown is not null)

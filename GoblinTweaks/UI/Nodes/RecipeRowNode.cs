@@ -2,6 +2,7 @@ using System.Numerics;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using KamiToolKit.Interfaces;
 using KamiToolKit.Nodes;
+using GoblinTweaks.Crafting;
 using GoblinTweaks.Tweaks;
 
 namespace GoblinTweaks.UI.Nodes;
@@ -21,6 +22,12 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
     internal static Func<uint, bool>? IsInCart;
     /// <summary>Set by the addon; invoked with the recipe id when its My List box is clicked.</summary>
     internal static Action<uint>? OnToggleCart;
+    /// <summary>Set by the addon: rows of recipes in My List show how many times they will be crafted (the My List view).</summary>
+    internal static bool ShowCounter;
+    /// <summary>Set by the addon: how many times a recipe of My List will be crafted.</summary>
+    internal static Func<uint, int>? CountOf;
+    /// <summary>Set by the addon; invoked with the recipe id and the new count when the counter changes.</summary>
+    internal static Action<uint, int>? OnCountChanged;
 
     private static readonly Vector4 ColorReady     = new(0.30f, 0.85f, 0.40f, 1f);
     private static readonly Vector4 ColorElsewhere = new(0.95f, 0.80f, 0.20f, 1f);
@@ -35,8 +42,11 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
     private const float IconSz = 30f;
     private const float IconX  = BoxX + BoxSz + 4f;
     private const float NameX  = IconX + IconSz + 10f;
+    private const float CountW = 84f;
+    private const float CountH = 28f;
 
-    private readonly CheckboxNode  _cartBox;  // in My List or not
+    private readonly CheckboxNode     _cartBox;  // in My List or not
+    private readonly NumericInputNode _count;    // My List: how many times it will be crafted
     private readonly IconImageNode _icon;
     private readonly TextNode _name;
     private readonly TextNode _sub;   // "Lv N · Class"
@@ -80,6 +90,22 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
         };
         _check.AttachNode(this);
 
+        _count = new NumericInputNode
+        {
+            Min         = CraftCart.MinCount,
+            Max         = CraftCart.MaxCount,
+            Step        = 1,
+            Size        = new Vector2(CountW, CountH),
+            TextTooltip = CraftLoc.Get("tip.count"),
+            IsVisible   = false,
+        };
+        _count.OnValueUpdate = value =>
+        {
+            if (!_syncing && ItemData is not null)
+                OnCountChanged?.Invoke(ItemData.RecipeId, value);
+        };
+        _count.AttachNode(this);
+
         // Native right-click → handled by the addon (item menu if owned, else crafting log).
         AddEvent(AtkEventType.MouseDown, (_, _, _, _, eventData) =>
         {
@@ -91,9 +117,15 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
     protected override void OnSizeChanged()
     {
         base.OnSizeChanged();
+        Layout();
+    }
 
-        var iconY = Math.Max(0f, (Height - IconSz) / 2f);
-        var textW = Math.Max(0f, Width - NameX - CheckW - 8f);
+    private void Layout()
+    {
+        // In My List the counter takes the right end of the row; the crafted mark moves to its left.
+        var counterW = _count.IsVisible ? CountW + 6f : 0f;
+        var iconY    = Math.Max(0f, (Height - IconSz) / 2f);
+        var textW    = Math.Max(0f, Width - NameX - CheckW - 8f - counterW);
 
         _cartBox.Position = new Vector2(BoxX, Math.Max(0f, (Height - BoxSz) / 2f));
         _icon.Position  = new Vector2(IconX, iconY);
@@ -104,8 +136,11 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
         _sub.Position   = new Vector2(NameX, 21f);
         _sub.Size       = new Vector2(textW, 13f);
 
-        _check.Position = new Vector2(Width - CheckW - 2f, Math.Max(0f, (Height - 14f) / 2f));
+        _check.Position = new Vector2(Width - CheckW - 2f - counterW, Math.Max(0f, (Height - 14f) / 2f));
         _check.Size     = new Vector2(CheckW, 14f);
+
+        _count.Position = new Vector2(Width - CountW - 4f, Math.Max(0f, (Height - CountH) / 2f));
+        _count.Size     = new Vector2(CountW, CountH);
     }
 
     protected override void SetNodeData(CraftableEntry data)
@@ -146,11 +181,23 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
 
     private void SyncCart(CraftableEntry data)
     {
-        var inCart = IsInCart?.Invoke(data.RecipeId) == true;
-        if (_cartBox.IsChecked == inCart) return;
+        var inCart  = IsInCart?.Invoke(data.RecipeId) == true;
+        var counter = ShowCounter && inCart;
+        var count   = counter ? CountOf?.Invoke(data.RecipeId) ?? CraftCart.MinCount : 0;
+
+        if (_cartBox.IsChecked == inCart && _count.IsVisible == counter && (!counter || _count.Value == count)) return;
 
         _syncing = true;
-        try     { _cartBox.IsChecked = inCart; }
+        try
+        {
+            if (_cartBox.IsChecked != inCart) _cartBox.IsChecked = inCart;
+            if (_count.IsVisible != counter)
+            {
+                _count.IsVisible = counter;
+                Layout();
+            }
+            if (counter && _count.Value != count) _count.Value = count;
+        }
         finally { _syncing = false; }
     }
 }
