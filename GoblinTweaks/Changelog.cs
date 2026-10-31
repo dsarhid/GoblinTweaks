@@ -34,6 +34,13 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.3.5", "2026-10-31",
+            "Crafting Materials: tick several recipes into My List and see all their materials added up, with prices.",
+            [
+                "New: Crafting Materials — \"My List\": tick the box of any recipe to add it, set how many times you'll craft each one, and see the materials of all of them added up as an expandable tree",
+                "New: My List totals — \"Deduct what I own\" toggle, an estimated price per material and the gil total of what's missing; the listed materials are highlighted in the FC chest, retainers, bags and shops",
+                "Change: Crafting Materials — the shopping list of a recipe now uses the same calculation as My List (same results)",
+            ]),
         new("1.3.4", "2026-10-30",
             "GoblinSniper no longer lists items whose average is inflated by one absurd sale; Crafting Materials search fix.",
             [

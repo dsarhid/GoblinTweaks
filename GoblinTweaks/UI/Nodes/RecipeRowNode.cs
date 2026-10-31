@@ -2,6 +2,7 @@ using System.Numerics;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using KamiToolKit.Interfaces;
 using KamiToolKit.Nodes;
+using GoblinTweaks.Crafting;
 using GoblinTweaks.Tweaks;
 
 namespace GoblinTweaks.UI.Nodes;
@@ -17,6 +18,19 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
     /// <summary>Set by the addon; invoked with the full entry on right-click.</summary>
     internal static Action<CraftableEntry>? OnItemRightClick;
 
+    /// <summary>Set by the addon: whether a recipe is in My List.</summary>
+    internal static Func<uint, bool>? IsInCart;
+    /// <summary>Set by the addon; invoked with the recipe id when its My List box is clicked.</summary>
+    internal static Action<uint>? OnToggleCart;
+    /// <summary>Set by the addon: rows of recipes in My List show how many times they will be crafted (the My List view).</summary>
+    internal static bool ShowCounter;
+    /// <summary>Set by the addon: how many times a recipe of My List will be crafted.</summary>
+    internal static Func<uint, int>? CountOf;
+    /// <summary>Set by the addon; invoked with the recipe id and the new count when the counter changes.</summary>
+    internal static Action<uint, int>? OnCountChanged;
+    /// <summary>Raised by the addon when My List or the view changes, so the rows bring their box and counter in line.</summary>
+    internal static int CartVersion;
+
     private static readonly Vector4 ColorReady     = new(0.30f, 0.85f, 0.40f, 1f);
     private static readonly Vector4 ColorElsewhere = new(0.95f, 0.80f, 0.20f, 1f);
     private static readonly Vector4 ColorNear      = new(0.95f, 0.55f, 0.15f, 1f);
@@ -25,17 +39,42 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
     private static readonly Vector4 ColorCheck     = new(0.45f, 0.85f, 0.45f, 1f);
 
     private const float CheckW = 18f;
+    private const float BoxSz  = 20f;
+    private const float BoxX   = 4f;
     private const float IconSz = 30f;
-    private const float IconX  = 6f;
+    private const float IconX  = BoxX + BoxSz + 4f;
     private const float NameX  = IconX + IconSz + 10f;
+    private const float CountW = 84f;
+    private const float CountH = 28f;
 
+    private readonly CheckboxNode     _cartBox;  // in My List or not
+    private readonly NumericInputNode _count;    // My List: how many times it will be crafted
     private readonly IconImageNode _icon;
     private readonly TextNode _name;
     private readonly TextNode _sub;   // "Lv N · Class"
     private readonly TextNode _check;
 
+    // Set while the controls are brought in line with the list: writing IsChecked raises OnClick.
+    private bool _syncing;
+    // The CartVersion and recipe the box and counter were last brought in line with.
+    private int  _syncedVersion = -1;
+    private uint _syncedRecipe;
+
     public unsafe RecipeRowNode()
     {
+        _cartBox = new CheckboxNode
+        {
+            String      = string.Empty,
+            Size        = new Vector2(BoxSz, BoxSz),
+            TextTooltip = CraftLoc.Get("tip.cart"),
+        };
+        _cartBox.OnClick = _ =>
+        {
+            if (!_syncing && ItemData is not null)
+                OnToggleCart?.Invoke(ItemData.RecipeId);
+        };
+        _cartBox.AttachNode(this);
+
         _icon = new IconImageNode { FitTexture = true, Size = new Vector2(IconSz, IconSz) };
         _icon.AttachNode(this);
 
@@ -56,6 +95,22 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
         };
         _check.AttachNode(this);
 
+        _count = new NumericInputNode
+        {
+            Min         = CraftCart.MinCount,
+            Max         = CraftCart.MaxCount,
+            Step        = 1,
+            Size        = new Vector2(CountW, CountH),
+            TextTooltip = CraftLoc.Get("tip.count"),
+            IsVisible   = false,
+        };
+        _count.OnValueUpdate = value =>
+        {
+            if (!_syncing && ItemData is not null)
+                OnCountChanged?.Invoke(ItemData.RecipeId, value);
+        };
+        _count.AttachNode(this);
+
         // Native right-click → handled by the addon (item menu if owned, else crafting log).
         AddEvent(AtkEventType.MouseDown, (_, _, _, _, eventData) =>
         {
@@ -67,10 +122,17 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
     protected override void OnSizeChanged()
     {
         base.OnSizeChanged();
+        Layout();
+    }
 
-        var iconY = Math.Max(0f, (Height - IconSz) / 2f);
-        var textW = Math.Max(0f, Width - NameX - CheckW - 8f);
+    private void Layout()
+    {
+        // In My List the counter takes the right end of the row; the crafted mark moves to its left.
+        var counterW = _count.IsVisible ? CountW + 6f : 0f;
+        var iconY    = Math.Max(0f, (Height - IconSz) / 2f);
+        var textW    = Math.Max(0f, Width - NameX - CheckW - 8f - counterW);
 
+        _cartBox.Position = new Vector2(BoxX, Math.Max(0f, (Height - BoxSz) / 2f));
         _icon.Position  = new Vector2(IconX, iconY);
 
         _name.Position  = new Vector2(NameX, 4f);
@@ -79,8 +141,11 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
         _sub.Position   = new Vector2(NameX, 21f);
         _sub.Size       = new Vector2(textW, 13f);
 
-        _check.Position = new Vector2(Width - CheckW - 2f, Math.Max(0f, (Height - 14f) / 2f));
+        _check.Position = new Vector2(Width - CheckW - 2f - counterW, Math.Max(0f, (Height - 14f) / 2f));
         _check.Size     = new Vector2(CheckW, 14f);
+
+        _count.Position = new Vector2(Width - CountW - 4f, Math.Max(0f, (Height - CountH) / 2f));
+        _count.Size     = new Vector2(CountW, CountH);
     }
 
     protected override void SetNodeData(CraftableEntry data)
@@ -108,5 +173,40 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
         _check.IsVisible = data.IsCrafted;
 
         ItemTooltip = data.ItemId;
+        SyncCart(data, force: true);
+    }
+
+    // The list only calls SetNodeData when a row gets a different recipe; My List changes on its own, so the row looks
+    // again whenever CartVersion moves. Not every frame: that would write over a counter while it is being typed in.
+    public override void Update()
+    {
+        base.Update();
+        if (ItemData is not null) SyncCart(ItemData, force: false);
+    }
+
+    private void SyncCart(CraftableEntry data, bool force)
+    {
+        if (!force && _syncedVersion == CartVersion && _syncedRecipe == data.RecipeId) return;
+        _syncedVersion = CartVersion;
+        _syncedRecipe  = data.RecipeId;
+
+        var inCart  = IsInCart?.Invoke(data.RecipeId) == true;
+        var counter = ShowCounter && inCart;
+        var count   = counter ? CountOf?.Invoke(data.RecipeId) ?? CraftCart.MinCount : 0;
+
+        if (_cartBox.IsChecked == inCart && _count.IsVisible == counter && (!counter || _count.Value == count)) return;
+
+        _syncing = true;
+        try
+        {
+            if (_cartBox.IsChecked != inCart) _cartBox.IsChecked = inCart;
+            if (_count.IsVisible != counter)
+            {
+                _count.IsVisible = counter;
+                Layout();
+            }
+            if (counter && _count.Value != count) _count.Value = count;
+        }
+        finally { _syncing = false; }
     }
 }

@@ -10,6 +10,7 @@ using Dalamud.Game.Inventory.InventoryEventArgTypes;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using GoblinTweaks.Core;
+using GoblinTweaks.Crafting;
 using GoblinTweaks.Services;
 using GoblinTweaks.UI;
 using GoblinTweaks.Localization;
@@ -282,6 +283,11 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         public bool   HideCrafted    { get; set; }
         /// <summary>Only recipes your crafter of that class has the level for.</summary>
         public bool   OnlyMyLevel    { get; set; }
+
+        /// <summary>"My List": the recipes to craft and how many times, in the order they were added.</summary>
+        public List<CartItem> Cart            { get; set; } = [];
+        /// <summary>The totals of My List count only what is missing (what you own is deducted).</summary>
+        public bool           CartDeductOwned { get; set; } = true;
     }
 
     public const int MaxNearCompleteMissing = 10;
@@ -303,6 +309,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     protected internal override void Enable()
     {
         MoveOldLanguageSetting();
+        SanitizeCart();
 
         _universalis = new UniversalisService();
         CraftLoc.Lang = UiLanguage;
@@ -749,7 +756,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         {
             InternalName = "GtkCraftMatHelp",
             Title        = CraftLoc.Get("help.title"),
-            Size         = new System.Numerics.Vector2(780f, 560f),
+            Size         = new System.Numerics.Vector2(780f, 620f),
         };
         _helpAddon.Toggle();
     }
@@ -1140,17 +1147,16 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     }
 
     private static List<IngredientCheck> Checks(List<(uint Id, string Name, uint Icon, int Amount)> ingredients, InventorySnapshot snap)
+        => ingredients.Select(i => Check(new Need(i.Id, i.Name, i.Icon, i.Amount), snap)).ToList();
+
+    /// <summary>How much of a needed item is in the main bags and elsewhere.</summary>
+    internal static IngredientCheck Check(Need need, InventorySnapshot snap)
     {
-        var checks = new List<IngredientCheck>(ingredients.Count);
-        foreach (var (id, name, icon, required) in ingredients)
-        {
-            var inPlayer = snap.Get(id, InventorySource.Player);
-            var inOther  = snap.Get(id, InventorySource.Saddlebag)
-                         + snap.Get(id, InventorySource.Retainer)
-                         + snap.Get(id, InventorySource.FreeCompany);
-            checks.Add(new IngredientCheck(id, name, icon, required, inPlayer, inOther));
-        }
-        return checks;
+        var inPlayer = snap.Get(need.ItemId, InventorySource.Player);
+        var inOther  = snap.Get(need.ItemId, InventorySource.Saddlebag)
+                     + snap.Get(need.ItemId, InventorySource.Retainer)
+                     + snap.Get(need.ItemId, InventorySource.FreeCompany);
+        return new IngredientCheck(need.ItemId, need.Name, need.IconId, need.Amount, inPlayer, inOther);
     }
 
     private HashSet<uint>? _logRecipeIds;
@@ -1247,7 +1253,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     }
 
     /// <summary>Deepest level of sub-recipes followed (same as the ingredient tree of the window).</summary>
-    public const int MaxRecipeDepth = 6;
+    public const int MaxRecipeDepth = CraftMath.MaxDepth;
 
     /// <summary>
     /// The base materials one craft of a recipe needs, with every craftable ingredient you don't have broken down into
@@ -1256,53 +1262,40 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     /// Each entry's <see cref="IngredientCheck.Required"/> is the total needed; the ones still missing come first.
     /// </summary>
     public List<IngredientCheck> ShoppingList(uint recipeId, InventorySnapshot snap)
-    {
-        if (RecipeParts(recipeId) is not { } root) return [];
-
-        var stock = new Dictionary<uint, int>();                                  // what is left to use, by item
-        var raw   = new Dictionary<uint, (string Name, uint Icon, int Need)>();   // base materials, in order of appearance
-        var path  = new HashSet<uint>();                                          // sub-recipes being followed (no loops)
-
-        int Take(uint id, int amount)
-        {
-            var left = stock.TryGetValue(id, out var known) ? known : snap.GetTotal(id);
-            var used = Math.Min(left, amount);
-            stock[id] = left - used;
-            return used;
-        }
-
-        void Need(uint id, string name, uint icon, int amount, int depth)
-        {
-            if (depth < MaxRecipeDepth && !path.Contains(id) && RecipeByResult().TryGetValue(id, out var subId)
-                && RecipeParts(subId) is { } sub && sub.Ingredients.Count > 0)
-            {
-                var missing = amount - Take(id, amount);
-                if (missing <= 0) return;
-
-                var makes  = Math.Max(1, (int)sub.ResultAmount);
-                var crafts = (missing + makes - 1) / makes;
-                stock[id] = stock.GetValueOrDefault(id) + crafts * makes - missing; // what the crafts make beyond what is needed
-
-                path.Add(id);
-                foreach (var (subItem, subName, subIcon, subAmount) in sub.Ingredients)
-                    Need(subItem, subName, subIcon, subAmount * crafts, depth + 1);
-                path.Remove(id);
-                return;
-            }
-
-            raw[id] = (name, icon, raw.GetValueOrDefault(id).Need + amount);
-        }
-
-        foreach (var (id, name, icon, amount) in root.Ingredients)
-            Need(id, name, icon, amount, 1);
-
-        return raw
-            .Select(pair => new IngredientCheck(pair.Key, pair.Value.Name, pair.Value.Icon, pair.Value.Need,
-                snap.Get(pair.Key, InventorySource.Player),
-                snap.Get(pair.Key, InventorySource.Saddlebag) + snap.Get(pair.Key, InventorySource.Retainer) + snap.Get(pair.Key, InventorySource.FreeCompany)))
+        => CraftMath.BaseMaterials([new CartItem { RecipeId = recipeId }], CraftData(snap), deductOwned: true)
+            .Select(need => Check(need, snap))
             .OrderBy(check => check.Fulfilled)
             .ThenBy(check => check.Name)
             .ToList();
+
+    /// <summary>The recipes of the game and what the snapshot holds, as the crafting calculations read them.</summary>
+    internal ICraftData CraftData(InventorySnapshot snap) => new CraftDataSource(this, snap);
+
+    private sealed class CraftDataSource(CraftingMaterials tweak, InventorySnapshot snap) : ICraftData
+    {
+        private readonly Dictionary<uint, CraftRecipe?> _recipes = [];
+
+        public CraftRecipe? Recipe(uint recipeId)
+        {
+            if (_recipes.TryGetValue(recipeId, out var known)) return known;
+            return _recipes[recipeId] = tweak.RecipeParts(recipeId) is { } parts
+                ? new CraftRecipe(parts.ResultAmount, parts.Ingredients.Select(i => new CraftPart(i.Id, i.Name, i.Icon, i.Amount)).ToList())
+                : null;
+        }
+
+        public uint RecipeFor(uint itemId) => tweak.GetRecipeId(itemId);
+        public int  Owned(uint itemId)     => snap.GetTotal(itemId);
+    }
+
+    /// <summary>Drops from My List the recipes the game no longer has and fixes counts out of range (a hand-edited or old config).</summary>
+    private void SanitizeCart()
+    {
+        if (Settings.Cart.Count == 0) return;
+
+        var before = Settings.Cart.Select(i => (i.RecipeId, i.Count)).ToList();
+        CraftCart.Sanitize(Settings.Cart, id => RecipeParts(id) is not null);
+        if (!before.SequenceEqual(Settings.Cart.Select(i => (i.RecipeId, i.Count))))
+            SaveSettings(notify: false);
     }
 
     private static List<(uint Id, string Name, uint Icon, int Amount)> BuildIngredients(LuminaRecipe recipe)

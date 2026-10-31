@@ -8,3 +8,6 @@ obj/
 # Local-only files
 CLAUDE.md
 GoblinTweaks/img/
+
+# Brainstorming mockups and plan workspaces
+.superpowers/
