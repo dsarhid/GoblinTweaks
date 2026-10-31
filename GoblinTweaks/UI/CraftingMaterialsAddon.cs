@@ -5,6 +5,7 @@ using FFXIVClientStructs.FFXIV.Component.GUI;
 using KamiToolKit.BaseTypes;
 using KamiToolKit.Enums;
 using KamiToolKit.Nodes;
+using GoblinTweaks.Crafting;
 using GoblinTweaks.Localization;
 using GoblinTweaks.Services;
 using GoblinTweaks.Tweaks;
@@ -84,6 +85,14 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
 
     // A view of the recipes of what a job can equip: this, then the ClassJob row.
     private const string JobView = "job:";
+
+    // My List: the recipes ticked to craft, with the total of their materials on the right.
+    private const string CartView = "cart";
+    private bool InCartView => _selectedView == CartView;
+    private List<CartItem> Cart => Tweak?.Current.Cart ?? [];
+    // When a My List box was last clicked: a row selection right after it came from the same click.
+    private DateTime _cartToggledAt = DateTime.MinValue;
+    private static readonly TimeSpan CartClickWindow = TimeSpan.FromMilliseconds(250);
 
     // Auto-refresh when inventory changes while the window is open
     private DateTime _inventoryChangedAt = DateTime.MinValue;
@@ -195,6 +204,8 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         // the result is in your bags, otherwise the native Crafting Log for that recipe.
         RecipeRowNode.OnItemRightClick     = OnRecipeRightClick;
         IngredientRowNode.OnItemRightClick = id => OpenItemContextMenu(id);
+        RecipeRowNode.IsInCart             = id => CraftCart.Contains(Cart, id);
+        RecipeRowNode.OnToggleCart         = ToggleCart;
     }
 
     protected override void OnUpdate(AtkUnitBase* addon)
@@ -357,6 +368,8 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
 
         RecipeRowNode.OnItemRightClick     = null;
         IngredientRowNode.OnItemRightClick = null;
+        RecipeRowNode.IsInCart             = null;
+        RecipeRowNode.OnToggleCart         = null;
 
         base.OnFinalize(addon);
     }
@@ -502,6 +515,41 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             _statusItems[2].String = $"{CraftLoc.Get("status.almost")} ({near})";
             _statusItems[3].String = $"{CraftLoc.Get("status.cant")} ({notReady})";
         }
+        UpdateCartCount();
+    }
+
+    private void UpdateCartCount()
+    {
+        if (_statusItems.Count >= 5)
+            _statusItems[4].String = $"{CraftLoc.Get("status.cart")} ({Cart.Count})";
+    }
+
+    // ── My List ───────────────────────────────────────────────────────────────
+
+    /// <summary>Puts a recipe in My List, or takes it out.</summary>
+    private void ToggleCart(uint recipeId)
+    {
+        if (Tweak is null) return;
+
+        _cartToggledAt = DateTime.UtcNow;
+        CraftCart.Toggle(Tweak.Current.Cart, recipeId);
+        Tweak.SaveFilters();
+        UpdateCartCount();
+
+        // In My List an unticked recipe leaves the list (the rows elsewhere update their box on their own).
+        if (InCartView)
+        {
+            _keepScroll    = true;
+            _pendingFilter = true;
+        }
+    }
+
+    /// <summary>The recipes of My List, in the order they were added (the ones the game no longer lists are skipped).</summary>
+    private List<CraftableEntry> CartEntries()
+    {
+        var byId = new Dictionary<uint, CraftableEntry>();
+        foreach (var e in _entries) byId.TryAdd(e.RecipeId, e);
+        return Cart.Select(i => byId.GetValueOrDefault(i.RecipeId)).OfType<CraftableEntry>().ToList();
     }
 
     private void UpdateCategoryList()
@@ -556,11 +604,13 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             var v when v.StartsWith(JobView) && uint.TryParse(v[JobView.Length..], out var id)
                        && CraftingMaterials.HandAndLandJobs().FirstOrDefault(j => j.Id == id) is { } job
                        => _entries.Where(e => IsOfJob(e, job)).ToList(),
+            CartView   => CartEntries(),
             _          => _entries.ToList(),
         };
 
+        // My List shows every recipe in it, in the order they were added: no search, filter or sort applies.
         // Search text filter
-        if (!string.IsNullOrWhiteSpace(_searchText))
+        if (!InCartView && !string.IsNullOrWhiteSpace(_searchText))
         {
             var term = _searchText.Trim();
             _filtered = _filtered.Where(e =>
@@ -571,13 +621,13 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         }
 
         // Top-bar filters
-        if (_hideCrafted)
+        if (_hideCrafted && !InCartView)
             _filtered = _filtered.Where(e => !e.IsCrafted).ToList();
 
-        if (_classFilter != AllClasses)
+        if (_classFilter != AllClasses && !InCartView)
             _filtered = _filtered.Where(e => e.CraftClass == _classFilter).ToList();
 
-        if (_onlyMyLevel && Tweak is { } tweak)
+        if (_onlyMyLevel && !InCartView && Tweak is { } tweak)
         {
             var levels = new Dictionary<uint, int>();
             _filtered = _filtered.Where(e =>
@@ -590,7 +640,11 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
 
         // Sort (base ascending order, then reversed if the direction toggle is set)
         // Market price sort is handled separately to always put unknown prices at the bottom.
-        if (_sortMode == SortMarket)
+        if (InCartView)
+        {
+            _marketDataReadyCount = -1;
+        }
+        else if (_sortMode == SortMarket)
         {
             _filtered = SortByMarket(_filtered);
             // Trigger market data requests for all visible items.
@@ -634,7 +688,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         {
             var toRestore = _filtered.FirstOrDefault(e => e.RecipeId == _pendingRestoreId);
             _pendingRestoreId = 0;
-            if (toRestore is not null)
+            if (toRestore is not null && !InCartView)
                 ShowDetailPanel(toRestore);
         }
 
@@ -948,7 +1002,12 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             AllowMultipleSelection = false,
             OptionsList            = [],
         };
-        _recipeList.OnItemSelected = entry => { if (entry is not null) ShowDetailPanel(entry); };
+        _recipeList.OnItemSelected = entry =>
+        {
+            // In My List the totals stay on the right; a click on a My List box isn't a click on the recipe.
+            if (entry is null || InCartView || DateTime.UtcNow - _cartToggledAt < CartClickWindow) return;
+            ShowDetailPanel(entry);
+        };
         _recipeList.AttachNode(this);
 
         // Divider 2: recipe list | detail panel (below the filter bar)
@@ -1189,6 +1248,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         AddStatusItem(c, ref y, "ready",    CraftLoc.Get("status.ready"));
         AddStatusItem(c, ref y, "near",     CraftLoc.Get("status.almost"));
         AddStatusItem(c, ref y, "notReady", CraftLoc.Get("status.cant"));
+        AddStatusItem(c, ref y, CartView,   CraftLoc.Get("status.cart"));
 
         y += 6f;
         new HorizontalLineNode { Position = new Vector2(c.X + 6f, y), Size = new Vector2(SidebarW - 14f, 2f) }
@@ -1358,8 +1418,8 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         var capturedId = id;
         item.OnClick = _ =>
         {
-            var idxMap = new[] { "all", "ready", "near", "notReady" };
-            for (var i = 0; i < _statusItems.Count && i < 4; i++)
+            var idxMap = new[] { "all", "ready", "near", "notReady", CartView };
+            for (var i = 0; i < _statusItems.Count && i < idxMap.Length; i++)
             {
                 _statusItems[i].IsSelected         = idxMap[i] == capturedId;
                 _statusItems[i].TextNode.TextColor = _statusItems[i].IsSelected ? CategoryGold : BodyGrey;

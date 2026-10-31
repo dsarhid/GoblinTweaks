@@ -17,6 +17,11 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
     /// <summary>Set by the addon; invoked with the full entry on right-click.</summary>
     internal static Action<CraftableEntry>? OnItemRightClick;
 
+    /// <summary>Set by the addon: whether a recipe is in My List.</summary>
+    internal static Func<uint, bool>? IsInCart;
+    /// <summary>Set by the addon; invoked with the recipe id when its My List box is clicked.</summary>
+    internal static Action<uint>? OnToggleCart;
+
     private static readonly Vector4 ColorReady     = new(0.30f, 0.85f, 0.40f, 1f);
     private static readonly Vector4 ColorElsewhere = new(0.95f, 0.80f, 0.20f, 1f);
     private static readonly Vector4 ColorNear      = new(0.95f, 0.55f, 0.15f, 1f);
@@ -25,17 +30,36 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
     private static readonly Vector4 ColorCheck     = new(0.45f, 0.85f, 0.45f, 1f);
 
     private const float CheckW = 18f;
+    private const float BoxSz  = 20f;
+    private const float BoxX   = 4f;
     private const float IconSz = 30f;
-    private const float IconX  = 6f;
+    private const float IconX  = BoxX + BoxSz + 4f;
     private const float NameX  = IconX + IconSz + 10f;
 
+    private readonly CheckboxNode  _cartBox;  // in My List or not
     private readonly IconImageNode _icon;
     private readonly TextNode _name;
     private readonly TextNode _sub;   // "Lv N · Class"
     private readonly TextNode _check;
 
+    // Set while the controls are brought in line with the list: writing IsChecked raises OnClick.
+    private bool _syncing;
+
     public unsafe RecipeRowNode()
     {
+        _cartBox = new CheckboxNode
+        {
+            String      = string.Empty,
+            Size        = new Vector2(BoxSz, BoxSz),
+            TextTooltip = CraftLoc.Get("tip.cart"),
+        };
+        _cartBox.OnClick = _ =>
+        {
+            if (!_syncing && ItemData is not null)
+                OnToggleCart?.Invoke(ItemData.RecipeId);
+        };
+        _cartBox.AttachNode(this);
+
         _icon = new IconImageNode { FitTexture = true, Size = new Vector2(IconSz, IconSz) };
         _icon.AttachNode(this);
 
@@ -71,6 +95,7 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
         var iconY = Math.Max(0f, (Height - IconSz) / 2f);
         var textW = Math.Max(0f, Width - NameX - CheckW - 8f);
 
+        _cartBox.Position = new Vector2(BoxX, Math.Max(0f, (Height - BoxSz) / 2f));
         _icon.Position  = new Vector2(IconX, iconY);
 
         _name.Position  = new Vector2(NameX, 4f);
@@ -108,5 +133,24 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
         _check.IsVisible = data.IsCrafted;
 
         ItemTooltip = data.ItemId;
+        SyncCart(data);
+    }
+
+    // The list only calls SetNodeData when a row gets a different recipe; My List changes on its own, so the box is
+    // brought in line every frame too.
+    public override void Update()
+    {
+        base.Update();
+        if (ItemData is not null) SyncCart(ItemData);
+    }
+
+    private void SyncCart(CraftableEntry data)
+    {
+        var inCart = IsInCart?.Invoke(data.RecipeId) == true;
+        if (_cartBox.IsChecked == inCart) return;
+
+        _syncing = true;
+        try     { _cartBox.IsChecked = inCart; }
+        finally { _syncing = false; }
     }
 }
