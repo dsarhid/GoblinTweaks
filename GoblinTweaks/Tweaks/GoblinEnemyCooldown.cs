@@ -31,7 +31,7 @@ namespace GoblinTweaks.Tweaks;
 /// it only shows for a while after it is used.
 /// </remarks>
 [Tweak(TweakCategory.PvP)]
-public sealed unsafe class GoblinEnemyGuard : Tweak<GoblinEnemyGuard.Options>
+public sealed unsafe class GoblinEnemyCooldown : Tweak<GoblinEnemyCooldown.Options>
 {
     public sealed class Options
     {
@@ -40,6 +40,12 @@ public sealed unsafe class GoblinEnemyGuard : Tweak<GoblinEnemyGuard.Options>
 
         /// <summary>The actions followed besides Guard (Action rows), chosen by job in the settings.</summary>
         public HashSet<uint> TrackedActions { get; set; } = [.. PvPActions.Defaults];
+
+        /// <summary>
+        /// The PvP role actions not followed (Action rows). Every enemy carries a status saying which role action
+        /// they chose; its icon and cooldown go in their row unless it is here.
+        /// </summary>
+        public HashSet<uint> HiddenRoleActions { get; set; } = [];
 
         /// <summary>Size of each icon, in pixels.</summary>
         public int IconSize { get; set; } = 32;
@@ -90,7 +96,7 @@ public sealed unsafe class GoblinEnemyGuard : Tweak<GoblinEnemyGuard.Options>
     private Exception? _failure;
 
     /// <summary>How far enemies' Limit Breaks have charged, from your own gauge.</summary>
-    private readonly PvPLimitBreakClock _limitBreakClock = new(nameof(GoblinEnemyGuard));
+    private readonly PvPLimitBreakClock _limitBreakClock = new(nameof(GoblinEnemyCooldown));
 
     /// <summary>When each enemy last used each followed cooldown (entity id, group id), and which action of it.</summary>
     private readonly Dictionary<(uint Enemy, uint Action), DateTime> _actionUsedAt = [];
@@ -171,7 +177,7 @@ public sealed unsafe class GoblinEnemyGuard : Tweak<GoblinEnemyGuard.Options>
         {
             _useActionHook?.Dispose();
             _useActionHook = null;
-            Svc.Log.Warning(ex, "GoblinEnemyGuard: the Limit Break warning is off this session; the icons work as usual.");
+            Svc.Log.Warning(ex, "GoblinEnemyCooldown: the Limit Break warning is off this session; the icons work as usual.");
         }
 
         // Only the actions other than Guard need this one: without it, Guard still shows.
@@ -187,7 +193,7 @@ public sealed unsafe class GoblinEnemyGuard : Tweak<GoblinEnemyGuard.Options>
         {
             _effectHook?.Dispose();
             _effectHook = null;
-            Svc.Log.Warning(ex, "GoblinEnemyGuard: only Guard is followed this session; the other actions can't be seen.");
+            Svc.Log.Warning(ex, "GoblinEnemyCooldown: only Guard is followed this session; the other actions can't be seen.");
         }
 
         _settingsAddon = NewSettingsAddon();
@@ -235,7 +241,7 @@ public sealed unsafe class GoblinEnemyGuard : Tweak<GoblinEnemyGuard.Options>
 
     private SimpleSettingsAddon NewSettingsAddon() => new()
     {
-        InternalName    = "GtkEnemyGuardSettings",
+        InternalName    = "GtkEnemyCooldownSettings",
         Title           = $"{T("Name")} — {Loc.GetIn(UiLanguage, "Window.Settings")}",
         Size            = new System.Numerics.Vector2(620f, 640f),
         RespectCloseAll = false,
@@ -291,7 +297,20 @@ public sealed unsafe class GoblinEnemyGuard : Tweak<GoblinEnemyGuard.Options>
     /// <summary>One section per job with a switch per action that can be followed, after a section explaining them.</summary>
     private IReadOnlyList<SettingsGroup> ActionGroups()
     {
-        var groups = new List<SettingsGroup> { new(T("Settings.Actions"), T("Settings.Actions.Note"), []) };
+        var groups = new List<SettingsGroup>
+        {
+            new(T("Settings.RoleActions"), T("Settings.RoleActions.Note"), [], [.. PvPActions.RoleActions.Select(action => new SettingsIconToggle(
+                action.Icon,
+                string.Format(T("Action.Cooldown"), action.Name, action.Recast),
+                string.IsNullOrEmpty(action.Description) ? action.Name : $"{action.Name}\n{action.Description}",
+                () => !Settings.HiddenRoleActions.Contains(action.Id),
+                on =>
+                {
+                    if (on) Settings.HiddenRoleActions.Remove(action.Id); else Settings.HiddenRoleActions.Add(action.Id);
+                    SaveSettings();
+                }))]),
+            new(T("Settings.Actions"), T("Settings.Actions.Note"), []),
+        };
 
         foreach (var (job, actions) in PvPActions.ByJob.OrderBy(pair => PvPActions.JobNames[pair.Key]))
         {
@@ -344,7 +363,7 @@ public sealed unsafe class GoblinEnemyGuard : Tweak<GoblinEnemyGuard.Options>
                     _stoppedAction = actionId;
                     _stoppedAt     = now;
                     Warn(string.Format(T("Warn.LimitBreakStopped"), name));
-                    Svc.Log.Info($"GoblinEnemyGuard: stopped Limit Break {actionId} on {name}, who has Guard.");
+                    Svc.Log.Info($"GoblinEnemyCooldown: stopped Limit Break {actionId} on {name}, who has Guard.");
                     return false;
                 }
 
@@ -354,7 +373,7 @@ public sealed unsafe class GoblinEnemyGuard : Tweak<GoblinEnemyGuard.Options>
         }
         catch (Exception ex)
         {
-            Svc.Log.Error(ex, "GoblinEnemyGuard: checking a Limit Break failed; the action goes ahead.");
+            Svc.Log.Error(ex, "GoblinEnemyCooldown: checking a Limit Break failed; the action goes ahead.");
         }
 
         return _useActionHook!.Original(actions, type, actionId, targetId, extraParam, mode, comboRouteId, outOptAreaTargeted);
@@ -389,7 +408,7 @@ public sealed unsafe class GoblinEnemyGuard : Tweak<GoblinEnemyGuard.Options>
         if (Settings.WarnInChat) Svc.Chat.Print(text, Name);
     }
 
-    protected override IReadOnlyList<string> CommandNames => ["/geg", "/genemyguard"];
+    protected override IReadOnlyList<string> CommandNames => ["/gec", "/genemycooldown"];
 
     protected override void OnCommand() => ToggleSettings();
 
@@ -403,7 +422,7 @@ public sealed unsafe class GoblinEnemyGuard : Tweak<GoblinEnemyGuard.Options>
         try
         {
             if (_inMatch && header != null && (byte)header->ActionType == ActionKindAction
-                && PvPActions.ByMember.TryGetValue(header->ActionId, out var action) && Settings.TrackedActions.Contains(action.Id))
+                && PvPActions.ByMember.TryGetValue(header->ActionId, out var action) && IsFollowed(action))
             {
                 // Any action of the group starts the group's cooldown, and the next one of the chain comes up.
                 var key = (casterEntityId, action.Id);
@@ -423,6 +442,10 @@ public sealed unsafe class GoblinEnemyGuard : Tweak<GoblinEnemyGuard.Options>
 
         _effectHook!.Original(casterEntityId, caster, targetPos, header, effects, targetEntityIds);
     }
+
+    /// <summary>A job action ticked in the settings, or a role action not unticked.</summary>
+    private bool IsFollowed(PvPAction action)
+        => action.Job == 0 ? !Settings.HiddenRoleActions.Contains(action.Id) : Settings.TrackedActions.Contains(action.Id);
 
     private void OnUpdate(IFramework _)
     {
@@ -460,7 +483,7 @@ public sealed unsafe class GoblinEnemyGuard : Tweak<GoblinEnemyGuard.Options>
         try
         {
             if (_platesUpdatedAt == DateTime.MinValue)
-                Svc.Log.Info("GoblinEnemyGuard: icons placed with the name plates, after the camera moves.");
+                Svc.Log.Info("GoblinEnemyCooldown: icons placed with the name plates, after the camera moves.");
 
             _platesUpdatedAt = DateTime.UtcNow;
             Track();
@@ -485,7 +508,7 @@ public sealed unsafe class GoblinEnemyGuard : Tweak<GoblinEnemyGuard.Options>
         if (territory == _territory) return;
 
         _territory = territory;
-        Svc.Log.Info($"GoblinEnemyGuard: zone {territory}, PvP {_inMatch}.");
+        Svc.Log.Info($"GoblinEnemyCooldown: zone {territory}, PvP {_inMatch}.");
         _mostSeen = 0;
         _placementSource = null;
         _usedAt.Clear();
@@ -544,7 +567,7 @@ public sealed unsafe class GoblinEnemyGuard : Tweak<GoblinEnemyGuard.Options>
         if (_seen.Count > _mostSeen)
         {
             _mostSeen = _seen.Count;
-            Svc.Log.Info($"GoblinEnemyGuard: {_mostSeen} enemies loaded at once in this match so far.");
+            Svc.Log.Info($"GoblinEnemyCooldown: {_mostSeen} enemies loaded at once in this match so far.");
         }
     }
 
@@ -567,7 +590,7 @@ public sealed unsafe class GoblinEnemyGuard : Tweak<GoblinEnemyGuard.Options>
             _usedAt[id] = now;
 
             var distance = Vector3.Distance(((GameObject*)enemy)->Position, player->Position);
-            Svc.Log.Info($"GoblinEnemyGuard: {((Character*)enemy)->NameString} used Guard {distance:0} yalms away (status time left {status.RemainingTime:0.00} s).");
+            Svc.Log.Info($"GoblinEnemyCooldown: {((Character*)enemy)->NameString} used Guard {distance:0} yalms away (status time left {status.RemainingTime:0.00} s).");
             return;
         }
     }
@@ -597,7 +620,7 @@ public sealed unsafe class GoblinEnemyGuard : Tweak<GoblinEnemyGuard.Options>
         if (_placementSource != source)
         {
             _placementSource = source;
-            Svc.Log.Info($"GoblinEnemyGuard: icons over {((Character*)enemy)->NameString} placed from the {source}, at {spot.X:0},{spot.Y:0}, overlay scale {scale:0.00}.");
+            Svc.Log.Info($"GoblinEnemyCooldown: icons over {((Character*)enemy)->NameString} placed from the {source}, at {spot.X:0},{spot.Y:0}, overlay scale {scale:0.00}.");
         }
     }
 
@@ -634,7 +657,7 @@ public sealed unsafe class GoblinEnemyGuard : Tweak<GoblinEnemyGuard.Options>
         if (_placementSource != "fixed place")
         {
             _placementSource = "fixed place";
-            Svc.Log.Info($"GoblinEnemyGuard: icons in a fixed place on screen, {Settings.FixedX},{Settings.FixedY} from the centre.");
+            Svc.Log.Info($"GoblinEnemyCooldown: icons in a fixed place on screen, {Settings.FixedX},{Settings.FixedY} from the centre.");
         }
     }
 
@@ -674,10 +697,32 @@ public sealed unsafe class GoblinEnemyGuard : Tweak<GoblinEnemyGuard.Options>
     /// The icons of an enemy's row, into <see cref="_row"/>: Guard, then the followed cooldowns of their job (one
     /// icon per cooldown, the next action of a chain), then their Limit Break. Each one ready or on cooldown.
     /// </summary>
+    /// <summary>The PvP role action an enemy chose: every player carries a "PvP Role Action: ..." status for it.</summary>
+    private static PvPAction? RoleActionOf(BattleChara* enemy)
+    {
+        var statuses = enemy->GetStatusManager();
+        if (statuses == null) return null;
+
+        foreach (ref readonly var status in statuses->Status)
+        {
+            if (status.StatusId != 0 && PvPActions.RoleActionByStatus.TryGetValue(status.StatusId, out var role))
+                return role;
+        }
+
+        return null;
+    }
+
     private void BuildRow(BattleChara* enemy, uint id, DateTime now)
     {
         _row.Clear();
         _row.Add((GuardIcon, _usedAt.TryGetValue(id, out var guardAt) ? (float)(now - guardAt).TotalSeconds : float.MaxValue, GuardRecast));
+
+        // The role action they chose, told by its status, right after Guard: the two every job has.
+        if (RoleActionOf(enemy) is { } role && IsFollowed(role))
+        {
+            var used = _actionUsedAt.TryGetValue((id, role.Id), out var usedAt);
+            _row.Add((role.Icon, used ? (float)(now - usedAt).TotalSeconds : float.MaxValue, role.Recast));
+        }
 
         if (PvPActions.ByJob.TryGetValue(((Character*)enemy)->CharacterData.ClassJob, out var actions))
         {

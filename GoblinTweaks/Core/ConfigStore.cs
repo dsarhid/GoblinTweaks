@@ -50,6 +50,7 @@ public sealed class ConfigStore
                 return;
 
             Data = JsonSerializer.Deserialize<PluginConfig>(File.ReadAllText(_file.FullName), JsonOptions) ?? new();
+            if (MoveRenamedTweaks()) Save();
         }
         catch (Exception ex)
         {
@@ -58,6 +59,41 @@ public sealed class ConfigStore
             try { _file.CopyTo(backup, true); } catch { /* best effort */ }
             Data = new();
         }
+    }
+
+    // Tweaks renamed after release (their id is the class name): whether they were on, their settings and their
+    // language move to the new name, once.
+    private static readonly (string Old, string New)[] RenamedTweaks =
+    [
+        ("GoblinEnemyGuard", "GoblinEnemyCooldown"), // v1.4.5
+    ];
+
+    private bool MoveRenamedTweaks()
+    {
+        var moved = false;
+        foreach (var (old, renamed) in RenamedTweaks)
+        {
+            if (Data.EnabledTweaks.Remove(old))
+            {
+                Data.EnabledTweaks.Add(renamed);
+                moved = true;
+            }
+
+            if (Data.TweakSettings.Remove(old, out var settings))
+            {
+                Data.TweakSettings.TryAdd(renamed, settings);
+                moved = true;
+            }
+
+            if (Data.TweakLanguages.Remove(old, out var language))
+            {
+                Data.TweakLanguages.TryAdd(renamed, language);
+                moved = true;
+            }
+        }
+
+        if (moved) Svc.Log.Info("Config: renamed tweaks keep their state and settings.");
+        return moved;
     }
 
     public void Save()

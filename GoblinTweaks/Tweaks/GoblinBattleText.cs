@@ -443,7 +443,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     private readonly List<uint> _watched = [];
     private readonly HashSet<uint> _coolingDown = [];
     private readonly Dictionary<uint, uint> _charges = [];
-    private (uint Job, int Level) _watchedFor;
+    private (uint Job, int Level, bool PvP) _watchedFor;
     private DateTime _nextCooldownPoll = DateTime.MinValue;
     private DateTime _cooldownsSettle = DateTime.MinValue;
 
@@ -470,6 +470,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
     private const uint NoEntity = 0xE0000000;
     private readonly Dictionary<uint, bool> _playerActions = [];
+    private readonly Dictionary<uint, bool> _jobActions = [];
     private OverlayNodes? _overlay;
     private BattleTextAddon? _addon;
     private Exception? _failure;
@@ -1308,7 +1309,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         // their own action, and are left alone.
         uint countering = 0;
         if (damage && outgoing && from == player && !tick && action.Name is not null
-            && (action.IconId == 0 || action.Name == LookupAction(AttackAction).Name || !IsPlayerAction(actionId))
+            && (action.IconId == 0 || action.Name == LookupAction(AttackAction).Name || !IsJobAction(actionId))
             && (!autoAttack || actionId is not (AttackAction or ShotAction)))
         {
             countering = CounterOf(player);
@@ -2225,6 +2226,23 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         return isPlayerAction;
     }
 
+    /// <summary>
+    /// Whether an action belongs to a job, whether or not it goes on a hotbar: the ones a button turns into (Chaotic
+    /// Cyclone, Inner Chaos, Primal Wrath, Primal Ruination...) are not player actions in the game data, but they
+    /// are yours. An enemy's action has no job.
+    /// </summary>
+    private bool IsJobAction(uint actionId)
+    {
+        if (!_jobActions.TryGetValue(actionId, out var isJobAction))
+        {
+            isJobAction = Svc.Data.GetExcelSheet<LuminaAction>().TryGetRow(actionId, out var row)
+                          && (row.IsPlayerAction || row.ClassJobCategory.RowId != 0);
+            _jobActions[actionId] = isJobAction;
+        }
+
+        return isJobAction;
+    }
+
     private (string? Name, uint IconId) LookupAction(uint actionId)
     {
         if (actionId == 0) return default;
@@ -2377,6 +2395,19 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         var manager = ActionManager.Instance();
         if (manager == null || !Svc.PlayerState.IsLoaded) return result;
 
+        // PvP: the PvP actions of the job, one per cooldown. A chain that shares one (Drill, Bioblaster, Air Anchor,
+        // Chain Saw) is one entry; when it comes back, the alert names the action of the chain that is next.
+        if (Svc.ClientState.IsPvP)
+        {
+            if (PvPActions.ByJob.TryGetValue((byte)Svc.PlayerState.ClassJob.RowId, out var pvpActions))
+            {
+                foreach (var action in pvpActions)
+                    if (!action.IsLimitBreak) result.Add((action.Id, action.Name, action.Icon));
+            }
+
+            return result;
+        }
+
         // ClassJobCategory has one boolean column per job, named after its abbreviation.
         var job    = Svc.PlayerState.ClassJob.ValueNullable;
         var column = job is null ? null : typeof(ClassJobCategory).GetProperty(job.Value.Abbreviation.ExtractText());
@@ -2437,7 +2468,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         var manager = ActionManager.Instance();
         if (manager == null || !Svc.PlayerState.IsLoaded) return;
 
-        var watchFor = (Svc.PlayerState.ClassJob.RowId, (int)Svc.PlayerState.EffectiveLevel);
+        var watchFor = (Svc.PlayerState.ClassJob.RowId, (int)Svc.PlayerState.EffectiveLevel, Svc.ClientState.IsPvP);
         if (watchFor != _watchedFor)
         {
             _watchedFor = watchFor;
@@ -2455,7 +2486,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             {
                 var charges = manager->GetCurrentCharges(actionId);
                 if (_charges.TryGetValue(actionId, out var before) && charges > before)
-                    Queue(BattleTextEvent.Cooldown, CooldownMessage(LookupAction(actionId), charges, max));
+                    Queue(BattleTextEvent.Cooldown, CooldownMessage(LookupAction(ReadyAction(manager, actionId)), charges, max));
                 _charges[actionId] = charges;
                 _coolingDown.Remove(actionId);
                 continue;
@@ -2464,8 +2495,21 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             if (manager->IsRecastTimerActive(ActionType.Action, actionId))
                 _coolingDown.Add(actionId);
             else if (_coolingDown.Remove(actionId))
-                Queue(BattleTextEvent.Cooldown, CooldownMessage(LookupAction(actionId)));
+                Queue(BattleTextEvent.Cooldown, CooldownMessage(LookupAction(ReadyAction(manager, actionId))));
         }
+    }
+
+    /// <summary>
+    /// The action a cooldown that came back is told as: in PvP, for a chain of actions sharing it, the one the hotbar
+    /// button has turned into (the next of the chain), not the first one.
+    /// </summary>
+    private static uint ReadyAction(ActionManager* manager, uint actionId)
+    {
+        if (!Svc.ClientState.IsPvP || !PvPActions.ById.TryGetValue(actionId, out var action) || action.Members.Length < 2)
+            return actionId;
+
+        var adjusted = manager->GetAdjustedActionId(actionId);
+        return adjusted != 0 ? adjusted : actionId;
     }
 
     /// <summary>

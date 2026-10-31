@@ -69,6 +69,20 @@ internal static partial class PvPActions
     private static Dictionary<uint, PvPAction>? _byMember;
     private static Dictionary<byte, List<PvPAction>>? _byJob;
     private static Dictionary<byte, string>? _jobNames;
+    private static Dictionary<uint, PvPAction>? _roleByStatus;
+    private static List<PvPAction>? _roleActions;
+
+    /// <summary>The PvP role actions with a cooldown, in the game's order.</summary>
+    public static IReadOnlyList<PvPAction> RoleActions
+    {
+        get { Load(); return _roleActions!; }
+    }
+
+    /// <summary>The role action a player chose, by the status that says so ("PvP Role Action: Rampage").</summary>
+    public static IReadOnlyDictionary<uint, PvPAction> RoleActionByStatus
+    {
+        get { Load(); return _roleByStatus!; }
+    }
 
     /// <summary>The groups, by the id of their hotbar action.</summary>
     public static IReadOnlyDictionary<uint, PvPAction> ById
@@ -170,8 +184,59 @@ internal static partial class PvPActions
         _byMember = byMember;
         _byId = byId;
 
+        var roles = LoadRoleActions(descriptions);
+        _roleActions = [.. roles.Values.DistinctBy(action => action.Id).OrderBy(action => action.Id)];
+        _roleByStatus = roles;
+        foreach (var action in _roleActions)
+        {
+            byId[action.Id] = action;
+            byMember[action.Id] = action;
+        }
+
         var shared = byId.Values.Count(action => action.Members.Length > 1);
         var charges = byId.Values.Count(action => action.ChargeSeconds > 0);
-        Svc.Log.Info($"PvPActions: {byId.Count} PvP cooldowns of {byJob.Count} jobs can be followed on enemies ({shared} shared by several actions, {charges} Limit Break charge times read).");
+        Svc.Log.Info($"PvPActions: {byId.Count} PvP cooldowns of {byJob.Count} jobs can be followed on enemies ({shared} shared by several actions, {charges} Limit Break charge times read, {_roleActions.Count} role actions known by their status).");
+    }
+
+    /// <summary>
+    /// The PvP role actions (Rampage, Bravery, Comet...), by the status every player carries for the one they chose:
+    /// "PvP Role Action: Rampage" goes with the PvP action named Rampage. Matched on the English names, the same in
+    /// every client. One that has no cooldown worth following (Haelan, on the global cooldown) is left out.
+    /// </summary>
+    private static Dictionary<uint, PvPAction> LoadRoleActions(Lumina.Excel.ExcelSheet<ActionTransient> descriptions)
+    {
+        const string prefix = "PvP Role Action: ";
+
+        var actionsByName = new Dictionary<string, uint>();
+        foreach (var row in Svc.Data.GetExcelSheet<GameAction>(ClientLanguage.English))
+        {
+            if (!row.IsPvP || row.IsPlayerAction || row.CooldownGroup == GlobalCooldownGroup) continue;
+            if (row.Recast100ms <= MinRecast100ms || row.Name.IsEmpty) continue;
+            actionsByName.TryAdd(row.Name.ToString(), row.RowId);
+        }
+
+        var local = Svc.Data.GetExcelSheet<GameAction>();
+        var result = new Dictionary<uint, PvPAction>();
+        foreach (var status in Svc.Data.GetExcelSheet<Status>(ClientLanguage.English))
+        {
+            var name = status.Name.ToString();
+            if (!name.StartsWith(prefix, StringComparison.Ordinal)) continue;
+            if (!actionsByName.TryGetValue(name[prefix.Length..], out var actionId) || !local.TryGetRow(actionId, out var row)) continue;
+
+            var existing = result.Values.FirstOrDefault(action => action.Id == actionId);
+            result[status.RowId] = existing ?? new PvPAction(
+                actionId,
+                row.Name.ToString(),
+                row.Icon,
+                row.Recast100ms / 10f,
+                false,
+                0,
+                descriptions.TryGetRow(actionId, out var transient) ? transient.Description.ExtractText() : string.Empty,
+                [actionId],
+                [(uint)row.Icon],
+                0f);
+        }
+
+        return result;
     }
 }
