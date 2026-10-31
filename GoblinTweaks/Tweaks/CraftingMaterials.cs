@@ -1290,9 +1290,11 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     /// <summary>Drops from My List the recipes the game no longer has and fixes counts out of range (a hand-edited or old config).</summary>
     private void SanitizeCart()
     {
+        // A hand-edited "Cart": null reads as null, not as an empty list.
+        Settings.Cart ??= [];
         if (Settings.Cart.Count == 0) return;
 
-        var before = Settings.Cart.Select(i => (i.RecipeId, i.Count)).ToList();
+        var before = Settings.Cart.Select(i => i is null ? (0u, 0) : (i.RecipeId, i.Count)).ToList();
         CraftCart.Sanitize(Settings.Cart, id => RecipeParts(id) is not null);
         if (!before.SequenceEqual(Settings.Cart.Select(i => (i.RecipeId, i.Count))))
             SaveSettings(notify: false);

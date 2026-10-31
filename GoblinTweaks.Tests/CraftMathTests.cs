@@ -147,6 +147,26 @@ public class CraftMathTests
     }
 
     [Fact]
+    public void BaseMaterials_StopsAtMaxDepth()
+    {
+        // Item 201 is made of 202, 202 of 203 … 208 of 209: a chain of 8 sub-recipes, no loop.
+        var data = new FakeData();
+        for (uint item = 201; item <= 208; item++)
+        {
+            data.Recipes[item + 1000] = new CraftRecipe(1, [P(item + 1, 1)]);
+            data.ByResult[item]       = item + 1000;
+        }
+        data.Recipes[Spear] = new CraftRecipe(1, [P(201, 1)]);
+
+        var needs = CraftMath.BaseMaterials([Item(Spear, 1)], data, true);
+
+        // The root's ingredients enter at depth 1 and sub-recipes are followed while depth < 6: 201 … 205 are broken
+        // down and 206 comes out as a base material, though it could still be crafted.
+        Assert.Single(needs);
+        Assert.Equal(206u, needs[0].ItemId);
+    }
+
+    [Fact]
     public void Cost_SumsAndFlags()
     {
         var result = CraftMath.Cost(

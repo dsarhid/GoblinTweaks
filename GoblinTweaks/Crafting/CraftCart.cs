@@ -39,13 +39,13 @@ public static class CraftCart
         => cart.Where(i => isListed(i.RecipeId)).ToList();
 
     /// <summary>
-    /// Cleans a list read from the settings: drops recipes that no longer exist and repeated ones (the first stays),
-    /// and brings every count within 1–999.
+    /// Cleans a list read from the settings: drops empty entries (a hand-edited <c>null</c>), recipes that no longer
+    /// exist and repeated ones (the first stays), and brings every count within 1–999.
     /// </summary>
     public static void Sanitize(List<CartItem> cart, Func<uint, bool> recipeExists)
     {
         var seen = new HashSet<uint>();
-        cart.RemoveAll(i => !recipeExists(i.RecipeId) || !seen.Add(i.RecipeId));
+        cart.RemoveAll(i => i is null || !recipeExists(i.RecipeId) || !seen.Add(i.RecipeId));
         foreach (var item in cart)
             item.Count = Math.Clamp(item.Count, MinCount, MaxCount);
     }
