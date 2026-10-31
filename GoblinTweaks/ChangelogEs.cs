@@ -8,6 +8,15 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.4.5"] = (
+            "Goblin Enemy Guard ahora es Goblin Enemy Cooldown y sigue la PvP role action de cada enemigo; arreglos en Goblin Battle Text.",
+            [
+                "New: Goblin Enemy Cooldown muestra la PvP role action que eligió cada enemigo (Rampage, Bravery, Comet...) justo después de Guard, con su cooldown, sabida por el estado que lleva cada jugador; cada una se puede desmarcar en la configuración",
+                "Change: Goblin Enemy Guard pasa a llamarse Goblin Enemy Cooldown, con los comandos /gec y /genemycooldown — conserva si estaba activado y su configuración",
+                "Change: /gam abre la configuración de Goblin Anti Machinist en vez de su ayuda (el botón ? de ahí abre la ayuda)",
+                "Fix: Goblin Battle Text llamaba \"Damnation\" (o \"Vengeance\") a Chaotic Cyclone, Inner Chaos, Primal Wrath y Primal Ruination mientras estaba activo — ahora solo los contraataques de esos efectos llevan su nombre",
+                "Fix: Goblin Battle Text en PvP decía que todas las habilidades de una cadena (Drill, Bioblaster, Air Anchor, Chain Saw) estaban listas a la vez — ahora sigue las acciones PvP y nombra solo la siguiente de la cadena",
+            ]),
         ["1.4.4"] = (
             "Goblin Enemy Guard sigue los cooldowns y Limit Breaks enemigos sobre su nameplate; Goblin Anti Machinist puede usar Purify solo.",
             [

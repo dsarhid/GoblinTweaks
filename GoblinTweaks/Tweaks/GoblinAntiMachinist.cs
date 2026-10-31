@@ -231,7 +231,7 @@ public sealed unsafe class GoblinAntiMachinist : Tweak<GoblinAntiMachinist.Optio
 
     protected override IReadOnlyList<string> CommandNames => ["/gam", "/gamachinist"];
 
-    protected override void OnCommand() => ToggleHelpWindow();
+    protected override void OnCommand() => ToggleSettings();
 
     private void OnUpdate(IFramework _)
     {

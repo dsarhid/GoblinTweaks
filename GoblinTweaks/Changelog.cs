@@ -34,6 +34,15 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.4.5", "2026-10-31",
+            "Goblin Enemy Guard is now Goblin Enemy Cooldown and follows each enemy's PvP role action; Goblin Battle Text fixes.",
+            [
+                "New: Goblin Enemy Cooldown shows the PvP role action each enemy chose (Rampage, Bravery, Comet...) right after Guard, with its cooldown, told by the status every player carries for it; each one can be unticked in the settings",
+                "Change: Goblin Enemy Guard is renamed Goblin Enemy Cooldown, with the commands /gec and /genemycooldown — it keeps whether it was on and its settings",
+                "Change: /gam opens the Goblin Anti Machinist settings instead of its help (the ? button there opens the help)",
+                "Fix: Goblin Battle Text named Chaotic Cyclone, Inner Chaos, Primal Wrath and Primal Ruination \"Damnation\" (or \"Vengeance\") while it was on — only the counter-attacks of those effects take their name now",
+                "Fix: Goblin Battle Text in PvP said every action of a chain (Drill, Bioblaster, Air Anchor, Chain Saw) was ready at once — it now watches the PvP actions and names only the next one of the chain",
+            ]),
         new("1.4.4", "2026-10-31",
             "Goblin Enemy Guard follows enemy cooldowns and Limit Breaks over their name plate; Goblin Anti Machinist can use Purify by itself.",
             [
