@@ -110,6 +110,9 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     private DateTime _cartToggledAt = DateTime.MinValue;
     private static readonly TimeSpan CartClickWindow = TimeSpan.FromMilliseconds(250);
     private TextButtonNode? _clearCartBtn;
+    // When a count change waiting to be written to disk is saved (MinValue = nothing waiting).
+    private DateTime _cartSaveAt = DateTime.MinValue;
+    private static readonly TimeSpan CartSaveDelay = TimeSpan.FromSeconds(1);
 
     // Auto-refresh when inventory changes while the window is open
     private DateTime _inventoryChangedAt = DateTime.MinValue;
@@ -272,6 +275,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         if (_cartList is not null)       EnforceScrollbarMinThumb(_cartList.ScrollBarNode);
 
         PollCartPrices();
+        if (_cartSaveAt != DateTime.MinValue && DateTime.UtcNow >= _cartSaveAt) FlushCartSave();
 
         // The ListNode only rebuilds the addon's collision node list on scroll, so after
         // any repopulation (filter change, new selection) freshly recycled rows are absent
@@ -368,6 +372,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     protected override void OnFinalize(AtkUnitBase* addon)
     {
         Svc.Log.Information("CraftingMaterials: window finalizing.");
+        FlushCartSave();
         _statusItems.Clear();
         // The search box is rebuilt empty when the window opens again, so the search it filtered by goes with it.
         _searchText     = string.Empty;
@@ -605,8 +610,27 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         CraftCart.SetCount(Tweak.Current.Cart, recipeId, count);
         if (Cart.Find(i => i.RecipeId == recipeId)?.Count == before) return;
 
-        Tweak.SaveFilters();
+        // Saved a moment after the last change: holding an arrow would otherwise write the config many times a second.
+        _cartSaveAt = DateTime.UtcNow + CartSaveDelay;
         if (InCartView) RebuildCart(keepScroll: true);
+    }
+
+    /// <summary>Saves a count change that is still waiting (it is in the settings already, just not on disk).</summary>
+    private void FlushCartSave()
+    {
+        if (_cartSaveAt == DateTime.MinValue) return;
+        _cartSaveAt = DateTime.MinValue;
+        Tweak?.SaveFilters();
+    }
+
+    /// <summary>
+    /// A search or a top-bar filter changed. My List ignores them, so there the change is only remembered (it applies
+    /// when another view opens) instead of rebuilding the list and its totals on every keystroke.
+    /// </summary>
+    private void FilterChanged()
+    {
+        if (InCartView) SaveFilters();
+        else            _pendingFilter = true;
     }
 
     /// <summary>Empties My List.</summary>
@@ -1290,7 +1314,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             Position  = new Vector2(pos.X + 8f, cy),
             Size      = new Vector2(150f, 22f),
         };
-        _hideCraftedCheck.OnClick = isChecked => { _hideCrafted = isChecked; _pendingFilter = true; };
+        _hideCraftedCheck.OnClick = isChecked => { _hideCrafted = isChecked; FilterChanged(); };
         _hideCraftedCheck.AttachNode(this);
 
         _myLevelCheck = new CheckboxNode
@@ -1301,7 +1325,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             Size        = new Vector2(150f, 22f),
             TextTooltip = CraftLoc.Get("tip.mylevel"),
         };
-        _myLevelCheck.OnClick = isChecked => { _onlyMyLevel = isChecked; _pendingFilter = true; };
+        _myLevelCheck.OnClick = isChecked => { _onlyMyLevel = isChecked; FilterChanged(); };
         _myLevelCheck.AttachNode(this);
 
         _lblSort = MakeLabel(pos.X + 326f, cy + 3f, 40f, CraftLoc.Get("filter.sort"), SubtitleBrown, 12);
@@ -1312,7 +1336,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             MaxListOptions   = SortModes.Count,
             GetLabelFunction = key => SortLabel(key),
         };
-        _sortDropdown.OnOptionSelected = s => { _sortMode = s; _pendingFilter = true; };
+        _sortDropdown.OnOptionSelected = s => { _sortMode = s; FilterChanged(); };
         _sortDropdown.AttachNode(this);
 
         // Its options are set again when the language changes, so they are set only once it is attached: option buttons
@@ -1333,7 +1357,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             _sortDescending = !_sortDescending;
             if (_sortDirBtn is not null)
                 _sortDirBtn.Icon = _sortDescending ? CircleButtonIcon.ArrowDown : CircleButtonIcon.UpArrow;
-            _pendingFilter = true;
+            FilterChanged();
         };
         _sortDirBtn.AttachNode(this);
 
@@ -1345,7 +1369,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             MaxListOptions   = 10,
             GetLabelFunction = key => key == AllClasses ? CraftLoc.Get("class.all") : key,
         };
-        _classDropdown.OnOptionSelected = s => { _classFilter = s; _pendingFilter = true; };
+        _classDropdown.OnOptionSelected = s => { _classFilter = s; FilterChanged(); };
         _classDropdown.AttachNode(this);
 
         // Its options change after each rescan, so they are set only once it is attached: option buttons built before
@@ -1474,12 +1498,12 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         _searchInput.OnInputReceived = str =>
         {
             _searchText    = str.ToString();
-            _pendingFilter = true;
+            FilterChanged();
         };
         _searchInput.OnInputComplete = str =>
         {
             _searchText    = str.ToString();
-            _pendingFilter = true;
+            FilterChanged();
         };
         _searchInput.AttachNode(this);
 

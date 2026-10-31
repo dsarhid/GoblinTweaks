@@ -67,6 +67,17 @@ public class CraftCartTests
     }
 
     [Fact]
+    public void Sanitize_DropsNullEntries()
+    {
+        // A hand-edited config: "Cart": [null, { "RecipeId": 4 }]
+        var cart = new List<CartItem> { null!, new() { RecipeId = 4 } };
+
+        CraftCart.Sanitize(cart, _ => true);
+
+        Assert.Equal(new uint[] { 4 }, cart.Select(i => i.RecipeId));
+    }
+
+    [Fact]
     public void Sanitize_DropsUnknownAndDuplicates()
     {
         var cart = new List<CartItem>

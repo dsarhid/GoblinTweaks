@@ -40,9 +40,18 @@ internal sealed class AchievementTrackerNode : OverlayNode
         public required TextNode Name { get; init; }
         public required TextNode Progress { get; init; }
 
+        // A hidden node still takes the mouse and shows the hand cursor if it asks for them, so a hidden row gives both
+        // up (as KamiToolKit does for its own hidden rows and tooltips): the unused rows sit under the tracker, often
+        // over the party list, and would make it look clickable even with no party.
         public bool Visible
         {
-            set => Track.IsVisible = Bar.IsVisible = Icon.IsVisible = Name.IsVisible = Progress.IsVisible = value;
+            set
+            {
+                Track.IsVisible = Bar.IsVisible = Icon.IsVisible = Name.IsVisible = Progress.IsVisible = value;
+                Track.ShowClickableCursor = value;
+                if (value) Track.AddNodeFlags(NodeFlags.RespondToMouse);
+                else       Track.RemoveNodeFlags(NodeFlags.RespondToMouse);
+            }
         }
     }
 
@@ -94,16 +103,17 @@ internal sealed class AchievementTrackerNode : OverlayNode
             row.Icon.AttachNode(this);
             row.Name.AttachNode(this);
             row.Progress.AttachNode(this);
-            row.Visible = false;
             _rows[i] = row;
 
             var index = i;
-            row.Track.ShowClickableCursor = true;
             row.Track.AddEvent(AtkEventType.MouseClick, () =>
             {
                 if (DateTime.UtcNow - _movedAt < ClickAfterMove || _rowIds[index] == 0) return;
                 OnRowClick?.Invoke(_rowIds[index]);
             });
+
+            // After AddEvent, which makes the row take the mouse: hidden, it must not.
+            row.Visible = false;
         }
 
         OnMoveComplete = _ => _movedAt = DateTime.UtcNow;
