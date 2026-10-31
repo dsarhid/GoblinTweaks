@@ -11,10 +11,12 @@ namespace GoblinTweaks.UI.Nodes;
 /// <see cref="Craftable"/> rows can be expanded to reveal their own sub-recipe (<see cref="NodeId"/>
 /// identifies the tree node so the addon can toggle it).
 /// </summary>
+/// <see cref="Price"/> (My List totals only) adds a price column; <see cref="PriceTip"/> is added to the location tooltip.
 internal readonly record struct IngredientRow(
     IngredientCheck Check, string PrimaryLocation,
     IReadOnlyList<(string Location, int Total, int Hq, DateTime Seen)> AllLocations,
-    int Depth, bool Craftable, bool Expanded, int NodeId);
+    int Depth, bool Craftable, bool Expanded, int NodeId,
+    string? Price = null, string? PriceTip = null);
 
 /// <summary>
 /// One row in the ingredient detail list: indent + expand caret + game icon + name
@@ -32,23 +34,30 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
     private static readonly Vector4 ColorMissing   = new(0.85f, 0.35f, 0.30f, 1f);
     private static readonly Vector4 ColorSubtitle  = new(157 / 255f, 131 / 255f,  91 / 255f, 1f);
     private static readonly Vector4 ColorCaret     = new(216 / 255f, 187 / 255f, 125 / 255f, 1f);
+    private static readonly Vector4 ColorPrice     = new(0.60f, 0.75f, 0.60f, 1f);
 
     private const float IndentW = 16f;
     private const float CaretW  = 14f;
     private const float IconSz  = 26f;
     private const float Gap     = 6f;
-    private const float QtyW    = 56f;
-    private const float LocW    = 130f;
+    // Column widths, also used by the addon to line its column headers up with the rows.
+    internal const float QtyW   = 56f;
+    internal const float LocW   = 130f;
+    internal const float PriceW = 70f;
+    /// <summary>Where the name starts in a row at depth 0.</summary>
+    internal const float NameX0 = 4f + CaretW + 2f + IconSz + Gap;
 
     private readonly TextNode      _caret;
     private readonly IconImageNode _icon;
     private readonly TextNode      _name;
     private readonly TextNode      _qty;
     private readonly TextNode      _location;
+    private readonly TextNode      _price;
 
-    // Current row depth. Stored separately because the list calls SetNodeData *before*
-    // updating ItemData, so reading ItemData.Depth during layout would use the stale value.
-    private int _depth;
+    // Current row depth and whether it has a price. Stored separately because the list calls SetNodeData *before*
+    // updating ItemData, so reading ItemData during layout would use the stale value.
+    private int  _depth;
+    private bool _hasPrice;
 
     public unsafe IngredientRowNode()
     {
@@ -67,6 +76,9 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
 
         _location = new TextNode { FontSize = 10, TextColor = ColorSubtitle };
         _location.AttachNode(this);
+
+        _price = new TextNode { FontSize = 11, TextColor = ColorPrice, AlignmentType = AlignmentType.Right, IsVisible = false };
+        _price.AttachNode(this);
 
         // MouseDown (not MouseClick) reliably fires for the right button here.
         AddEvent(AtkEventType.MouseDown, (_, _, _, _, eventData) =>
@@ -91,7 +103,8 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
 
         var iconY  = Math.Max(0f, (Height - IconSz) / 2f);
         var textY  = Math.Max(0f, (Height - 14f) / 2f);
-        var nameW  = Math.Max(0f, Width - nameX - QtyW - LocW - 4f);
+        var priceW = _hasPrice ? PriceW : 0f;
+        var nameW  = Math.Max(0f, Width - nameX - QtyW - LocW - priceW - 4f);
 
         _caret.Position = new Vector2(caretX, textY);
         _caret.Size     = new Vector2(CaretW, 14f);
@@ -106,6 +119,9 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
 
         _location.Position = new Vector2(nameX + nameW + QtyW, textY + 1f);
         _location.Size     = new Vector2(LocW, 13f);
+
+        _price.Position = new Vector2(nameX + nameW + QtyW + LocW, textY + 1f);
+        _price.Size     = new Vector2(PriceW, 13f);
     }
 
     protected override void SetNodeData(IngredientRow data)
@@ -176,6 +192,13 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
         _qty.TextColor      = statusColor;
         _location.String    = locText;
         _location.TextColor = ColorSubtitle;
+
+        // My List totals: the price column, and the unit price under the locations when the row shows them.
+        _hasPrice        = data.Price is not null;
+        _price.IsVisible = _hasPrice;
+        _price.String    = data.Price ?? string.Empty;
+        if (!string.IsNullOrEmpty(data.PriceTip) && ItemTooltip == 0)
+            TextTooltip = string.Join("\n", data.AllLocations.Select(FormatLocation)) + "\n" + data.PriceTip;
 
         // Re-run layout since the indent depends on the row's data.
         Layout();
