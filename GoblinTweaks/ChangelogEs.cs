@@ -8,6 +8,13 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.3.5"] = (
+            "Crafting Materials: marcá varias recetas en Mi lista y mirá todos sus materiales sumados, con precios.",
+            [
+                "New: Crafting Materials — \"Mi lista\": marcá la casilla de cualquier receta para sumarla, elegí cuántas veces vas a craftear cada una y mirá los materiales de todas sumados en un árbol desplegable",
+                "New: total de Mi lista — casilla \"Descontar lo que ya tengo\", precio estimado de cada material y el total en gil de lo que falta; los materiales de la lista se resaltan en el cofre de la FC, los retainers, las bolsas y las tiendas",
+                "Change: Crafting Materials — la lista de compras de una receta ahora usa el mismo cálculo que Mi lista (mismos resultados)",
+            ]),
         ["1.3.4"] = (
             "GoblinSniper ya no lista items con el promedio inflado por una venta absurda; arreglo en la búsqueda de Crafting Materials.",
             [
