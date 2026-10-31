@@ -8,6 +8,12 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.4.1"] = (
+            "Goblin Enemy Guard y Goblin Anti Machinist ahora tienen su propio ícono en la ventana de GoblinTweaks.",
+            [
+                "New: ícono de Goblin Enemy Guard — un escudo de Guard con la manecilla del cooldown",
+                "New: ícono de Goblin Anti Machinist — un escudo de Guard delante de la mira de Marksman's Spite",
+            ]),
         ["1.4.0"] = (
             "Nueva categoría PvP: Goblin Anti Machinist, Goblin Enemy Guard y avisos de Limit Break PvP en Goblin Battle Text.",
             [

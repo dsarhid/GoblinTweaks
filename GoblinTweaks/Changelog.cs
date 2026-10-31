@@ -34,6 +34,12 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.4.1", "2026-10-31",
+            "Goblin Enemy Guard and Goblin Anti Machinist now have their own icons in the GoblinTweaks window.",
+            [
+                "New: Goblin Enemy Guard icon — a Guard shield with the cooldown clock hand",
+                "New: Goblin Anti Machinist icon — a Guard shield in front of the Marksman's Spite crosshair",
+            ]),
         new("1.4.0", "2026-10-31",
             "New PvP category: Goblin Anti Machinist, Goblin Enemy Guard, and PvP Limit Break alerts in Goblin Battle Text.",
             [
