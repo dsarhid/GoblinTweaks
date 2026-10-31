@@ -28,6 +28,8 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
     internal static Func<uint, int>? CountOf;
     /// <summary>Set by the addon; invoked with the recipe id and the new count when the counter changes.</summary>
     internal static Action<uint, int>? OnCountChanged;
+    /// <summary>Raised by the addon when My List or the view changes, so the rows bring their box and counter in line.</summary>
+    internal static int CartVersion;
 
     private static readonly Vector4 ColorReady     = new(0.30f, 0.85f, 0.40f, 1f);
     private static readonly Vector4 ColorElsewhere = new(0.95f, 0.80f, 0.20f, 1f);
@@ -54,6 +56,9 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
 
     // Set while the controls are brought in line with the list: writing IsChecked raises OnClick.
     private bool _syncing;
+    // The CartVersion and recipe the box and counter were last brought in line with.
+    private int  _syncedVersion = -1;
+    private uint _syncedRecipe;
 
     public unsafe RecipeRowNode()
     {
@@ -168,19 +173,23 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
         _check.IsVisible = data.IsCrafted;
 
         ItemTooltip = data.ItemId;
-        SyncCart(data);
+        SyncCart(data, force: true);
     }
 
-    // The list only calls SetNodeData when a row gets a different recipe; My List changes on its own, so the box is
-    // brought in line every frame too.
+    // The list only calls SetNodeData when a row gets a different recipe; My List changes on its own, so the row looks
+    // again whenever CartVersion moves. Not every frame: that would write over a counter while it is being typed in.
     public override void Update()
     {
         base.Update();
-        if (ItemData is not null) SyncCart(ItemData);
+        if (ItemData is not null) SyncCart(ItemData, force: false);
     }
 
-    private void SyncCart(CraftableEntry data)
+    private void SyncCart(CraftableEntry data, bool force)
     {
+        if (!force && _syncedVersion == CartVersion && _syncedRecipe == data.RecipeId) return;
+        _syncedVersion = CartVersion;
+        _syncedRecipe  = data.RecipeId;
+
         var inCart  = IsInCart?.Invoke(data.RecipeId) == true;
         var counter = ShowCounter && inCart;
         var count   = counter ? CountOf?.Invoke(data.RecipeId) ?? CraftCart.MinCount : 0;

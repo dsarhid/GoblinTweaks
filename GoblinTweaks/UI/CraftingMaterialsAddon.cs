@@ -103,12 +103,12 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     private const string CartView = "cart";
     private bool InCartView => _selectedView == CartView;
     private List<CartItem> Cart => Tweak?.Current.Cart ?? [];
+    // The recipes the window lists: an entry of My List whose recipe left the crafting log is neither shown nor counted.
+    private HashSet<uint>  _entryIds = [];
+    private List<CartItem> ListedCart => CraftCart.Listed(Cart, _entryIds.Contains);
     // When a My List box was last clicked: a row selection right after it came from the same click.
     private DateTime _cartToggledAt = DateTime.MinValue;
     private static readonly TimeSpan CartClickWindow = TimeSpan.FromMilliseconds(250);
-    // Row under the recipe list for the "Clear list" button, and the list's full height without it.
-    private const float ClearRowH = 34f;
-    private float _recipeListH;
     private TextButtonNode? _clearCartBtn;
 
     // Auto-refresh when inventory changes while the window is open
@@ -526,6 +526,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             Svc.Log.Error(ex, "CraftingMaterialsAddon: LoadData failed");
             _entries = [];
         }
+        _entryIds = _entries.Select(e => e.RecipeId).ToHashSet();
 
         UpdateStatusCounts();
         UpdateCategoryList();
@@ -571,7 +572,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     private void UpdateCartCount()
     {
         if (_statusItems.Count >= 5)
-            _statusItems[4].String = $"{CraftLoc.Get("status.cart")} ({Cart.Count})";
+            _statusItems[4].String = $"{CraftLoc.Get("status.cart")} ({ListedCart.Count})";
     }
 
     // ── My List ───────────────────────────────────────────────────────────────
@@ -583,6 +584,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
 
         _cartToggledAt = DateTime.UtcNow;
         CraftCart.Toggle(Tweak.Current.Cart, recipeId);
+        RecipeRowNode.CartVersion++;
         Tweak.SaveFilters();
         UpdateCartCount();
 
@@ -613,37 +615,23 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         if (Tweak is null || Cart.Count == 0) return;
 
         Tweak.Current.Cart.Clear();
+        RecipeRowNode.CartVersion++;
         Tweak.SaveFilters();
         UpdateCartCount();
         _pendingFilter = true;
     }
 
-    /// <summary>
-    /// Shows the controls of My List (counters, the clear button) in its view and hides them elsewhere. The recipe list
-    /// gives up the height of the button while it shows.
-    /// </summary>
+    /// <summary>Shows the counters of My List in its view and hides them elsewhere.</summary>
     private void UpdateCartControls()
     {
         RecipeRowNode.ShowCounter = InCartView;
-
-        var showClear = InCartView && Cart.Count > 0;
-        if (_clearCartBtn is not null) _clearCartBtn.IsVisible = showClear;
-
-        if (_recipeList is not null)
-        {
-            var height = showClear ? _recipeListH - ClearRowH : _recipeListH;
-            if (Math.Abs(_recipeList.Height - height) > 0.5f)
-            {
-                _recipeList.Height = height;
-                RequestCollisionRebuild();
-            }
-        }
+        RecipeRowNode.CartVersion++;
     }
 
     /// <summary>Shows the totals of My List in the place of the recipe details, or puts the details back.</summary>
     private void ShowCartPanel(bool show)
     {
-        var empty = Cart.Count == 0;
+        var empty = ListedCart.Count == 0;
 
         if (show)
         {
@@ -655,7 +643,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             _ingredientList.IsVisible = true;
         }
 
-        foreach (var node in new NodeBase?[] { _cartTitle, _cartDeductCheck, _cartColItem, _cartColQty, _cartColPrice, _cartList, _cartTotal })
+        foreach (var node in new NodeBase?[] { _cartTitle, _cartDeductCheck, _clearCartBtn, _cartColItem, _cartColQty, _cartColPrice, _cartList, _cartTotal })
             if (node is not null) node.IsVisible = show && !empty;
         if (_cartEmpty is not null) _cartEmpty.IsVisible = show && empty;
 
@@ -681,9 +669,10 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
 
         var data   = Tweak.CraftData(_snapshot);
         var deduct = Tweak.Current.CartDeductOwned;
-        foreach (var need in CraftMath.Direct(Cart, data))
+        var listed = ListedCart;
+        foreach (var need in CraftMath.Direct(listed, data))
             _cartRoots.Add(MakeCartNode(need, 0, string.Empty, data, deduct));
-        _cartBase = CraftMath.BaseMaterials(Cart, data, deduct);
+        _cartBase = CraftMath.BaseMaterials(listed, data, deduct);
 
         // Prices of everything listed and of the base materials, ahead of the rest of the queue.
         foreach (var id in _cartById.Values.Select(n => n.Check.ItemId).Concat(_cartBase.Select(b => b.ItemId)).Distinct())
@@ -1273,18 +1262,6 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             ShowDetailPanel(entry);
         };
         _recipeList.AttachNode(this);
-        _recipeListH = colH;
-
-        // My List: "Clear list" under the recipes (the list gives up this row while it shows).
-        _clearCartBtn = new TextButtonNode
-        {
-            String    = CraftLoc.Get("cart.clear"),
-            Position  = new Vector2(listX + (RecipeListW - 160f) / 2f, colTop + colH - ClearRowH + 4f),
-            Size      = new Vector2(160f, 26f),
-            IsVisible = false,
-        };
-        _clearCartBtn.OnClick = ClearCart;
-        _clearCartBtn.AttachNode(this);
 
         // Divider 2: recipe list | detail panel (below the filter bar)
         var div2X = listX + RecipeListW;
@@ -1712,6 +1689,18 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             RebuildCart(keepScroll: true);
         };
         _cartDeductCheck.AttachNode(this);
+
+        // Right of the deduct box, not under the recipe list: resizing that list would dispose its rows (and a counter
+        // being typed in) while the window stays open.
+        _clearCartBtn = new TextButtonNode
+        {
+            String    = CraftLoc.Get("cart.clear"),
+            Position  = new Vector2(pos.X + size.X - 168f, y - 2f),
+            Size      = new Vector2(160f, 26f),
+            IsVisible = false,
+        };
+        _clearCartBtn.OnClick = ClearCart;
+        _clearCartBtn.AttachNode(this);
         y += 28f;
 
         // Column headers, lined up with the columns of the rows (a row is the list width minus its scroll bar).

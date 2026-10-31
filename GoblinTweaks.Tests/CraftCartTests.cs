@@ -50,6 +50,23 @@ public class CraftCartTests
     }
 
     [Fact]
+    public void Listed_KeepsOnlyRecipesTheWindowShowsInOrder()
+    {
+        var cart = new List<CartItem>
+        {
+            new() { RecipeId = 3, Count = 2 },
+            new() { RecipeId = 8 },
+            new() { RecipeId = 1, Count = 4 },
+        };
+
+        var listed = CraftCart.Listed(cart, id => id != 8);
+
+        Assert.Equal(new uint[] { 3, 1 }, listed.Select(i => i.RecipeId));
+        Assert.Equal(new[] { 2, 4 }, listed.Select(i => i.Count));
+        Assert.Equal(3, cart.Count);
+    }
+
+    [Fact]
     public void Sanitize_DropsUnknownAndDuplicates()
     {
         var cart = new List<CartItem>

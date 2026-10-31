@@ -32,6 +32,13 @@ public static class CraftCart
     }
 
     /// <summary>
+    /// The entries of the list whose recipe the window lists, in order. A recipe kept in the settings but gone from the
+    /// crafting log (after a patch) is then neither shown nor counted in the totals.
+    /// </summary>
+    public static List<CartItem> Listed(List<CartItem> cart, Func<uint, bool> isListed)
+        => cart.Where(i => isListed(i.RecipeId)).ToList();
+
+    /// <summary>
     /// Cleans a list read from the settings: drops recipes that no longer exist and repeated ones (the first stays),
     /// and brings every count within 1–999.
     /// </summary>
