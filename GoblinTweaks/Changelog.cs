@@ -34,6 +34,14 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.3.6", "2026-10-31",
+            "Goblin Achievements no longer makes the HUD under its tracker look clickable; My List fixes.",
+            [
+                "Fix: Goblin Achievements made the HUD under its tracker (often the party list) show the hand cursor and take the mouse even with no party — the tracker's unused rows no longer respond to the mouse",
+                "Fix: Crafting Materials My List — searching or changing a top filter while in My List rebuilt the totals and jumped to the top — the change now applies when you switch to another view",
+                "Fix: Crafting Materials My List — a hand-edited empty list in the settings could stop the tweak from enabling — it now starts with an empty list",
+                "Change: Crafting Materials My List — counter changes are saved a moment after the last one instead of on every change",
+            ]),
         new("1.3.5", "2026-10-31",
             "Crafting Materials: tick several recipes into My List and see all their materials added up, with prices.",
             [

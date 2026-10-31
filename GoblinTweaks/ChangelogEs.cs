@@ -8,6 +8,14 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.3.6"] = (
+            "Goblin Achievements ya no hace que el HUD debajo del tracker parezca clickeable; arreglos en Mi lista.",
+            [
+                "Fix: Goblin Achievements hacía que el HUD debajo de su tracker (muchas veces la party list) mostrara la manito y tomara el mouse aunque no hubiera party — las filas sin usar del tracker ya no responden al mouse",
+                "Fix: Crafting Materials Mi lista — buscar o cambiar un filtro de arriba estando en Mi lista recalculaba el total y volvía el scroll arriba — ahora el cambio se aplica cuando pasás a otra vista",
+                "Fix: Crafting Materials Mi lista — una lista vacía editada a mano en la configuración podía impedir que el tweak se activara — ahora arranca con la lista vacía",
+                "Change: Crafting Materials Mi lista — los cambios del contador se guardan un momento después del último, en vez de en cada cambio",
+            ]),
         ["1.3.5"] = (
             "Crafting Materials: marcá varias recetas en Mi lista y mirá todos sus materiales sumados, con precios.",
             [
