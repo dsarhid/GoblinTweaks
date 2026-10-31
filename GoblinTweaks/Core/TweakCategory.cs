@@ -8,6 +8,7 @@ public enum TweakCategory
     Interface,
     Inventory,
     Chat,
+    PvP,
     Other,
 }
 

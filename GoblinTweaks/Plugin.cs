@@ -24,6 +24,7 @@ public sealed class Plugin(IDalamudPluginInterface dalamud) : IAsyncDalamudPlugi
     {
         await KamiToolKitLibrary.InitializeAsync(dalamud);
         Svc.Initialize(dalamud);
+        CrashRecorder.Start();
 
         _config = new ConfigStore();
         _config.Load();
@@ -48,6 +49,8 @@ public sealed class Plugin(IDalamudPluginInterface dalamud) : IAsyncDalamudPlugi
 
     public ValueTask DisposeAsync()
     {
+        CrashRecorder.Note("GoblinTweaks unloading");
+
         dalamud.UiBuilder.OpenMainUi   -= ToggleMainWindow;
         dalamud.UiBuilder.OpenConfigUi -= OpenSettings;
         Loc.LanguageChanged            -= OnLanguageChanged;
@@ -68,6 +71,8 @@ public sealed class Plugin(IDalamudPluginInterface dalamud) : IAsyncDalamudPlugi
             KamiToolKitLibrary.Dispose();
             ScreenshotStore.Dispose();
         });
+
+        CrashRecorder.Stop();
         return ValueTask.CompletedTask;
     }
 

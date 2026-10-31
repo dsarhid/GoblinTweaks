@@ -533,8 +533,8 @@ internal unsafe class BattleTextAddon : NativeAddon
 
         foreach (var type in Enum.GetValues<GoblinBattleText.BattleTextEvent>())
         {
-            // Cooldown alerts have their own tab.
-            if (type is not (GoblinBattleText.BattleTextEvent.Cooldown or GoblinBattleText.BattleTextEvent.LimitBreak))
+            // Cooldown alerts have their own tab; the Limit Break ones always go to their area, below.
+            if (type is not (GoblinBattleText.BattleTextEvent.Cooldown or GoblinBattleText.BattleTextEvent.LimitBreak or GoblinBattleText.BattleTextEvent.MarksmansSpite))
                 AddEventRow(type);
         }
 
@@ -542,6 +542,13 @@ internal unsafe class BattleTextAddon : NativeAddon
         _y += 8f;
         AddCheckCell(0, "ShowFading",       () => options.ShowFading,       value => options.ShowFading = value);
         AddCheckCell(1, "PositionalInline", () => options.PositionalInline, value => options.PositionalInline = value);
+        _y += RowH;
+
+        AddHeader("Events.LimitBreak");
+        var limitBreak     = Tweak.Event(GoblinBattleText.BattleTextEvent.LimitBreak);
+        var marksmansSpite = Tweak.Event(GoblinBattleText.BattleTextEvent.MarksmansSpite);
+        AddCheckCell(0, "Event.LimitBreak",     () => limitBreak.Enabled,     value => limitBreak.Enabled = value);
+        AddCheckCell(1, "Event.MarksmansSpite", () => marksmansSpite.Enabled, value => marksmansSpite.Enabled = value);
         _y += RowH;
     }
 

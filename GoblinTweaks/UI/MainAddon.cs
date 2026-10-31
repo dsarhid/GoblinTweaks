@@ -632,6 +632,7 @@ internal sealed unsafe class MainAddon : SettingsPanelAddon
         TweakCategory.Interface => new Vector4(0.45f, 0.72f, 1.00f, 1f),
         TweakCategory.Inventory => new Vector4(0.95f, 0.82f, 0.40f, 1f),
         TweakCategory.Chat      => new Vector4(0.80f, 0.58f, 1.00f, 1f),
+        TweakCategory.PvP       => new Vector4(1.00f, 0.45f, 0.45f, 1f),
         _                       => new Vector4(0.72f, 0.72f, 0.76f, 1f),
     };
 

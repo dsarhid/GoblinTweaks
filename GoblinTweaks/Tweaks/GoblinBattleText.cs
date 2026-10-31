@@ -117,6 +117,9 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
         /// <summary>An action of yours that hits harder from the rear or the flank: whether you hit it from there.</summary>
         Positional,
+
+        /// <summary>PvP: an enemy machinist's Marksman's Spite is on its way to you. Goes to the Limit Break area.</summary>
+        MarksmansSpite,
     }
 
     /// <summary>What a status does every few seconds, if anything.</summary>
@@ -390,6 +393,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
     private const byte ActionKindAction = 1;
     private const uint AutoAttackCategory = 1;      // ActionCategory row of auto-attacks
+    private const uint PvPLimitBreakCategory = 15;  // ActionCategory row of the PvP Limit Breaks
     private const uint LivingShadowAction = 25801;   // the Dark Knight's shadow has no actions of its own to show
     private const uint DarkKnightJob = 32;
     private const uint AttackAction = 7;            // the auto-attack of a melee job
@@ -670,6 +674,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         BattleTextEvent.Cooldown => new() { Area = BattleTextArea.Center, Motion = BattleTextMotion.Down, Enabled = false },
         BattleTextEvent.ActionUsed => new() { Area = BattleTextArea.Outgoing, Motion = BattleTextMotion.Up },
         BattleTextEvent.LimitBreak => new() { Area = BattleTextArea.LimitBreak, Motion = BattleTextMotion.Down },
+        BattleTextEvent.MarksmansSpite => new() { Area = BattleTextArea.LimitBreak, Motion = BattleTextMotion.Down, Enabled = false },
         _ => new() { Area = BattleTextArea.Center, Motion = BattleTextMotion.Down },
     };
 
@@ -690,6 +695,9 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
     private ShieldDisplay? _shield;
     private int _limitBreakLevel = -1;
+    private bool _pvpGaugeLogged;
+    private readonly Dictionary<uint, uint> _pvpLimitBreaks = [];
+    private readonly MarksmansSpiteWatch _marksmansSpite = new(nameof(GoblinBattleText));
     private TextHelpAddon? _help;
 
     private static readonly string[] HelpTopics = ["Overview", "General", "Areas", "Events", "Highlights", "Cooldowns", "Positionals", "OverTime", "Rules"];
@@ -767,6 +775,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         _shield.Start();
 
         _limitBreakLevel = -1;
+        _pvpGaugeLogged = false;
+        _marksmansSpite.Reset();
 
         Svc.Framework.Update += OnUpdate;
     }
@@ -1504,6 +1514,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     {
         try
         {
+            _marksmansSpite.OnActionEffect(casterEntityId, caster, header, targetEntityIds);
             CaptureAction(casterEntityId, header, effects, targetEntityIds);
         }
         catch (Exception ex)
@@ -2519,18 +2530,62 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         _myCasts.Add((header->ActionId, targets, DateTime.UtcNow));
     }
 
-    /// <summary>Says "Limit Break Lv 2 ready!" each time a bar of the gauge fills.</summary>
+    /// <summary>Says "Limit Break Lv 2 ready!" each time a bar of the gauge fills; in PvP, "Limit Break ready!" when yours is.</summary>
     private void TrackLimitBreak()
     {
         var level = LimitBreak.Level();
         var before = _limitBreakLevel;
         _limitBreakLevel = level;
 
+        var pvp = LimitBreak.IsPvP();
+        if (pvp && !_pvpGaugeLogged)
+            Svc.Log.Info($"GoblinBattleText: PvP Limit Break gauge: {LimitBreak.Describe()}.");
+        _pvpGaugeLogged = pvp;
+
         // The first reading, or a gauge that cannot be read, only sets where we are.
         if (before < 0 || level <= before) return;
 
         // The Limit Break of your job at that level gives the icon of the alert.
-        Queue(BattleTextEvent.LimitBreak, LimitBreakMessage(level, LimitBreakActionOf(level - 1)));
+        Queue(BattleTextEvent.LimitBreak, pvp
+            ? LimitBreakMessage(T("Label.LimitBreakPvP"), PvPLimitBreakAction())
+            : LimitBreakMessage(string.Format(T("Label.LimitBreak"), level), LimitBreakActionOf(level - 1)));
+    }
+
+    /// <summary>The PvP Limit Break of your job, 0 when there is none.</summary>
+    private uint PvPLimitBreakAction()
+    {
+        var player = (Character*)Control.GetLocalPlayer();
+        if (player == null) return 0;
+
+        var job = player->CharacterData.ClassJob;
+        if (!_pvpLimitBreaks.TryGetValue(job, out var actionId))
+        {
+            actionId = Svc.Data.GetExcelSheet<LuminaAction>()
+                .FirstOrDefault(row => row.IsPvP && row.IsPlayerAction && row.ActionCategory.RowId == PvPLimitBreakCategory && row.ClassJob.RowId == job)
+                .RowId;
+            _pvpLimitBreaks[job] = actionId;
+        }
+
+        return actionId;
+    }
+
+    /// <summary>PvP: says "Marksman's Spite aimed at you!" once each time an enemy machinist's is on its way to you.</summary>
+    private void TrackMarksmansSpite()
+    {
+        _marksmansSpite.Update();
+        if (_marksmansSpite.JustStarted)
+            Queue(BattleTextEvent.MarksmansSpite, MarksmansSpiteMessage());
+    }
+
+    private BattleTextMessage MarksmansSpiteMessage()
+    {
+        var action = LookupAction(MarksmansSpiteWatch.ActionId);
+        return new()
+        {
+            Label  = string.Format(T("Label.LimitBreakIncoming"), action.Name ?? "Marksman's Spite"),
+            IconId = action.IconId,
+            Color  = Settings.Colors.IncomingDamage,
+        };
     }
 
     /// <summary>The Limit Break of your job at a level (0 is the first), 0 when there is none.</summary>
@@ -2541,12 +2596,12 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         return player == null || gauge == null ? 0 : gauge->GetActionId(player, (byte)index);
     }
 
-    private BattleTextMessage LimitBreakMessage(int level, uint actionId)
+    private BattleTextMessage LimitBreakMessage(string label, uint actionId)
     {
         var action = LookupAction(actionId);
         return new()
         {
-            Label  = string.Format(T("Label.LimitBreak"), level),
+            Label  = label,
             IconId = action.IconId,
             Color  = Settings.Colors.Cooldown,
         };
@@ -2795,6 +2850,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             PollCooldowns();
             TrackShields();
             TrackLimitBreak();
+            TrackMarksmansSpite();
             ConfirmDebuffs();
             WatchDebuffs();
 
@@ -3056,7 +3112,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                 Queue(BattleTextEvent.ShieldTaken, Shield(outgoing: false));
                 break;
             default:
-                Queue(BattleTextEvent.LimitBreak, LimitBreakMessage(2, LimitBreakActionOf(1)));
+                Queue(BattleTextEvent.LimitBreak, LimitBreakMessage(string.Format(T("Label.LimitBreak"), 2), LimitBreakActionOf(1)));
+                Queue(BattleTextEvent.MarksmansSpite, MarksmansSpiteMessage());
                 break;
         }
     }

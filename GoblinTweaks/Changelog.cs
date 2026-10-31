@@ -34,6 +34,16 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.4.0", "2026-10-31",
+            "New PvP category: Goblin Anti Machinist, Goblin Enemy Guard, and PvP Limit Break alerts in Goblin Battle Text.",
+            [
+                "New: PvP category in the tweak list",
+                "New: Goblin Anti Machinist — when an enemy machinist's Marksman's Spite is aimed at you, every action button becomes Guard (only if Guard is ready within 3 seconds); /gam opens its help",
+                "New: Goblin Enemy Guard — in Crystalline Conflict, a Guard icon over each enemy: bright when they have it, with the cooldown sweep and seconds when they don't; /geg opens its help",
+                "New: Goblin Battle Text — the Limit Break ready alert now works in PvP too",
+                "New: Goblin Battle Text — optional warning in the Limit Break area when a machinist aims Marksman's Spite at you (off by default); both alerts have their own section in the Events tab",
+                "Change: GoblinTweaks writes any crash that closes the game to pluginConfigs/GoblinTweaks-crash.txt — so the cause can be found even when the Dalamud log is full",
+            ]),
         new("1.3.6", "2026-10-31",
             "Goblin Achievements no longer makes the HUD under its tracker look clickable; My List fixes.",
             [

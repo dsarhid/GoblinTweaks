@@ -122,6 +122,7 @@ public sealed class TweakManager : IDisposable
 
         try
         {
+            CrashRecorder.Note($"Enabling {tweak.Id}");
             tweak.Enable();
             tweak.RegisterCommands();
             tweak.State = TweakState.Enabled;
@@ -148,6 +149,8 @@ public sealed class TweakManager : IDisposable
 
     private static void SafeDisable(Tweak tweak)
     {
+        CrashRecorder.Note($"Disabling {tweak.Id}");
+
         try
         {
             tweak.Disable();
