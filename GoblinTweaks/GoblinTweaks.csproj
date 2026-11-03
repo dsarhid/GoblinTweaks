@@ -4,7 +4,7 @@
 -->
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
-    <Version>1.4.5</Version>
+    <Version>1.5.0</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -24,6 +24,9 @@
   <ItemGroup>
     <EmbeddedResource Include="Localization\*.json" />
     <EmbeddedResource Include="Assets\Icon.png" />
+    <EmbeddedResource Include="Glamour\themes.json" LogicalName="Glamour.themes.json" />
+    <EmbeddedResource Include="Glamour\costumes.json" LogicalName="Glamour.costumes.json" />
+    <EmbeddedResource Include="Glamour\shapes.json" LogicalName="Glamour.shapes.json" />
     <EmbeddedResource Include="Assets\Screenshots\*.png" LogicalName="Screenshots.%(Filename)%(Extension)" />
     <EmbeddedResource Include="Assets\IconTweaks\*.png" LogicalName="Screenshots.%(Filename)%(Extension)" />
     <!-- Icon shown by Dalamud for dev builds -->
@@ -32,6 +35,8 @@
 
   <ItemGroup>
     <PackageReference Include="KamiToolKit" Version="2.2.38" GeneratePathProperty="true" />
+    <!-- Optional link to Glamourer (Goblin Glamour): the API version Glamourer itself is built with. -->
+    <PackageReference Include="Glamourer.Api" Version="2.8.2" />
   </ItemGroup>
 
   <!-- KamiToolKit loads the textures of its color picker from an Assets folder next to the plugin. -->

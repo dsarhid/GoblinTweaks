@@ -470,7 +470,12 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
     private const uint NoEntity = 0xE0000000;
     private readonly Dictionary<uint, bool> _playerActions = [];
-    private readonly Dictionary<uint, bool> _jobActions = [];
+
+    // When you last used each action, to tell your hits from the counter-attacks of your effects. Long enough for the
+    // damage of a slow action (a jump, a projectile) to show after the game tells the action.
+    private static readonly TimeSpan YourActionWindow = TimeSpan.FromSeconds(5);
+    private readonly Dictionary<uint, DateTime> _yourActions = [];
+    private int _counterLogs;
     private OverlayNodes? _overlay;
     private BattleTextAddon? _addon;
     private Exception? _failure;
@@ -791,6 +796,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         _shieldSeen.Clear();
         _shieldPending.Clear();
         _myCasts.Clear();
+        _yourActions.Clear();
         _statusSeen.Clear();
         _statusEntitiesSeen.Clear();
         _statusStarted.Clear();
@@ -1304,19 +1310,26 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         var action = actionKind == ActionKindAction ? LookupAction(actionId) : default;
 
         // The attack an effect of yours answers a hit with (Vengeance, Damnation...) comes with the action of that
-        // hit, not with the one that gave the effect: a plain "Attack", or the enemy's own action (Critical Bite...),
-        // which no job has. It takes the name and icon of the effect. Your own auto-attacks come as such, with
-        // their own action, and are left alone.
+        // hit, not with the one that gave the effect: a plain "Attack", or the enemy's action (Critical Bite...,
+        // or Fell Cleave when the enemy is a copy of a warrior). It keeps that name and takes the icon of the effect.
+        // An action you used yourself a moment ago is yours, whatever it is (Chaotic Cyclone is no player action in
+        // the game data); so are your own auto-attacks, which come as such.
         uint countering = 0;
         if (damage && outgoing && from == player && !tick && action.Name is not null
-            && (action.IconId == 0 || action.Name == LookupAction(AttackAction).Name || !IsJobAction(actionId))
             && (!autoAttack || actionId is not (AttackAction or ShotAction)))
         {
-            countering = CounterOf(player);
-            if (countering != 0 && LookupAction(countering) is { Name: not null } counter)
-                action = counter;
-            else
-                countering = 0;
+            var counter = CounterOf(player);
+            var usedByYou = UsedByYouJustNow(actionId);
+            if (counter != 0 && (action.IconId == 0 || action.Name == LookupAction(AttackAction).Name || !usedByYou)
+                && LookupAction(counter) is { IconId: not 0 } counterAction)
+            {
+                countering = counter;
+                action = (action.Name, counterAction.IconId);
+            }
+
+            // TEMP: to check in game that the counter-attacks and your own actions are told apart.
+            if (counter != 0 && _counterLogs++ < 60)
+                Svc.Log.Info($"GBT counter check: action {actionId} '{action.Name}' kind {kind} used by you {usedByYou} -> {(countering != 0 ? "counter" : "yours")}");
         }
 
         // How much of a hit on you your damage reduction took off, as far as the effects say. Not for a tick,
@@ -1428,10 +1441,12 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                        : !outgoing         ? colors.IncomingDamage
                        : colors.OutgoingDamage,
 
+            // Counter-attacks merge with the counter-attacks on the same action, never with your own uses of it.
             MergeKey   = mergeable
-                       ? ((ulong)(countering != 0 ? countering : actionId != 0 ? actionId : tickId) << 4) | (crit ? 8u : 0u) | (directHit ? 4u : 0u) | (heal ? 2u : 0u) | 1u
+                       ? ((ulong)(actionId != 0 ? actionId : tickId) << 4) | (crit ? 8u : 0u) | (directHit ? 4u : 0u) | (heal ? 2u : 0u) | 1u
                          | ((defendedKind | (ulong)mitigated << 3 | labelKind << 12) << 40)
                          | (tickId != 0 && actionId == 0 ? 1UL << 61 : 0UL)
+                         | (countering != 0 ? 1UL << 62 : 0UL)
                        : 0,
         };
 
@@ -1681,6 +1696,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         var player = (GameObject*)Control.GetLocalPlayer();
         if (player == null || player->EntityId != casterEntityId) return;
 
+        _yourActions[header->ActionId] = DateTime.UtcNow;
         RecordCast(header, targetEntityIds);
         CapturePositional(player, header, effects, targetEntityIds);
 
@@ -2227,21 +2243,11 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     }
 
     /// <summary>
-    /// Whether an action belongs to a job, whether or not it goes on a hotbar: the ones a button turns into (Chaotic
-    /// Cyclone, Inner Chaos, Primal Wrath, Primal Ruination...) are not player actions in the game data, but they
-    /// are yours. An enemy's action has no job.
+    /// Whether you used this action a moment ago: the game tells your action before its damage shows. The hit an
+    /// effect of yours answers (Damnation...) is never told as yours, even when the enemy uses an action of a job.
     /// </summary>
-    private bool IsJobAction(uint actionId)
-    {
-        if (!_jobActions.TryGetValue(actionId, out var isJobAction))
-        {
-            isJobAction = Svc.Data.GetExcelSheet<LuminaAction>().TryGetRow(actionId, out var row)
-                          && (row.IsPlayerAction || row.ClassJobCategory.RowId != 0);
-            _jobActions[actionId] = isJobAction;
-        }
-
-        return isJobAction;
-    }
+    private bool UsedByYouJustNow(uint actionId)
+        => _yourActions.TryGetValue(actionId, out var at) && DateTime.UtcNow - at < YourActionWindow;
 
     private (string? Name, uint IconId) LookupAction(uint actionId)
     {

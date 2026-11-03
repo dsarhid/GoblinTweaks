@@ -8,6 +8,18 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.5.0"] = (
+            "Nuevo Goblin Glamour: conjuntos para tu personaje, con IA opcional y Glamourer; recetas maestras en Crafting Materials.",
+            [
+                "New: Goblin Glamour (/gglam) — te propone 15 conjuntos con todas las piezas de glamour del juego, armados en torno a los colores de tu personaje (o con una paleta propia), con temas, tintes, accesorios, gafas, arma, solo tu job, solo lo que tenés, mismo rol y palabras libres (capa, botas...); probá cualquier conjunto en la ventana de Try On, fijá piezas, ocultá las que no te gustan y guardá favoritos",
+                "New: Goblin Glamour con IA opcional — Crear arma un conjunto con lo que escribís (antes te muestra qué formas y colores entendió), IA: juzgar mira un conjunto puesto en el Try On y lo mejora, y Revisar con foto hace las dos cosas; gratis sin clave (Pollinations) o con tu propia clave gratis (Gemini, Groq, OpenRouter), y se guardan la pestaña IA y un historial de tus pedidos",
+                "New: Goblin Glamour con Glamourer — ponele un conjunto a tu personaje (solo lo ves vos) y guardalo como diseño de Glamourer",
+                "New: Goblin Glamour cambia el tamaño de la ventana de Try On del juego (25-300 %, 60 % de entrada)",
+                "New: Crafting Materials puede incluir las recetas maestras, de los libros que leíste o de todos (las de libros sin leer muestran el libro que necesitan y quedan en Can't Craft)",
+                "New: Auto Goblin Retainer suma dos columnas a la lista de ventas de un retainer: hace cuánto se publicó cada ítem y hace cuánto se le puso el precio por última vez",
+                "Change: Crafting Materials — el click derecho en una receta la abre en el Crafting Log aunque tengas el ítem",
+                "Fix: Goblin Battle Text mostraba algunas de tus acciones (Chaotic Cyclone...) como contraataques de tus efectos — una acción que acabás de usar siempre es tuya, y los contraataques mantienen el nombre del golpe con el ícono del efecto",
+            ]),
         ["1.4.5"] = (
             "Goblin Enemy Guard ahora es Goblin Enemy Cooldown y sigue la PvP role action de cada enemigo; arreglos en Goblin Battle Text.",
             [

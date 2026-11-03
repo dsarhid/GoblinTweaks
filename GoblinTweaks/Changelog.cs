@@ -34,6 +34,18 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.5.0", "2026-11-03",
+            "New Goblin Glamour: outfits for your character, with optional AI and Glamourer; master recipes in Crafting Materials.",
+            [
+                "New: Goblin Glamour (/gglam) — proposes 15 outfits from every glamour piece in the game, built around your character's colors (or a palette of their own), with themes, dyes, accessories, facewear, weapon, only your job, only what you own, same role and free words (cape, boots...); try any outfit in the Try On window, lock pieces, hide the ones you dislike and keep favorites",
+                "New: Goblin Glamour optional AI — Create puts an outfit together from what you write (it shows the shapes and colors it understood first), AI: judge looks at an outfit worn in the Try On window and improves it, and Review with picture does both; free without a key (Pollinations) or with your own free key (Gemini, Groq, OpenRouter), with the AI tab and a history of your requests kept",
+                "New: Goblin Glamour with Glamourer — wear an outfit on your character (only you see it) and save it as a Glamourer design",
+                "New: Goblin Glamour resizes the game's Try On window (25-300%, 60% by default)",
+                "New: Crafting Materials can include master recipes, of the books you have read or of all of them (those of unread books show the book they need and stay in Can't Craft)",
+                "New: Auto Goblin Retainer adds two columns to a retainer's sell list: how long ago each item was listed and how long ago its price was last set",
+                "Change: Crafting Materials — right-clicking a recipe opens it in the Crafting Log even when you have the item",
+                "Fix: Goblin Battle Text showed some of your own actions (Chaotic Cyclone...) as counter-attacks of your effects — an action you just used is always yours, and counter-attacks keep the name of the hit with the icon of the effect",
+            ]),
         new("1.4.5", "2026-10-31",
             "Goblin Enemy Guard is now Goblin Enemy Cooldown and follows each enemy's PvP role action; Goblin Battle Text fixes.",
             [

@@ -87,6 +87,18 @@ public sealed class UniversalisService : IDisposable
     }
 
     /// <summary>
+    /// Every listing of <paramref name="retainer"/> among <paramref name="itemIds"/> on <paramref name="world"/>, by item
+    /// (all listings are asked for: an overpriced one is not among the cheapest). Throws on network or parse errors.
+    /// </summary>
+    public static async Task<Dictionary<uint, List<MarketListing>>> GetRetainerListingsAsync(string world, IReadOnlyCollection<uint> itemIds, string retainer, CancellationToken token)
+    {
+        using var listings = await GetJsonAsync($"https://universalis.app/api/v2/{Uri.EscapeDataString(world)}/{string.Join(',', itemIds)}?entries=0", token).ConfigureAwait(false);
+        return ParseSnapshots(listings, []).ToDictionary(
+            snapshot => snapshot.ItemId,
+            snapshot => snapshot.Listings.Where(listing => string.Equals(listing.Retainer, retainer, StringComparison.OrdinalIgnoreCase)).ToList());
+    }
+
+    /// <summary>
     /// Cheapest listings asked for per item. Enough to get past one seller who lists the same item many times at the
     /// same price and reach the next seller.
     /// </summary>

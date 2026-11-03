@@ -34,6 +34,10 @@ internal sealed class CraftingSettingsAddon : SettingsPanelAddon
             on => { options.Highlight = on; Tweak.SaveCurrent(); });
         Toggle(Tweak.Text("HighlightShops"), Tweak.Text("HighlightShops.Help"), options.HighlightShops,
             on => { options.HighlightShops = on; Tweak.SaveCurrent(); });
+        Toggle(Tweak.Text("IncludeMasterRecipes"), Tweak.Text("IncludeMasterRecipes.Help"), options.IncludeMasterRecipes,
+            on => { options.IncludeMasterRecipes = on; Tweak.SaveCurrent(); });
+        Toggle(Tweak.Text("IncludeUnreadMasterRecipes"), Tweak.Text("IncludeUnreadMasterRecipes.Help"), options.IncludeUnreadMasterRecipes,
+            on => { options.IncludeUnreadMasterRecipes = on; Tweak.SaveCurrent(); });
 
         Section(Tweak.Text("Status"));
 

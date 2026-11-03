@@ -250,6 +250,8 @@ public sealed class CraftableEntry
     public bool                  IsCrafted;
     public int                   ItemLevel;
     public int                   CraftLevel;   // recipe class-job level (1-100)
+    /// <summary>The master recipe book not read yet that this recipe needs (empty when none): it cannot be crafted.</summary>
+    public string                NeedsBook       = string.Empty;
     public List<IngredientCheck> Ingredients     = [];
 }
 
@@ -268,6 +270,10 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         public bool Highlight          { get; set; } = true;
         /// <summary>Dim, in the shop that is open, the rows that do not sell an ingredient of the selected recipe.</summary>
         public bool HighlightShops     { get; set; } = true;
+        /// <summary>Also list the master recipes of the books you have read, counted with all the others.</summary>
+        public bool IncludeMasterRecipes { get; set; }
+        /// <summary>With <see cref="IncludeMasterRecipes"/>, also those of the books not read yet (they cannot be crafted).</summary>
+        public bool IncludeUnreadMasterRecipes { get; set; }
         /// <summary>Max missing ingredient types before a recipe moves from NearComplete → NotReady.</summary>
         public int  NearCompleteMissing { get; set; } = 2;
         /// <summary>Old per-tweak window language. Only read to move it to the common language choice of the tweak.</summary>
@@ -984,20 +990,26 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     private sealed record RecipeInfo(
         uint RecipeId, uint ItemId, string Name, uint IconId, ushort ResultAmount,
         string CraftClass, uint CraftTypeId, uint[] ForJobs, int ItemLevel, int CraftLevel,
-        List<(uint Id, string Name, uint Icon, int Amount)> Ingredients);
+        List<(uint Id, string Name, uint Icon, int Amount)> Ingredients, uint Book = 0, string BookName = "");
 
     private ClientLanguage?                  _recipesLanguage;
+    private string?                          _recipesBooks;   // the master recipe books listed, "" for none
     private List<RecipeInfo>                 _recipes    = [];
     private Dictionary<uint, RecipeInfo>     _recipeById = [];
 
     /// <summary>
     /// The recipes the window lists, the ones that count for the crafting log (see <see cref="LogRecipeIds"/>), with their
-    /// ingredients. Built the first time, and again if the client language changes.
+    /// ingredients, plus, with <see cref="Options.IncludeMasterRecipes"/>, the master recipes of the books read. Built
+    /// the first time, and again if the client language changes, the option changes or a book is read.
     /// </summary>
     private List<RecipeInfo> Recipes()
     {
         var lang = DataLanguage;
-        if (_recipesLanguage == lang) return _recipes;
+        var books = !Settings.IncludeMasterRecipes ? []
+                  : Settings.IncludeUnreadMasterRecipes ? AllRecipeBooks()
+                  : LearnedRecipeBooks();
+        var booksKey = string.Join(',', books.Order());
+        if (_recipesLanguage == lang && _recipesBooks == booksKey) return _recipes;
 
         // Load every sheet in the same language so item/recipe/category names (and the RowRefs they resolve)
         // all come back localized. RowRef.Value follows the owning sheet.
@@ -1007,13 +1019,18 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         var craftTypeNames = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.CraftType>(lang)
             ?.ToDictionary(ct => ct.RowId, ct => ct.Name.ExtractText())
             ?? [];
+        var bookNames = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.SecretRecipeBook>(lang)
+            ?.ToDictionary(book => book.RowId, book => book.Name.ExtractText())
+            ?? [];
 
         var logRecipeIds = LogRecipeIds();
         var list = new List<RecipeInfo>();
 
         foreach (var recipe in recipeSheet)
         {
-            if (!logRecipeIds.Contains(recipe.RowId) || recipe.ItemResult.RowId == 0 || !recipe.ItemResult.IsValid)
+            var listed = logRecipeIds.Contains(recipe.RowId)
+                || (recipe.SecretRecipeBook.RowId != 0 && books.Contains(recipe.SecretRecipeBook.RowId));
+            if (!listed || recipe.ItemResult.RowId == 0 || !recipe.ItemResult.IsValid)
                 continue;
 
             var resultItem  = recipe.ItemResult.Value;
@@ -1031,10 +1048,15 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
                 ForJobsOf(resultItem),
                 (int)resultItem.LevelItem.RowId,
                 recipe.RecipeLevelTable.IsValid ? recipe.RecipeLevelTable.Value.ClassJobLevel : 0,
-                ingredients));
+                ingredients,
+                recipe.SecretRecipeBook.RowId,
+                bookNames.GetValueOrDefault(recipe.SecretRecipeBook.RowId, string.Empty)));
         }
 
+        Svc.Log.Info($"CraftingMaterials: {list.Count} recipes listed; master recipes {(!Settings.IncludeMasterRecipes ? "off" : Settings.IncludeUnreadMasterRecipes ? "all" : "read books")}, "
+                     + $"{books.Count} books read, {list.Count(r => !logRecipeIds.Contains(r.RecipeId))} master recipes added.");
         _recipesLanguage = lang;
+        _recipesBooks    = booksKey;
         _recipes         = list;
         _recipeById      = list.ToDictionary(r => r.RecipeId);
         _otherRecipes.Clear();
@@ -1097,6 +1119,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     {
         var recipes = Recipes();
         var results = new List<CraftableEntry>(recipes.Count);
+        var read = Settings.IncludeMasterRecipes && Settings.IncludeUnreadMasterRecipes ? LearnedRecipeBooks() : null;
 
         foreach (var info in recipes)
         {
@@ -1124,8 +1147,13 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
                 _                   => CraftStatus.NotReady,
             };
 
+            // A master recipe of a book not read yet cannot be crafted, whatever you own.
+            var needsBook = read is not null && info.Book != 0 && !read.Contains(info.Book);
+            if (needsBook) status = CraftStatus.NotReady;
+
             results.Add(new CraftableEntry
             {
+                NeedsBook    = needsBook ? info.BookName : string.Empty,
                 RecipeId     = info.RecipeId,
                 ItemId       = info.ItemId,
                 Name         = info.Name,
@@ -1158,6 +1186,22 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
                      + snap.Get(need.ItemId, InventorySource.FreeCompany);
         return new IngredientCheck(need.ItemId, need.Name, need.IconId, need.Amount, inPlayer, inOther);
     }
+
+    /// <summary>The master recipe books (SecretRecipeBook rows) the character has read; none before the character is loaded.</summary>
+    private static unsafe HashSet<uint> LearnedRecipeBooks()
+    {
+        var books = new HashSet<uint>();
+        var player = FFXIVClientStructs.FFXIV.Client.Game.UI.PlayerState.Instance();
+        if (player == null) return books;
+        foreach (var book in Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.SecretRecipeBook>())
+            if (book.RowId != 0 && player->IsSecretRecipeBookUnlocked(book.RowId))
+                books.Add(book.RowId);
+        return books;
+    }
+
+    /// <summary>Every master recipe book (SecretRecipeBook rows).</summary>
+    private static HashSet<uint> AllRecipeBooks()
+        => [.. Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.SecretRecipeBook>().Where(book => book.RowId != 0).Select(book => book.RowId)];
 
     private HashSet<uint>? _logRecipeIds;
 

@@ -44,6 +44,8 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
         public List<uint> KeepPrice { get; set; } = [];
         /// <summary>Retainers (by id) left out of the Pinch tour and of the reprice after listing.</summary>
         public List<ulong> ExcludedRetainers { get; set; } = [];
+        /// <summary>When each listing went up and when its price was last set, by retainer id (sell list columns).</summary>
+        public Dictionary<ulong, List<ListingTime>> ListingTimes { get; set; } = [];
     }
 
     private const int MaxSearchResults = 30;
@@ -68,6 +70,7 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
     private RetainerCycler?     _cycler;
     private SellRunner?         _runner;
     private TextButtonNode?     _sellListPinch;
+    private SellListAges?       _ages;
     private TextButtonNode?     _pinchButton;
     private TextButtonNode?     _sellButton;
 
@@ -91,6 +94,7 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
         _pincher = new AutoPincher(PinchRulesNow, Say);
         _cycler  = new RetainerCycler(_pincher, Say, IsExcluded);
         _runner  = new SellRunner(_pincher, PinchRulesNow, Say, IsExcluded);
+        _ages    = new SellListAges(() => Settings.ListingTimes, () => SaveSettings(), T);
 
         _askingPriceText = Svc.Data.GetExcelSheet<LogMessage>()?.GetRowOrDefault(AskingPriceUpdatedId)?.Text.ExtractText();
         Svc.Chat.CheckMessageHandled += OnCheckMessage;
@@ -98,6 +102,7 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
         Svc.Framework.Update += OnUpdate;
         Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup,    "RetainerSellList", OnSellListSetup);
         Svc.AddonLifecycle.RegisterListener(AddonEvent.PreFinalize,  "RetainerSellList", OnSellListClosing);
+        Svc.AddonLifecycle.RegisterListener(AddonEvent.PostUpdate,   "RetainerSellList", OnSellListUpdate);
         Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup,    "RetainerList", OnRetainerListSetup);
         Svc.AddonLifecycle.RegisterListener(AddonEvent.PreFinalize,  "RetainerList", OnRetainerListClosing);
 
@@ -108,7 +113,7 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
 
         var sellList = (AtkUnitBase*)Svc.GameGui.GetAddonByName("RetainerSellList").Address;
         if (sellList is not null && sellList->IsVisible)
-            AttachSellListButton(sellList);
+            AttachSellList(sellList);
     }
 
     protected internal override void Disable()
@@ -117,6 +122,7 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
         Svc.Chat.CheckMessageHandled -= OnCheckMessage;
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup,   "RetainerSellList", OnSellListSetup);
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PreFinalize, "RetainerSellList", OnSellListClosing);
+        Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostUpdate,  "RetainerSellList", OnSellListUpdate);
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup,   "RetainerList", OnRetainerListSetup);
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PreFinalize, "RetainerList", OnRetainerListClosing);
 
@@ -127,6 +133,8 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
         _pincher?.Stop("stopped");
         _pincher = null;
         DetachButtons();
+        _ages?.Dispose();
+        _ages = null;
         DetachSellListButton();
         _window?.Dispose();
         _window = null;
@@ -279,7 +287,20 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
 
     private void OnSellListSetup(AddonEvent type, AddonArgs args)
     {
-        try   { AttachSellListButton((AtkUnitBase*)args.Addon.Address); }
+        try   { AttachSellList((AtkUnitBase*)args.Addon.Address); }
+        catch (Exception ex) { ReportFailure(ex); }
+    }
+
+    /// <summary>The listed / price-set columns first: they widen the window, and the Pinch button sits on its right edge.</summary>
+    private void AttachSellList(AtkUnitBase* addon)
+    {
+        _ages?.Attach(addon);
+        AttachSellListButton(addon);
+    }
+
+    private void OnSellListUpdate(AddonEvent type, AddonArgs args)
+    {
+        try   { _ages?.Update((AtkUnitBase*)args.Addon.Address); }
         catch (Exception ex) { ReportFailure(ex); }
     }
 
@@ -289,6 +310,7 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
         {
             // A cycle closes the list itself between retainers; only a manual run is cancelled here.
             if (_cycler is not { IsRunning: true } && _runner is not { IsRunning: true }) _pincher?.Stop("closed");
+            _ages?.Detach(restore: false);
             DetachSellListButton();
         }
         catch (Exception ex) { ReportFailure(ex); }
@@ -421,7 +443,7 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
         if (list is not null && list->IsVisible) AttachButtons(list);
 
         var sellList = (AtkUnitBase*)Svc.GameGui.GetAddonByName("RetainerSellList").Address;
-        if (sellList is not null && sellList->IsVisible) AttachSellListButton(sellList);
+        if (sellList is not null && sellList->IsVisible) AttachSellList(sellList);
     }
 
     internal Options Current => Settings;
@@ -444,6 +466,7 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
                 (T("Help.Overview.Title"), T("Help.Overview.Text")),
                 (T("Help.Pinch.Title"),    T("Help.Pinch.Text")),
                 (T("Help.Sell.Title"),     T("Help.Sell.Text")),
+                (T("Help.Ages.Title"),     T("Help.Ages.Text")),
                 (T("Help.Faq.Title"),      T("Help.Faq.Text")),
             ],
         };

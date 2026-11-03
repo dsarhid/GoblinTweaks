@@ -169,6 +169,8 @@ internal sealed class RecipeRowNode : ListItemNode<CraftableEntry>, IListItemNod
             (_, "")   => lvl,
             _         => $"{lvl}  ·  {cls}",
         };
+        if (data.NeedsBook.Length > 0)
+            _sub.String = $"{_sub.String}  ·  {CraftLoc.Fmt("row.needsBook", data.NeedsBook)}";
 
         _check.IsVisible = data.IsCrafted;
 

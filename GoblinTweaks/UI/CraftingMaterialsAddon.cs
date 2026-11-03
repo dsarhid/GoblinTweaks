@@ -462,13 +462,11 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     }
 
     /// <summary>
-    /// Recipe right-click: show the native item menu if the result is in your bags; otherwise
-    /// open the game's Crafting Log for the recipe (the result usually isn't owned).
+    /// Recipe right-click: open the game's Crafting Log on the recipe, even when the result is in
+    /// your bags (its item menu has nothing to do with crafting it).
     /// </summary>
     private void OnRecipeRightClick(CraftableEntry entry)
     {
-        if (OpenItemContextMenu(entry.ItemId)) return;
-
         // Defer opening the Crafting Log to the next frame: launching a heavy native addon
         // from inside our own event dispatch (while the list is repopulating) traps the UI.
         if (entry.RecipeId != 0)
@@ -987,6 +985,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         var sub = entry.CraftClass;
         if (entry.ResultAmount > 1) sub += $"   ×{entry.ResultAmount}";
         if (entry.IsCrafted)        sub += $"   ✓ {CraftLoc.Get("detail.crafted")}";
+        if (entry.NeedsBook.Length > 0) sub += "   " + CraftLoc.Fmt("row.needsBook", entry.NeedsBook);
 
         // How many times it can be made with what you own, and with only what is in your bags.
         var crafts = entry.Ingredients.Count == 0 ? 0 : entry.Ingredients.Min(i => i.Available / i.Required);
@@ -1623,7 +1622,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         _detailMarket.AttachNode(this);
 
         // Invisible hit area over the header (icon + name) so the result item shows the
-        // native tooltip on hover and the native context menu on right-click, like rows do.
+        // native tooltip on hover and opens the Crafting Log on right-click, like rows do.
         _detailCollision = new CollisionNode
         {
             CollisionType = CollisionType.Hit,
