@@ -524,6 +524,44 @@ public static class OutfitEngine
         return Math.Max(Math.Max(theme, shape), Themes.MatchWords(options.Words, item.NameEn));
     }
 
+    /// <summary>How many color schemes <see cref="Recolor"/> tries for one that changes the outfit's dyes.</summary>
+    private const int RecolorTries = 12;
+
+    /// <summary>
+    /// The same pieces with other dyes: a new color scheme (one of the character's, when <paramref name="palette"/> is
+    /// given, or one of its own), dyed the way Generate dyes. Pieces that cannot be dyed, unknown items and the
+    /// <paramref name="keep"/> slots (locked pieces) stay as they are. A few schemes are tried, so the result differs.
+    /// </summary>
+    public static IReadOnlyDictionary<GlamourSlot, OutfitPiece> Recolor(
+        IReadOnlyDictionary<GlamourSlot, OutfitPiece> pieces, IReadOnlyDictionary<uint, CatalogItem> items, IReadOnlyList<Stain> stains,
+        CharacterPalette? palette, IReadOnlySet<GlamourSlot> keep, Random random)
+    {
+        var result = new Dictionary<GlamourSlot, OutfitPiece>(pieces);
+        if (stains.Count == 0)
+            return result;
+
+        var kinds = Enum.GetValues<AnchorKind>().Where(kind => kind != AnchorKind.Own).ToArray();
+        for (var attempt = 0; attempt < RecolorTries; attempt++)
+        {
+            var (anchor, second) = palette is not null && random.Next(2) == 0
+                ? Anchor(kinds[random.Next(kinds.Length)], palette)
+                : OwnAnchor(random);
+
+            var changed = false;
+            foreach (var (slot, piece) in pieces)
+            {
+                if (keep.Contains(slot) || !items.TryGetValue(piece.ItemId, out var item) || item.DyeSlots == 0)
+                    continue;
+                var dyed = Dye(item, anchor, second, stains, useDyes: true);
+                result[slot] = dyed;
+                changed |= dyed != piece;
+            }
+            if (changed)
+                break;
+        }
+        return result;
+    }
+
     private static OutfitPiece Dye(CatalogItem item, Rgb anchor, Rgb second, IReadOnlyList<Stain> stains, bool useDyes)
     {
         if (!useDyes || item.DyeSlots == 0 || stains.Count == 0)

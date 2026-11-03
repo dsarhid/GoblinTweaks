@@ -228,6 +228,46 @@ public class OutfitEngineTests
     }
 
     [Fact]
+    public void Recolor_SamePiecesNewDyes()
+    {
+        var items = new Dictionary<uint, CatalogItem>
+        {
+            [1] = Item(1, GlamourSlot.Body, "806040", dyes: 2),
+            [2] = Item(2, GlamourSlot.Legs, "806040", dyes: 1),
+            [3] = Item(3, GlamourSlot.Feet, "806040", dyes: 0),
+        };
+        var outfit = new Dictionary<GlamourSlot, OutfitPiece>
+        {
+            [GlamourSlot.Body] = new(1, 1, 1), [GlamourSlot.Legs] = new(2, 1, 0), [GlamourSlot.Feet] = new(3, 0, 0),
+        };
+
+        var recolored = OutfitEngine.Recolor(outfit, items, Stains, Palette, new HashSet<GlamourSlot>(), new Random(5));
+
+        Assert.Equal(outfit.Keys.Order(), recolored.Keys.Order());
+        Assert.All(outfit, pair => Assert.Equal(pair.Value.ItemId, recolored[pair.Key].ItemId));
+        Assert.NotEqual(outfit[GlamourSlot.Body], recolored[GlamourSlot.Body]);   // other dyes
+        Assert.Equal(0, recolored[GlamourSlot.Legs].Stain1);                      // one dye channel only
+        Assert.Equal(new OutfitPiece(3, 0, 0), recolored[GlamourSlot.Feet]);       // cannot be dyed
+    }
+
+    [Fact]
+    public void Recolor_KeepsTheSlotsAskedFor()
+    {
+        var items = new Dictionary<uint, CatalogItem>
+        {
+            [1] = Item(1, GlamourSlot.Body, "806040", dyes: 1),
+            [2] = Item(2, GlamourSlot.Legs, "806040", dyes: 1),
+        };
+        var outfit = new Dictionary<GlamourSlot, OutfitPiece> { [GlamourSlot.Body] = new(1, 3, 0), [GlamourSlot.Legs] = new(2, 3, 0) };
+
+        for (var seed = 0; seed < 10; seed++)
+        {
+            var recolored = OutfitEngine.Recolor(outfit, items, Stains, null, new HashSet<GlamourSlot> { GlamourSlot.Body }, new Random(seed));
+            Assert.Equal(outfit[GlamourSlot.Body], recolored[GlamourSlot.Body]);
+        }
+    }
+
+    [Fact]
     public void Generate_SameSeed_SameResult()
     {
         var catalog = Catalog([.. Armor, GlamourSlot.MainHand]);

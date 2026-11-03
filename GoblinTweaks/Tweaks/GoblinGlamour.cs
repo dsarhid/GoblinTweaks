@@ -128,8 +128,8 @@ public sealed partial class GoblinGlamour : Tweak<GoblinGlamour.Options>
     /// <summary>What the window lists.</summary>
     internal enum CardView { Outfits, Ai, Favorites }
 
-    /// <summary>What the window shows on one card.</summary>
-    internal sealed record OutfitCard(string Title, IReadOnlyDictionary<GlamourSlot, OutfitPiece> Pieces, string Reason, int FavoriteIndex);
+    /// <summary>What the window shows on one card. <c>ListIndex</c> = its place among the proposals or the AI's outfits (-1 for a favorite).</summary>
+    internal sealed record OutfitCard(string Title, IReadOnlyDictionary<GlamourSlot, OutfitPiece> Pieces, string Reason, int FavoriteIndex, int ListIndex = -1);
 
     /// <summary>The order pieces are shown in on a card.</summary>
     internal static readonly GlamourSlot[] SlotOrder =
@@ -618,8 +618,8 @@ public sealed partial class GoblinGlamour : Tweak<GoblinGlamour.Options>
     internal IReadOnlyList<OutfitCard> Cards() => View switch
     {
         CardView.Favorites => [.. Settings.Favorites.Select((outfit, i) => new OutfitCard(outfit.Name, outfit.Pieces, string.Empty, i))],
-        CardView.Ai        => _aiCards,
-        _                  => [.. _proposals.Select((proposal, i) => new OutfitCard(CardTitle(i), proposal.Pieces, ReasonLine(proposal.Reasons), -1))],
+        CardView.Ai        => [.. _aiCards.Select((card, i) => card with { ListIndex = i })],
+        _                  => [.. _proposals.Select((proposal, i) => new OutfitCard(CardTitle(i), proposal.Pieces, ReasonLine(proposal.Reasons), -1, i))],
     };
 
     /// <summary>How many cards each view has, for the tabs.</summary>
@@ -693,6 +693,39 @@ public sealed partial class GoblinGlamour : Tweak<GoblinGlamour.Options>
     }
 
     /// <summary>Shows the outfit in the game's Try On window.</summary>
+    /// <summary>
+    /// Same pieces, other dyes: a new color scheme for a proposal or an AI outfit (locked pieces keep theirs), shown at
+    /// once in the Try On window. For when the pieces are right and the colors are not.
+    /// </summary>
+    internal void Recolor(OutfitCard card) => Guard(() => RecolorCore(card));
+
+    private void RecolorCore(OutfitCard card)
+    {
+        if (_byId is not { } byId || _catalog is not { } catalog || card.ListIndex < 0) return;
+
+        var keep = card.Pieces.Where(pair => IsLocked(pair.Key, pair.Value)).Select(pair => pair.Key).ToHashSet();
+        var palette = Settings.UseMyColors ? Character?.Palette : null;
+        var pieces = OutfitEngine.Recolor(card.Pieces, byId, catalog.Stains, palette, keep, new Random());
+
+        if (View == CardView.Ai && card.ListIndex < _aiCards.Count)
+        {
+            _aiCards[card.ListIndex] = _aiCards[card.ListIndex] with { Pieces = pieces };
+            Settings.AiOutfits = [.. _aiCards.Select(each => new SavedAiOutfit { Name = each.Title, Pieces = new(each.Pieces), Opinion = each.Reason })];
+            SaveSettings(notify: false);
+        }
+        else if (View == CardView.Outfits && card.ListIndex < _proposals.Count)
+        {
+            var proposals = _proposals.ToList();
+            proposals[card.ListIndex] = proposals[card.ListIndex] with { Pieces = pieces };
+            _proposals = proposals;
+        }
+        else return;
+
+        CardsVersion++;   // the list keeps its place
+        TryOn(card with { Pieces = pieces });
+        Say(Text(pieces.Values.SequenceEqual(card.Pieces.Values) ? "Status.NothingToDye" : "Status.Recolored"));
+    }
+
     internal void TryOn(OutfitCard card)
     {
         _ = TryOnPreview.ShowAsync(card.Pieces).ContinueWith(task =>

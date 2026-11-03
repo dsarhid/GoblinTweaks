@@ -8,6 +8,12 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.5.1"] = (
+            "Goblin Glamour puede reteñir un conjunto; la lista de ventas del retainer muestra los tiempos de lo que acabás de listar.",
+            [
+                "New: Goblin Glamour — Teñir de nuevo en cada conjunto propuesto y de la IA: mismas piezas, otros tintes, que se ven enseguida en la ventana de Try On (las piezas fijadas mantienen los suyos); tocalo otra vez para otra combinación",
+                "Fix: Auto Goblin Retainer mostraba \"?\" en las columnas Publicado y Últ. precio para los ítems recién listados — si la lista se vio hace un momento, lo nuevo cuenta como listado ahora",
+            ]),
         ["1.5.0"] = (
             "Nuevo Goblin Glamour: conjuntos para tu personaje, con IA opcional y Glamourer; recetas maestras en Crafting Materials.",
             [

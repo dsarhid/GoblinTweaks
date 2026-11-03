@@ -52,6 +52,8 @@ internal sealed unsafe class SellListAges(Func<Dictionary<ulong, List<ListingTim
 
     private static readonly TimeSpan ObserveEvery = TimeSpan.FromSeconds(0.5);
     private static readonly TimeSpan UniversalisRetry = TimeSpan.FromMinutes(5);
+    /// <summary>A list seen complete this recently was only closed for a moment (to list an item, say): what is new on it is new now.</summary>
+    private static readonly TimeSpan RecentlySeen = TimeSpan.FromMinutes(15);
 
     private readonly Dictionary<nint, (float X, ushort Width)> _original = [];
     private readonly HashSet<nint> _ours = [];
@@ -59,6 +61,7 @@ internal sealed unsafe class SellListAges(Func<Dictionary<ulong, List<ListingTim
     private readonly List<TextNode> _headers = [];
     private readonly ListingTime?[] _bySlot = new ListingTime?[20];
     private readonly Dictionary<ulong, DateTime> _askedUniversalis = [];
+    private readonly Dictionary<ulong, long> _lastSeen = []; // when each retainer's list was last seen complete (Unix seconds)
 
     private AtkUnitBase* _addon;
     private float _columnsX;
@@ -66,7 +69,6 @@ internal sealed unsafe class SellListAges(Func<Dictionary<ulong, List<ListingTim
     private bool _watching; // the list was seen complete since it opened: what changes from now on is exact
     private DateTime _nextObserve;
     private CancellationTokenSource? _lookup;
-    private int _rowLogs; // TEMP
     private ushort _rendererWidth; // a row before widening
 
     public bool IsAttached => _addon != null;
@@ -95,7 +97,6 @@ internal sealed unsafe class SellListAges(Func<Dictionary<ulong, List<ListingTim
         _watching = false;
         _retainer = 0;
         _nextObserve = DateTime.MinValue;
-        _rowLogs = 0;
         Array.Clear(_bySlot);
     }
 
@@ -176,7 +177,10 @@ internal sealed unsafe class SellListAges(Func<Dictionary<ulong, List<ListingTim
         var records = store().TryGetValue(_retainer, out var saved) ? saved : [];
         var left    = new List<ListingTime>(records);
         var stamp   = new DateTimeOffset(now).ToUnixTimeSeconds();
-        var known   = _watching ? stamp : 0; // a change first seen on opening happened at an unknown time
+        // A change first seen on opening happened at an unknown time, unless this retainer's list was seen complete a
+        // moment ago: the list closes and opens again around listing an item, and what is new on it then is new now.
+        var recent  = _lastSeen.TryGetValue(_retainer, out var seenAt) && stamp - seenAt <= (long)RecentlySeen.TotalSeconds;
+        var known   = _watching || recent ? stamp : 0;
         var changed = false;
         var result  = new List<ListingTime>();
         Array.Clear(_bySlot);
@@ -189,6 +193,7 @@ internal sealed unsafe class SellListAges(Func<Dictionary<ulong, List<ListingTim
             {
                 record = new ListingTime { ItemId = item, Hq = hq, Quantity = quantity, Price = price, Listed = known, Priced = known };
                 changed = true;
+                Svc.Log.Info($"Sell list ages: item {item} listed, time {(known == 0 ? "unknown" : "now")} (watching {_watching}, seen before {recent}).");
             }
             else
             {
@@ -209,6 +214,7 @@ internal sealed unsafe class SellListAges(Func<Dictionary<ulong, List<ListingTim
         // What is gone was sold or taken back.
         if (left.Count > 0) changed = true;
         _watching = true;
+        _lastSeen[_retainer] = stamp;
 
         if (changed)
         {
@@ -313,12 +319,6 @@ internal sealed unsafe class SellListAges(Func<Dictionary<ulong, List<ListingTim
             if (!_rows.TryGetValue(key, out var row) || !shown.Add(key)) continue;
 
             var record = RecordOfRow(addon, i);
-            // TEMP: to check in game that each row gets the times of its own item.
-            if (_rowLogs < 40)
-            {
-                _rowLogs++;
-                Svc.Log.Info($"SELLAGES row {i} renderer #{renderer->OwnerNode->AtkResNode.NodeId} y {renderer->OwnerNode->AtkResNode.Y} slot {addon->AtkValues[RowValuesStart + i * RowValuesStride + RowSlotValue].Int} item {record?.ItemId} listed {record?.Listed} priced {record?.Priced}");
-            }
             Set(row.Listed, record is null ? string.Empty : Age(record.Listed, now));
             Set(row.Priced, record is null ? string.Empty : Age(record.Priced, now));
         }

@@ -34,6 +34,12 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.5.1", "2026-11-03",
+            "Goblin Glamour can recolor an outfit; the retainer sell list shows the times of what you just listed.",
+            [
+                "New: Goblin Glamour — Recolor on every proposal and AI outfit: same pieces, other dyes, shown at once in the Try On window (locked pieces keep theirs); press again for another",
+                "Fix: Auto Goblin Retainer showed \"?\" in the Listed and Repriced columns for items just listed — when the list was seen a moment ago, what is new on it counts as listed now",
+            ]),
         new("1.5.0", "2026-11-03",
             "New Goblin Glamour: outfits for your character, with optional AI and Glamourer; master recipes in Crafting Materials.",
             [

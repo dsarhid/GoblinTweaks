@@ -455,6 +455,8 @@ internal sealed unsafe class GlamourAddon : NativeAddon
         {
             var favorite = card.FavoriteIndex >= 0;
             var buttons = new List<CardButton> { new(Tweak.Text("Card.TryOn"), null, () => Tweak.TryOn(card)) };
+            if (!favorite)
+                buttons.Add(new(Tweak.Text("Card.Recolor"), Tweak.Text("Card.Recolor.Help"), () => Tweak.Recolor(card)));
             if (_glamourer)
             {
                 var worn = Tweak.IsWorn(card);
