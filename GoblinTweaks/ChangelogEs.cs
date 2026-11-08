@@ -8,6 +8,11 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.5.4"] = (
+            "Recipes List ahora oculta de verdad las recetas fabricadas y las que no son del crafting log.",
+            [
+                "Fix: \"Ocultar fabricadas\" y \"Solo crafting log\" en Recipes List solo le sacaban la marca a las filas — ahora las filas salen de la lista, y el encabezado de una clase también cuando no le queda ninguna receta",
+            ]),
         ["1.5.3"] = (
             "Goblin Battle Text muestra el ícono correcto de Salt and Darkness y sigue andando cuando no puede poner un hook.",
             [

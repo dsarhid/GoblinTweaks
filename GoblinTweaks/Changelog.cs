@@ -34,6 +34,11 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.5.4", "2026-11-08",
+            "Recipes List now really hides crafted recipes and the ones outside the crafting log.",
+            [
+                "Fix: \"Hide crafted\" and \"Only crafting log\" in the Recipes List only took the mark off the rows — the rows now leave the list, and a class header goes too when none of its recipes is left",
+            ]),
         new("1.5.3", "2026-11-08",
             "Goblin Battle Text shows the right icon for Salt and Darkness and keeps working when a hook can't be placed.",
             [

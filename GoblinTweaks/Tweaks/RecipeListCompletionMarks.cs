@@ -3,6 +3,7 @@ using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Game.Text.SeStringHandling;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Component.GUI;
+using FFXIVClientStructs.Interop;
 using GoblinTweaks.Core;
 using GoblinTweaks.Localization;
 using GoblinTweaks.Native;
@@ -18,8 +19,9 @@ namespace GoblinTweaks.Tweaks;
 /// whose recipe was crafted at least once, and optionally a "!" mark to the ones never crafted.
 /// </summary>
 /// <remarks>
-/// Built to survive game patches: no hooks or signatures of its own, rows are matched by text
-/// against game data, and an unexpected window layout just stops the marks instead of crashing.
+/// Built to survive game patches: no hooks of its own, rows are matched by text against game data, and an
+/// unexpected window layout just stops the marks instead of crashing. Hiding rows uses one game function
+/// (the list's ExpandGroupExclusively, from FFXIVClientStructs); without it, rows are simply not hidden.
 /// </remarks>
 [Tweak(TweakCategory.Crafting)]
 public sealed unsafe class RecipeListCompletionMarks : Tweak<RecipeListCompletionMarks.Options>
@@ -76,20 +78,27 @@ public sealed unsafe class RecipeListCompletionMarks : Tweak<RecipeListCompletio
         _crafted.Clear();
         _settingsAddon = NewSettingsAddon();
 
+        _takenOut = null;
+        _hidingWarned = false;
+
         Svc.AddonLifecycle.RegisterListener(AddonEvent.PreDraw, AddonName, OnPreDraw);
         Svc.AddonLifecycle.RegisterListener(AddonEvent.PreFinalize, AddonName, OnPreFinalize);
+        Svc.AddonLifecycle.RegisterListener(AddonEvent.PreRefresh, AddonName, OnPreRebuild);
+        Svc.AddonLifecycle.RegisterListener(AddonEvent.PreRequestedUpdate, AddonName, OnPreRebuild);
     }
 
     protected internal override void Disable()
     {
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PreDraw, AddonName, OnPreDraw);
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PreFinalize, AddonName, OnPreFinalize);
+        Svc.AddonLifecycle.UnregisterListener(AddonEvent.PreRefresh, AddonName, OnPreRebuild);
+        Svc.AddonLifecycle.UnregisterListener(AddonEvent.PreRequestedUpdate, AddonName, OnPreRebuild);
 
         // The window may be open: give it back every row and take the boxes off it.
         var open = (AtkUnitBase*)Svc.GameGui.GetAddonByName(AddonName).Address;
         var list = open != null ? TreeListOf(open) : null;
-        if (list != null) ShowHiddenRows(list);
-        _hiddenByUs.Clear();
+        if (list != null) PutBack(list);
+        _takenOut = null;
         DetachBoxes();
 
         RemoveMarks();
@@ -210,11 +219,29 @@ public sealed unsafe class RecipeListCompletionMarks : Tweak<RecipeListCompletio
     {
         try
         {
+            // The window frees the rows in its list: the hidden ones must be in it.
+            var treeList = TreeListOf((AtkUnitBase*)args.Addon.Address);
+            if (treeList != null) PutBackRows(treeList);
+            _takenOut = null;
+
             DetachBoxes();
-            _hiddenByUs.Clear();
-            _refreshStreak = 0;
-            _hidingGaveUp  = false;
             RemoveMarks();
+        }
+        catch (Exception ex)
+        {
+            ReportFailure(ex);
+        }
+    }
+
+    /// <summary>Before the window fills its list again: every row back where it was, so the game finds its own list.</summary>
+    private void OnPreRebuild(AddonEvent type, AddonArgs args)
+    {
+        try
+        {
+            if (_takenOut == null) return;
+            var treeList = TreeListOf((AtkUnitBase*)args.Addon.Address);
+            if (treeList != null) PutBack(treeList);
+            else _takenOut = null;
         }
         catch (Exception ex)
         {
@@ -310,114 +337,266 @@ public sealed unsafe class RecipeListCompletionMarks : Tweak<RecipeListCompletio
         => (item->Type & (TreeListItemType.Group | TreeListItemType.SectionHeader)) != 0;
 
     // ── Hiding rows ───────────────────────────────────────────────────────────
+    //
+    // The list does not skip a row for its "hidden" flag: it works that flag out by itself from the folded groups, so
+    // setting it only blanked the marks. The rows to hide are taken out of the list's own vector of rows instead (the
+    // window reads the recipe of a clicked row from the row, not from its place in the list) and the list is laid out
+    // again. They go back, in their order, before the window rebuilds the list, when it closes, when hiding is turned off
+    // and when the tweak is. Nothing goes back unless the vector is exactly as it was left: if the game changed it some
+    // other way, the rows taken out are let go (a few bytes) rather than writing stale pointers into it.
 
-    // Rows this tweak hid (the game hides rows of folded groups too: those are left to it).
-    private readonly HashSet<nint> _hiddenByUs = [];
+    /// <summary>What was taken out of the list, to put it back.</summary>
+    private sealed class TakenOut
+    {
+        public required nint   List;
+        public required nint   First;
+        public required nint[] All;    // every row, in the game's order
+        public required nint[] Shown;  // the rows left in the vector
+        public required string Key;    // which rows are out, to know when that changes
+        public uint? ItemCount;        // the list's count before, when it was changed with the rows
+        public readonly List<(nint Item, TreeListItemType Type)> Retyped = []; // rows given the "last in group" mark
+    }
 
-    // Frames in a row in which the list had to be laid out again. If the game keeps showing the rows we hide, hiding
-    // stops for this window instead of laying the list out every frame.
-    private const int MaxRefreshStreak = 30;
-    private int  _refreshStreak;
-    private bool _hidingGaveUp;
+    private TakenOut? _takenOut;
+    private bool _hidingWarned;
 
-    /// <summary>
-    /// Hides, through the list's own "hidden" flag (the one folded groups use), the rows the options leave out, and
-    /// the class headers left with no row. Asks the list to lay itself out again only when something changed.
-    /// </summary>
+    // Set when the list keeps only one group open at a time (seen in the game's ExpandGroupExclusively).
+    private const int ExclusiveGroupsOffset = 0x222;
+
+    private static bool CanLayOut => AtkComponentTreeList.Addresses.ExpandGroupExclusively.Value != 0;
+
     private void HideRows(AtkComponentTreeList* treeList)
     {
-        var hiding = (Settings.HideCrafted || Settings.HideNotInLog) && !_hidingGaveUp;
-        if (!hiding)
+        if (_takenOut is { } taken && (taken.List != (nint)treeList || !IsAsLeft(treeList, taken)))
+            LetGo("the window changed its list");
+
+        if (!(Settings.HideCrafted || Settings.HideNotInLog) || !CanLayOut)
         {
-            if (_hiddenByUs.Count > 0) ShowHiddenRows(treeList);
+            if (_takenOut != null) PutBack(treeList);
             return;
         }
 
-        // What each row should be: rows under their header, the header hidden when every row under it is.
-        var items = treeList->Items.AsSpan();
-        var hide = new bool[items.Length];
-        uint sectionCraftType = 0;
-        var header = -1;
-        var headerRows = 0;
-        var headerHidden = 0;
-
-        void CloseHeader()
+        var all = _takenOut?.All ?? RowsOf(treeList);
+        var hide = WhatToHide(all);
+        if (hide == null)
         {
-            if (header >= 0 && headerRows > 0 && headerHidden == headerRows) hide[header] = true;
+            WarnOnce("its rows are not grouped the way this tweak expects; nothing is hidden");
+            if (_takenOut != null) PutBack(treeList);
+            return;
         }
 
-        for (var i = 0; i < items.Length; i++)
+        var key = string.Concat(hide.Select(h => h ? '1' : '0'));
+        if (_takenOut?.Key == key) return;
+        if (_takenOut == null && !hide.Contains(true)) return;
+
+        if (_takenOut != null) PutBackRows(treeList);
+        if (hide.Contains(true)) TakeOut(treeList, all, hide, key);
+        LayOut(treeList);
+    }
+
+    private static nint[] RowsOf(AtkComponentTreeList* treeList)
+    {
+        var items = treeList->Items.AsSpan();
+        var rows = new nint[items.Length];
+        for (var i = 0; i < items.Length; i++) rows[i] = (nint)items[i].Value;
+        return rows;
+    }
+
+    /// <summary>
+    /// The rows to hide: the ones the options leave out, a group when none of its rows is left (header and all), and a
+    /// section header with no row left under it. Null when the rows are not grouped as expected (nested groups...).
+    /// </summary>
+    private bool[]? WhatToHide(nint[] all)
+    {
+        var hide = new bool[all.Length];
+        var groups = new List<(int Start, int End)>();
+        uint sectionCraftType = 0;
+        var groupStart = -1;
+        var section = -1;
+        int sectionRows = 0, sectionHidden = 0;
+
+        void CloseSection()
         {
-            var item = items[i].Value;
-            if (item == null) continue;
+            if (section >= 0 && sectionRows > 0 && sectionHidden == sectionRows) hide[section] = true;
+            section = -1;
+        }
+
+        for (var i = 0; i < all.Length; i++)
+        {
+            var item = (AtkComponentTreeListItem*)all[i];
+            if (item == null) return null;
 
             if (IsHeader(item))
             {
-                CloseHeader();
-                header = i;
-                headerRows = headerHidden = 0;
+                if ((item->Type & TreeListItemType.LastItemInGroup) != 0) return null;
+                CloseSection();
+                if ((item->Type & TreeListItemType.Group) != 0)
+                {
+                    if (groupStart >= 0) return null;
+                    groupStart = i;
+                }
+                section = i;
+                sectionRows = sectionHidden = 0;
                 if (_craftTypes.TryGetValue(ReadText(item), out var craftType))
                     sectionCraftType = craftType;
                 continue;
             }
 
-            headerRows++;
+            sectionRows++;
             if (ShouldHide(sectionCraftType, ReadText(item)))
             {
                 hide[i] = true;
-                headerHidden++;
+                sectionHidden++;
+            }
+
+            if ((item->Type & TreeListItemType.LastItemInGroup) != 0)
+            {
+                if (groupStart < 0) return null;
+                CloseSection();
+                groups.Add((groupStart, i));
+                groupStart = -1;
             }
         }
-        CloseHeader();
+        CloseSection();
+        if (groupStart >= 0) groups.Add((groupStart, all.Length - 1)); // the last group may run to the end unmarked
 
-        var changed = false;
-        for (var i = 0; i < items.Length; i++)
+        // A group stays or goes whole: its header goes only with every row in it, and stays while any row does.
+        foreach (var (start, end) in groups)
         {
-            var item = items[i].Value;
-            if (item == null) continue;
+            var anyRowLeft = false;
+            for (var i = start + 1; i <= end && !anyRowLeft; i++)
+                anyRowLeft = !hide[i] && !IsHeader((AtkComponentTreeListItem*)all[i]);
 
-            if (hide[i] && !item->IsHidden)
+            if (!anyRowLeft)
+                for (var i = start; i <= end; i++) hide[i] = true;
+            else
+                hide[start] = false;
+        }
+        return hide;
+    }
+
+    private void TakeOut(AtkComponentTreeList* treeList, nint[] all, bool[] hide, string key)
+    {
+        var shown = all.Where((_, i) => !hide[i]).ToArray();
+        var taken = new TakenOut
+        {
+            List  = (nint)treeList,
+            First = (nint)treeList->Items.First,
+            All   = all,
+            Shown = shown,
+            Key   = key,
+        };
+
+        // The last row of a group closes it: when that row goes, the last row left in the group takes its mark.
+        for (var i = 0; i < all.Length; i++)
+        {
+            var item = (AtkComponentTreeListItem*)all[i];
+            if (!hide[i] || (item->Type & TreeListItemType.LastItemInGroup) == 0) continue;
+
+            for (var j = i - 1; j >= 0; j--)
             {
-                item->IsHidden = true;
-                _hiddenByUs.Add((nint)item);
-                changed = true;
-            }
-            else if (!hide[i] && _hiddenByUs.Remove((nint)item))
-            {
-                item->IsHidden = false;
-                changed = true;
+                if (hide[j]) continue;
+                var before = (AtkComponentTreeListItem*)all[j];
+                if ((before->Type & TreeListItemType.Group) == 0)
+                {
+                    taken.Retyped.Add((all[j], before->Type));
+                    before->Type |= TreeListItemType.LastItemInGroup;
+                }
+                break; // the group's own header is the row before: the group went whole, nothing to move
             }
         }
 
-        if (!changed)
+        var first = (nint*)treeList->Items.First;
+        for (var i = 0; i < shown.Length; i++) first[i] = shown[i];
+        treeList->Items.Last = (Pointer<AtkComponentTreeListItem>*)(first + shown.Length);
+
+        if (treeList->ItemCount == all.Length)
         {
-            _refreshStreak = 0;
+            taken.ItemCount = treeList->ItemCount;
+            treeList->ItemCount = (uint)shown.Length;
+        }
+
+        _takenOut = taken;
+    }
+
+    /// <summary>Whether the list's vector is still the one this tweak left: same memory, same rows, same count.</summary>
+    private static bool IsAsLeft(AtkComponentTreeList* treeList, TakenOut taken)
+    {
+        var first = (nint*)treeList->Items.First;
+        if ((nint)first != taken.First) return false;
+        if ((nint*)treeList->Items.Last - first != taken.Shown.Length) return false;
+        if ((nint*)treeList->Items.End - first < taken.All.Length) return false;
+        if (taken.ItemCount != null && treeList->ItemCount != taken.Shown.Length) return false;
+        for (var i = 0; i < taken.Shown.Length; i++)
+            if (first[i] != taken.Shown[i]) return false;
+        return true;
+    }
+
+    /// <summary>Puts every row back in its place and lays the list out again.</summary>
+    private void PutBack(AtkComponentTreeList* treeList)
+    {
+        PutBackRows(treeList);
+        LayOut(treeList);
+    }
+
+    private void PutBackRows(AtkComponentTreeList* treeList)
+    {
+        if (_takenOut is not { } taken) return;
+        if (taken.List != (nint)treeList || !IsAsLeft(treeList, taken))
+        {
+            LetGo("the window changed its list");
             return;
         }
 
-        treeList->LayoutRefreshPending = true;
-        if (++_refreshStreak > MaxRefreshStreak)
-        {
-            Svc.Log.Warning("{addon}: the list keeps showing the rows hidden by {tweak}; hiding stops until the window opens again.", AddonName, Name);
-            _hidingGaveUp = true;
-            ShowHiddenRows(treeList);
-        }
+        foreach (var (item, type) in taken.Retyped)
+            ((AtkComponentTreeListItem*)item)->Type = type;
+
+        var first = (nint*)treeList->Items.First;
+        for (var i = 0; i < taken.All.Length; i++) first[i] = taken.All[i];
+        treeList->Items.Last = (Pointer<AtkComponentTreeListItem>*)(first + taken.All.Length);
+        if (taken.ItemCount is { } count) treeList->ItemCount = count;
+
+        _takenOut = null;
     }
 
-    /// <summary>Gives back the rows this tweak hid (only rows still in the list: the pointers are never followed).</summary>
-    private void ShowHiddenRows(AtkComponentTreeList* treeList)
+    /// <summary>Forgets the rows taken out without touching the list (it is not the one they came from anymore).</summary>
+    private void LetGo(string why)
     {
-        var changed = false;
-        foreach (var entry in treeList->Items.AsSpan())
+        if (_takenOut == null) return;
+        Svc.Log.Warning("{addon}: {why}; {count} hidden rows are left out of it.", AddonName, why, _takenOut.All.Length - _takenOut.Shown.Length);
+        _takenOut = null;
+    }
+
+    /// <summary>
+    /// Lays the list out again the way the game does after opening a group: heights, scroll and rows. Called with no
+    /// group it opens none, unless the list keeps a single group open; then the one open now is passed, so it stays.
+    /// </summary>
+    private static void LayOut(AtkComponentTreeList* treeList)
+    {
+        if (!CanLayOut) return;
+
+        AtkComponentTreeListItem* keep = null;
+        if (*((byte*)treeList + ExclusiveGroupsOffset) != 0)
         {
-            var item = entry.Value;
-            if (item == null || !_hiddenByUs.Contains((nint)item)) continue;
-            item->IsHidden = false;
-            changed = true;
+            foreach (var entry in treeList->Items.AsSpan())
+            {
+                var item = entry.Value;
+                if (item != null && (item->Type & TreeListItemType.Group) != 0 && ((byte)item->State & 0x0F) != 0)
+                {
+                    keep = item;
+                    break;
+                }
+            }
         }
 
-        _hiddenByUs.Clear();
-        if (changed) treeList->LayoutRefreshPending = true;
+        treeList->ExpandGroupExclusively(keep, false);
+    }
+
+    private void WarnOnce(string what)
+    {
+        if (_hidingWarned) return;
+        _hidingWarned = true;
+        Svc.Log.Warning("{addon}: {what}.", AddonName, what);
     }
 
     /// <summary>Whether the options hide a row: crafted, or not counting for the crafting log. Unknown rows stay.</summary>
