@@ -34,6 +34,12 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.5.3", "2026-11-08",
+            "Goblin Battle Text shows the right icon for Salt and Darkness and keeps working when a hook can't be placed.",
+            [
+                "Fix: Goblin Battle Text showed the game's blank icon for Salt and Darkness and other actions whose hit comes from a second, hidden action — they now borrow the icon of your action with the same name",
+                "Fix: Goblin Battle Text stopped with a list of memory addresses when Dalamud couldn't place one of its hooks — the two optional ones now just turn off their part, and the main one explains what happened and what to do",
+            ]),
         new("1.5.2", "2026-11-08",
             "Pinch no longer follows absurd listings; Recipes List can hide crafted recipes; Crafting Materials and Achievements fixes.",
             [

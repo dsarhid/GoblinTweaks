@@ -8,6 +8,12 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.5.3"] = (
+            "Goblin Battle Text muestra el ícono correcto de Salt and Darkness y sigue andando cuando no puede poner un hook.",
+            [
+                "Fix: Goblin Battle Text mostraba el ícono vacío del juego en Salt and Darkness y otras acciones cuyo golpe viene de una segunda acción oculta — ahora usan el ícono de tu acción con el mismo nombre",
+                "Fix: Goblin Battle Text se frenaba con una lista de direcciones de memoria cuando Dalamud no podía poner uno de sus hooks — los dos opcionales ahora solo apagan su parte, y el principal explica qué pasó y qué hacer",
+            ]),
         ["1.5.2"] = (
             "Pinch ya no sigue anuncios absurdos; Recipes List puede ocultar recetas fabricadas; arreglos en Crafting Materials y Logros.",
             [

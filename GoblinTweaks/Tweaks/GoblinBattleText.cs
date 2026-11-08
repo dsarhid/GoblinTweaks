@@ -757,25 +757,27 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
         _addon = NewAddon();
 
-        _hook = Svc.GameInterop.HookFromAddress<BattleLog.Delegates.AddToScreenLogWithScreenLogKind>((nint)address, OnScreenLog);
-        _hook.Enable();
+        try
+        {
+            _hook = Svc.GameInterop.HookFromAddress<BattleLog.Delegates.AddToScreenLogWithScreenLogKind>((nint)address, OnScreenLog);
+            _hook.Enable();
+        }
+        catch (Exception ex)
+        {
+            // Dalamud follows a jump that something outside Dalamud left at the start of the function, and finds no
+            // free memory near where it lands. The raw message is a list of addresses; the log keeps it.
+            Svc.Log.Error(ex, "GoblinBattleText: could not hook the fly text function.");
+            throw new InvalidOperationException(T("Error.NoHook"), ex);
+        }
 
         // Actions that deal no damage make no fly text: they are read from the effects of each action instead.
         // Without the function, only that kind of event is missing.
-        var actionAddress = ActionEffectHandler.Addresses.Receive.Value;
-        if (actionAddress != 0)
-        {
-            _actionHook = Svc.GameInterop.HookFromAddress<ActionEffectHandler.Delegates.Receive>((nint)actionAddress, OnActionEffect);
-            _actionHook.Enable();
-        }
+        _actionHook = OptionalHook<ActionEffectHandler.Delegates.Receive>(
+            ActionEffectHandler.Addresses.Receive.Value, OnActionEffect, "events of actions that deal no damage are missing");
 
         // Without this one, a tick is only told apart by the statuses of whoever it is on.
-        var tickAddress = StatusManager.Addresses.ProcessHotDot.Value;
-        if (tickAddress != 0)
-        {
-            _tickHook = Svc.GameInterop.HookFromAddress<StatusManager.Delegates.ProcessHotDot>((nint)tickAddress, OnTick);
-            _tickHook.Enable();
-        }
+        _tickHook = OptionalHook<StatusManager.Delegates.ProcessHotDot>(
+            StatusManager.Addresses.ProcessHotDot.Value, OnTick, "ticks are told apart by statuses only");
 
         _shield = new ShieldDisplay(() => Settings.ShieldMode, () => Preview, () => Settings.HpOutlineEnabled ? Settings.Colors.HpOutline : null, ReportFailure);
         _shield.Start();
@@ -785,6 +787,30 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         _marksmansSpite.Reset();
 
         Svc.Framework.Update += OnUpdate;
+    }
+
+    /// <summary>A hook the tweak can live without: when it can't be made, the tweak goes on and says what is missing.</summary>
+    private static Hook<T>? OptionalHook<T>(nint address, T detour, string without) where T : Delegate
+    {
+        if (address == 0)
+        {
+            Svc.Log.Warning("GoblinBattleText: a game function was not found (game updated?); {without}.", without);
+            return null;
+        }
+
+        Hook<T>? hook = null;
+        try
+        {
+            hook = Svc.GameInterop.HookFromAddress<T>(address, detour);
+            hook.Enable();
+            return hook;
+        }
+        catch (Exception ex)
+        {
+            hook?.Dispose();
+            Svc.Log.Warning(ex, "GoblinBattleText: a hook could not be made this session; {without}.", without);
+            return null;
+        }
     }
 
     protected internal override void Disable()
@@ -2256,13 +2282,45 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         if (!_actions.TryGetValue(actionId, out var action))
         {
             // Auto-attacks show no icon, whoever makes them: an enemy's come as a normal hit of an "Attack" action.
-            action = Svc.Data.GetExcelSheet<LuminaAction>().TryGetRow(actionId, out var row)
-                ? (row.Name.ExtractText(), row.ActionCategory.RowId == AutoAttackCategory ? 0u : row.Icon)
-                : (string.Empty, 0u);
+            // Some actions hit through a second row of their own with the game's blank icon (Salt and Darkness is
+            // pressed as 25755 and hits as 25756): that row wears the icon of the player action of the same name.
+            if (Svc.Data.GetExcelSheet<LuminaAction>().TryGetRow(actionId, out var row))
+            {
+                var name = row.Name.ExtractText();
+                var icon = row.ActionCategory.RowId == AutoAttackCategory ? 0u : (uint)row.Icon;
+                if (icon == BlankActionIcon && !row.IsPlayerAction && PlayerActionIcon(name, row.IsPvP) is { } own)
+                    icon = own;
+                action = (name, icon);
+            }
+            else
+            {
+                action = (string.Empty, 0u);
+            }
             _actions[actionId] = action;
         }
 
         return (action.Name.Length == 0 ? null : action.Name, action.IconId);
+    }
+
+    // The icon the game gives the actions that have none of their own.
+    private const uint BlankActionIcon = 405;
+
+    private Dictionary<(string Name, bool PvP), uint>? _playerActionIcons;
+
+    /// <summary>The icon of the player action with this name (of PvP or not), when it has one; null if there is none.</summary>
+    private uint? PlayerActionIcon(string name, bool pvp)
+    {
+        if (name.Length == 0) return null;
+
+        if (_playerActionIcons is null)
+        {
+            _playerActionIcons = [];
+            foreach (var action in Svc.Data.GetExcelSheet<LuminaAction>())
+                if (action.IsPlayerAction && action.Icon != 0 && action.Icon != BlankActionIcon)
+                    _playerActionIcons.TryAdd((action.Name.ExtractText(), action.IsPvP), action.Icon);
+        }
+
+        return _playerActionIcons.TryGetValue((name, pvp), out var icon) ? icon : null;
     }
 
     private readonly HashSet<string> _unnamedTicksLogged = [];
