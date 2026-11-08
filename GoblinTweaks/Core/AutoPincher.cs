@@ -171,8 +171,8 @@ internal sealed unsafe class AutoPincher
 
             case Step.WaitPriceWindow:
                 if (!Ready(PriceAddon, out var price)) return;
+                if (!ReadItem((AddonRetainerSell*)price, out _expectedId, out _expectedHq)) return; // its item is not shown yet
                 _currentPrice = ((AddonRetainerSell*)price)->AskingPrice->Value;
-                ReadItem((AddonRetainerSell*)price, out _expectedId, out _expectedHq);
 
                 // An item on the "keep my price" list: left as it is, without even searching the Market Board.
                 if (_rules().KeepPrice.Contains(_expectedId))
@@ -258,10 +258,12 @@ internal sealed unsafe class AutoPincher
         return string.IsNullOrWhiteSpace(name) ? itemId.ToString() : name.Replace('|', '/');
     }
 
+    private const char HqSymbol = ''; // the HQ symbol in the game font
+
     private static bool NameHasHq(AddonRetainerSell* price)
     {
         var name = price->ItemName == null ? string.Empty : price->ItemName->NodeText.ToString();
-        return name.Contains(''); // the HQ symbol in the game font
+        return name.Contains(HqSymbol);
     }
 
     /// <summary>Number of stacks the retainer's market container holds right now.</summary>
@@ -281,17 +283,42 @@ internal sealed unsafe class AutoPincher
         return count;
     }
 
-    /// <summary>The item id of an open price window; HQ items carry an offset of 1,000,000.</summary>
-    internal static void ReadItem(AddonRetainerSell* window, out uint itemId, out bool hq)
+    /// <summary>
+    /// The item of an open price window, by the name it shows: the first value of the window is the item's icon,
+    /// not its id. False while the name is not there yet. The id is 0 when no item of the Market Board has that
+    /// name; then the search is taken for whatever item the game asks for, and no "keep my price" applies.
+    /// </summary>
+    internal static bool ReadItem(AddonRetainerSell* window, out uint itemId, out bool hq)
     {
         itemId = 0;
         hq     = false;
-        if (window->AtkUnitBase.AtkValuesCount == 0) return;
 
-        var raw = window->AtkUnitBase.AtkValues[0];
-        var id  = raw.Type == AtkValueType.Int ? (uint)raw.Int : raw.UInt;
-        hq      = id >= 1_000_000;
-        itemId  = hq ? id - 1_000_000 : id;
+        var shown = window->ItemName == null ? string.Empty : window->ItemName->NodeText.ToString();
+        if (shown.Length == 0) return false;
+
+        hq = shown.Contains(HqSymbol);
+        var name = shown.Replace(HqSymbol.ToString(), string.Empty).Trim();
+        itemId = MarketItemIds().TryGetValue(name, out var id) ? id : 0;
+        return true;
+    }
+
+    private static Dictionary<string, uint>? _marketItemIds;
+
+    /// <summary>The items that can be sold on the Market Board, by their name in the language of the game.</summary>
+    private static Dictionary<string, uint> MarketItemIds()
+    {
+        if (_marketItemIds is not null) return _marketItemIds;
+
+        var ids = new Dictionary<string, uint>(StringComparer.Ordinal);
+        foreach (var item in Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>())
+        {
+            if (item.ItemSearchCategory.RowId == 0) continue;
+
+            var name = item.Name.ExtractText();
+            if (name.Length > 0) ids.TryAdd(name, item.RowId);
+        }
+
+        return _marketItemIds = ids;
     }
 
     /// <summary>Extra detail for timeout messages, to see what the game was doing.</summary>

@@ -311,6 +311,8 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
 
     // ── The loot list ─────────────────────────────────────────────────────────
 
+    private DateTime _nextPartyCheck;
+
     private void OnUpdate(IFramework _)
     {
         try
@@ -348,6 +350,13 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
             {
                 entry.InList = entry.SeenTick == _tick;
                 if (!entry.Resolved && !entry.InList) _rolls.Left(entry);
+            }
+
+            // Whoever leaves the party while rolls are open is no longer waited for. Once a second is enough.
+            if (_rolls.AnyOpen && DateTime.UtcNow >= _nextPartyCheck)
+            {
+                _nextPartyCheck = DateTime.UtcNow.AddSeconds(1);
+                _rolls.Party(Roster().Select(player => player.Name).ToHashSet());
             }
 
             _rolls.Sweep();

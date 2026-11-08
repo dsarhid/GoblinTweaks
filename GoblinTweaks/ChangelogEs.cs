@@ -8,6 +8,17 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.5.5"] = (
+            "Pinch vuelve a andar; Goblin Loot saca a los que se fueron; Damage Done cuenta las partes del jefe; arreglos en Battle Text.",
+            [
+                "Fix: Auto Goblin Retainer Pinch paraba con \"el juego no respondió\" — tomaba el ícono del ítem por el ítem, así que la búsqueda del Market Board nunca coincidía; ahora reconoce el ítem por su nombre, y \"Mantener mi precio\" también anda",
+                "Fix: Goblin Loot seguía esperando a los jugadores que se fueron de la duty durante una tirada — quien deja el grupo sin elegir sale de las tiradas abiertas",
+                "Fix: Goblin Damage Done ignoraba el daño a las partes de un jefe (Golem Soulstone junto al Temple Guardian) — ahora cuenta todo lo que el juego marca como enemigo",
+                "Fix: Goblin Battle Text mostraba sin nombre el daño con el tiempo de Goldbile (Aurum Vale) y de otros efectos de duty — ahora reconoce cómo los describe el juego",
+                "Fix: Goblin Battle Text mostraba los ticks de daño con el tiempo (Thunder...) sin el ícono de físico/mágico — toman el tipo de la acción de la que vienen",
+                "Fix: Goblin Battle Text mostraba Glittering Ruby, Topaz y Emerald de los carbuncles con el ícono vacío y la gema dos veces (\"Glittering Ruby Ruby Carbuncle\") — usan el ícono de su invocación y el nombre queda \"Glittering Ruby Carbuncle\"",
+                "Fix: Goblin Battle Text mostraba los ataques enemigos sin nombre como un número solo — ahora dicen quién los hizo",
+            ]),
         ["1.5.4"] = (
             "Recipes List ahora oculta de verdad las recetas fabricadas y las que no son del crafting log.",
             [

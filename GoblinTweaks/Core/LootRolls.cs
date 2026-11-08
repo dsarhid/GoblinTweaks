@@ -291,6 +291,40 @@ internal sealed class LootRolls(Func<List<LootPlayer>> roster, Func<uint, (strin
     /// <summary>The item is in the loot list.</summary>
     public void Present(LootEntry entry) => entry.Gone = null;
 
+    /// <summary>How long a player may be out of the party before they are taken out of the open rolls.</summary>
+    private static readonly TimeSpan PartyLeftGrace = TimeSpan.FromSeconds(3);
+
+    // Since when each player who was in an open roll is no longer in the party.
+    private readonly Dictionary<string, DateTime> _outOfParty = [];
+
+    /// <summary>
+    /// Who is in the party now. Whoever left it (the duty, mostly) without choosing is taken out of the rolls still
+    /// open: they will never choose, and the game does not count them. Who had already chosen stays. A player is
+    /// taken out only after being gone for a moment, not for a party list that empties as the zone loads.
+    /// </summary>
+    public void Party(IReadOnlySet<string> names)
+    {
+        var now = DateTime.UtcNow;
+        foreach (var name in _outOfParty.Keys.Where(names.Contains).ToList())
+            _outOfParty.Remove(name);
+
+        foreach (var entry in Entries)
+        {
+            if (entry.Resolved) continue;
+
+            var removed = entry.Players.RemoveAll(player => !player.IsMe && player.Pending && !names.Contains(player.Name) && GoneLongEnough(player.Name, now));
+            if (removed > 0) Version++;
+        }
+    }
+
+    private bool GoneLongEnough(string name, DateTime now)
+    {
+        if (_outOfParty.TryGetValue(name, out var since)) return now - since >= PartyLeftGrace;
+
+        _outOfParty[name] = now;
+        return false;
+    }
+
     /// <summary>Closes the rolls of the items that left the list without anyone getting them.</summary>
     public void Sweep()
     {

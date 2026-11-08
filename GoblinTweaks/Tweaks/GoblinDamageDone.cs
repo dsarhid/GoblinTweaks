@@ -1181,7 +1181,11 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
     private static bool IsHostile(GameObjectManager* manager, GameObject* target)
     {
         if (target == null || target->ObjectKind != ObjectKind.BattleNpc) return false;
-        if (target->SubKind == (byte)BattleNpcSubKind.Combatant) return true;
+        if (target->SubKind is (byte)BattleNpcSubKind.Combatant or (byte)BattleNpcSubKind.BNpcPart) return true;
+
+        // What the game itself marks as an enemy, whatever its kind: the parts of a boss that fight beside it
+        // (Golem Soulstone with the Temple Guardian) are not all combatants.
+        if (((Character*)target)->IsHostile) return true;
 
         var owner = target->OwnerId;
         if (manager == null || owner is 0 or NoEntity) return false;

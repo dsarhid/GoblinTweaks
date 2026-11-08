@@ -34,6 +34,17 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.5.5", "2026-11-08",
+            "Pinch works again; Goblin Loot drops players who left; Damage Done counts boss parts; Battle Text fixes.",
+            [
+                "Fix: Auto Goblin Retainer Pinch stopped with \"the game did not respond\" — it took the item's icon for the item, so the Market Board search never matched; it now knows the item by its name, and \"Keep my price\" works too",
+                "Fix: Goblin Loot kept waiting for players who left the duty during a roll — whoever leaves the party without choosing is taken out of the open rolls",
+                "Fix: Goblin Damage Done ignored the damage to the parts of a boss (Golem Soulstone beside the Temple Guardian) — anything the game marks as an enemy now counts",
+                "Fix: Goblin Battle Text showed damage over time from Goldbile (Aurum Vale) and other duty effects with no name — their own wording is now recognized",
+                "Fix: Goblin Battle Text showed damage over time ticks (Thunder...) without the physical/magical icon — they take the type of the action they come from",
+                "Fix: Goblin Battle Text showed the carbuncles' Glittering Ruby, Topaz and Emerald with a blank icon and the gem twice (\"Glittering Ruby Ruby Carbuncle\") — they wear the icon of their summon and the name reads \"Glittering Ruby Carbuncle\"",
+                "Fix: Goblin Battle Text showed enemy attacks that have no name as a bare number — they now say who made them",
+            ]),
         new("1.5.4", "2026-11-08",
             "Recipes List now really hides crafted recipes and the ones outside the crafting log.",
             [

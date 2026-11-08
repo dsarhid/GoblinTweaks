@@ -1385,7 +1385,10 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
         // An auto-attack says who makes it when it is not you: your chocobo or pet, or the enemy hitting you.
         // The game gives them as auto-attacks, or as a hit of an action of that kind, which has no icon here.
-        var auto     = (autoAttack && !tick) || (actionKind == ActionKindAction && action.Name is not null && action.IconId == 0);
+        // An action with no name in the game data (the attacks of some bosses: the chat says only "You take N damage")
+        // would leave the message with nothing but the amount: it says who makes it, as an auto-attack does.
+        var unnamed  = actionKind == ActionKindAction && action.Name is { Length: 0 };
+        var auto     = (autoAttack && !tick) || (actionKind == ActionKindAction && action.Name is not null && (action.IconId == 0 || unnamed));
         // What a pet of yours does says so too, whatever it is: its actions end with its name, and its
         // auto-attacks, which come with no action, are called as yours are.
         var byPet    = !tick && !healTick && IsMyPet(player, from);
@@ -1442,11 +1445,13 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             Label      = label,
             ActionName = healedAfterName      ? $"{action.Name ?? over.Name} ({healed})".TrimStart()
                        : attacker is null     ? action.Name ?? over.Name
-                       : action.Name is null  ? petAttack ?? attacker
-                       : $"{action.Name} {attacker}",
+                       : string.IsNullOrEmpty(action.Name) ? petAttack ?? attacker
+                       : $"{action.Name}{WithoutOverlap(action.Name, attacker)}",
             IconId     = over.IconId != 0 ? over.IconId : shadowIcon != 0 ? shadowIcon : (autoAttack && countering == 0) || fromNpc ? 0 : action.IconId,
             IconIsStatus = over.IconId != 0,
-            TypeIconId = damage && damageType is >= 1 and <= DamageTypeCount ? DamageTypeIconBase + (uint)damageType : 0,
+            TypeIconId = damage && (damageType is >= 1 and <= DamageTypeCount ? damageType : tick ? TickDamageType(over.Name) : 0) is > 0 and var damageKind
+                ? DamageTypeIconBase + (uint)damageKind
+                : 0,
             // An estimated share carries no mark: the game's fonts have no "~", and draw another sign in its place.
             Prefix     = heal ? "+" : damage && !outgoing ? "-" : string.Empty,
 
@@ -2021,11 +2026,17 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         if (Svc.Data.GetExcelSheet<LuminaStatus>(Dalamud.Game.ClientLanguage.English).TryGetRow(statusId, out var row))
         {
             var description = row.Description.ExtractText();
-            // A few say it as losing HP instead: "Bleeding HP over time" is what Choco Beak leaves, and the
-            // strong poisons of some enemies are "slowly draining HP".
+            // A few say it as losing HP instead: "Bleeding HP over time" is what Choco Beak leaves, the strong
+            // poisons of some enemies are "slowly draining HP", and some duty effects have words of their own:
+            // Goldbile in the Aurum Vale is "gradual HP loss", The Worm's Curse "damage is taken slowly over time",
+            // Binding Soul Snare "taking damage ... over time", Connectivity "slowly leeching your life essence",
+            // Unshakable Loyalty "health is waning over time".
             if (row.StatusCategory == DetrimentalStatus
                 && (description.Contains("damage over time", StringComparison.OrdinalIgnoreCase) || description.Contains("bleeding HP over time", StringComparison.OrdinalIgnoreCase)
-                    || description.Contains("draining HP", StringComparison.OrdinalIgnoreCase)))
+                    || description.Contains("draining HP", StringComparison.OrdinalIgnoreCase) || description.Contains("HP loss", StringComparison.OrdinalIgnoreCase)
+                    || description.Contains("leeching your life", StringComparison.OrdinalIgnoreCase) || description.Contains("waning over time", StringComparison.OrdinalIgnoreCase)
+                    || ((description.Contains("damage is taken", StringComparison.OrdinalIgnoreCase) || description.Contains("taking damage", StringComparison.OrdinalIgnoreCase))
+                        && description.Contains("over time", StringComparison.OrdinalIgnoreCase))))
                 kind = OverTime.Damage;
             // Duty effects like Brilliant Conviction say it their own way: "regenerates HP", "recovers HP over time".
             else if (row.StatusCategory == BeneficialStatus
@@ -2290,6 +2301,11 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                 var icon = row.ActionCategory.RowId == AutoAttackCategory ? 0u : (uint)row.Icon;
                 if (icon == BlankActionIcon && !row.IsPlayerAction && PlayerActionIcon(name, row.IsPvP) is { } own)
                     icon = own;
+                // The gem attacks of the carbuncles (Glittering Ruby, Topaz, Emerald) have no player twin: they wear
+                // the icon of the summon that makes them (Summon Ruby, Topaz, Emerald).
+                else if (icon == BlankActionIcon && GemAttackSummons.TryGetValue(actionId, out var summonId)
+                         && Svc.Data.GetExcelSheet<LuminaAction>().TryGetRow(summonId, out var summon))
+                    icon = summon.Icon;
                 action = (name, icon);
             }
             else
@@ -2304,6 +2320,56 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
     // The icon the game gives the actions that have none of their own.
     private const uint BlankActionIcon = 405;
+
+    private Dictionary<string, int>? _actionDamageTypes;
+
+    /// <summary>
+    /// The damage type of a tick, which the game does not send: that of the player action named as its effect
+    /// (Thunder, Dia, Demolish...), 1 physical or 2 magical. With several effects ticking, the first one's. 0 when
+    /// no action has the name.
+    /// </summary>
+    private int TickDamageType(string? names)
+    {
+        if (names is null) return 0;
+
+        if (_actionDamageTypes is null)
+        {
+            _actionDamageTypes = [];
+            foreach (var action in Svc.Data.GetExcelSheet<LuminaAction>())
+            {
+                if (!action.IsPlayerAction || action.IsPvP) continue;
+
+                // The attack type of the game: 5 is magic, 1 to 4 (slashing, piercing, blunt, shot) and the weaponskills
+                // that have none (-1) are physical; breath, sound and limit breaks are told by nothing here.
+                var attack = (int)action.AttackType.RowId;
+                var type   = attack == 5 ? 2 : attack is -1 or (>= 1 and <= 4) ? 1 : 0;
+                if (type != 0) _actionDamageTypes.TryAdd(action.Name.ExtractText(), type);
+            }
+        }
+
+        var first = names.Split(" + ")[0];
+        return _actionDamageTypes.TryGetValue(first, out var found) ? found : 0;
+    }
+
+    // Glittering Ruby, Topaz and Emerald, by the summon that makes the carbuncle use them.
+    private static readonly Dictionary<uint, uint> GemAttackSummons = new() { [25843] = 25802, [25844] = 25803, [25845] = 25804 };
+
+    /// <summary>
+    /// The name of a pet after its action, without the words the action already ends with: "Glittering Ruby" by
+    /// Ruby Carbuncle is "Glittering Ruby Carbuncle", not "Glittering Ruby Ruby Carbuncle". With a space before it.
+    /// </summary>
+    private static string WithoutOverlap(string action, string attacker)
+    {
+        var words = attacker.Split(' ');
+        for (var take = words.Length - 1; take > 0; take--)
+        {
+            var start = string.Join(' ', words, 0, take);
+            if (action.EndsWith(" " + start, StringComparison.OrdinalIgnoreCase))
+                return " " + string.Join(' ', words, take, words.Length - take);
+        }
+
+        return " " + attacker;
+    }
 
     private Dictionary<(string Name, bool PvP), uint>? _playerActionIcons;
 
