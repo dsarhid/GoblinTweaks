@@ -44,5 +44,7 @@ internal sealed class CraftingSettingsAddon : SettingsPanelAddon
         Number(Tweak.Text("NearCompleteMissing"), Tweak.Text("NearCompleteMissing.Help"),
             0, CraftingMaterials.MaxNearCompleteMissing, 1, options.NearCompleteMissing,
             value => { options.NearCompleteMissing = value; Tweak.SaveCurrent(); });
+        Toggle(Tweak.Text("MissingCountsSubRecipes"), Tweak.Text("MissingCountsSubRecipes.Help"), options.MissingCountsSubRecipes,
+            on => { options.MissingCountsSubRecipes = on; Tweak.SaveCurrent(); });
     }
 }

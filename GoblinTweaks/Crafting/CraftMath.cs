@@ -125,6 +125,14 @@ public static class CraftMath
     }
 
     /// <summary>
+    /// How many different things one craft of a recipe still lacks once every craftable ingredient you don't have is
+    /// broken down into what it is made of (what you own used first): the items you would have to go and get.
+    /// </summary>
+    public static int MissingBaseMaterials(uint recipeId, ICraftData data)
+        => BaseMaterials([new CartItem { RecipeId = recipeId }], data, deductOwned: true)
+            .Count(need => data.Owned(need.ItemId) < need.Amount);
+
+    /// <summary>
     /// What buying the given quantities costs. <paramref name="unitPrice"/> returns null while a price is loading and
     /// 0 or less when the item has no price; those items are left out of the sum and flagged.
     /// </summary>

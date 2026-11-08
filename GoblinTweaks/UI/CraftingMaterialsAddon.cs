@@ -651,6 +651,22 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         RecipeRowNode.CartVersion++;
     }
 
+    // How far a hidden node of My List is moved out of the window.
+    private const float ParkedOffset = 10000f;
+
+    /// <summary>
+    /// Shows or hides a node of My List. A hidden native node still takes the mouse, and My List sits on top of the
+    /// ingredient tree (attached after it): hidden in place, its rows ate every click on the ingredients. So while
+    /// hidden it waits outside the window.
+    /// </summary>
+    private static void SetShown(NodeBase node, bool show)
+    {
+        node.IsVisible = show;
+        var parked = node.Position.X >= ParkedOffset / 2f;
+        if (show == parked) // shown but still outside, or hidden but still in place
+            node.Position += new Vector2(show ? -ParkedOffset : ParkedOffset, 0f);
+    }
+
     /// <summary>Shows the totals of My List in the place of the recipe details, or puts the details back.</summary>
     private void ShowCartPanel(bool show)
     {
@@ -667,7 +683,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         }
 
         foreach (var node in new NodeBase?[] { _cartTitle, _cartDeductCheck, _clearCartBtn, _cartColItem, _cartColQty, _cartColPrice, _cartList, _cartTotal })
-            if (node is not null) node.IsVisible = show && !empty;
+            if (node is not null) SetShown(node, show && !empty);
         if (_cartEmpty is not null) _cartEmpty.IsVisible = show && empty;
 
         if (!show)
@@ -929,7 +945,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
                 SortStatus  => _filtered.OrderBy(e => (int)e.Status).ThenBy(e => e.Name),
                 SortLevel   => _filtered.OrderBy(e => e.ItemLevel).ThenBy(e => e.Name),
                 SortCraft   => _filtered.OrderBy(e => e.CraftLevel).ThenBy(e => e.ItemLevel).ThenBy(e => e.Name),
-                SortMissing => _filtered.OrderBy(e => e.MissingCount).ThenBy(e => e.Name),
+                SortMissing => SortByMissing(_filtered),
                 _           => _filtered.OrderBy(e => e.Name),
             };
             _filtered = ordered.ToList();
@@ -1205,6 +1221,24 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         => data is null ? 0 : data.AveragePrice > 0 ? (long)Math.Round(data.AveragePrice) : data.MinPrice;
 
     // ── Market sort ───────────────────────────────────────────────────────────
+
+    // Fewest missing: what you would still have to go and get, the sub-recipes of the craftable ingredients counted
+    // (an ingredient you can craft from what you own lacks nothing). Ties: fewest direct ingredients missing, so the
+    // recipes you can craft right away come before those that need sub-crafts first. With the option off, only the
+    // direct ingredients count.
+    private IOrderedEnumerable<CraftableEntry> SortByMissing(List<CraftableEntry> source)
+    {
+        if (Tweak is not { } tweak || !tweak.Current.MissingCountsSubRecipes)
+            return source.OrderBy(e => e.MissingCount).ThenBy(e => e.Name);
+
+        var data = tweak.CraftData(_snapshot); // shared: it keeps the recipes it has read
+        foreach (var e in source)
+            e.BaseMissingCount ??= CraftMath.MissingBaseMaterials(e.RecipeId, data);
+
+        return source.OrderBy(e => e.BaseMissingCount ?? e.MissingCount)
+                     .ThenBy(e => e.MissingCount)
+                     .ThenBy(e => e.Name);
+    }
 
     // Sorts by market price (ascending or descending) keeping items with no price data last,
     // regardless of direction.  Items with AveragePrice == 0 (fetched but no listings) are

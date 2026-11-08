@@ -42,7 +42,11 @@ internal unsafe class AchievementsAddon : NativeAddon
     private const float FilterH    = 38f;
     private const float BottomBarH = 34f;
     private const float CategoryW  = 250f;
-    private const float DetailW    = 300f;
+    private const float DetailW    = 350f;
+
+    // The description of the selected achievement: five lines at the normal size, a smaller font when it is longer.
+    private const float SelDescH = 80f;
+    private static readonly (uint Font, uint Spacing)[] SelDescSizes = [(12, 15), (11, 13)];
     private const float Gap        = 6f;
 
     // The tabs.
@@ -112,6 +116,7 @@ internal unsafe class AchievementsAddon : NativeAddon
     private TextNode? _selName;
     private TextNode? _selCategory;
     private TextNode? _selDescription;
+    private uint?     _selDescriptionOf; // achievement whose description it shows (0 = "none selected"); null = to write
     private TextNode? _selReward;
     private TextNode? _selState;
     private TextNode? _selWhen;
@@ -497,39 +502,47 @@ internal unsafe class AchievementsAddon : NativeAddon
 
         Line(new Vector2(pos.X, pos.Y + 86f), size.X);
 
-        // Selected achievement, on a cream card like the ones of the list.
-        Panel(new Vector2(pos.X + 1f, pos.Y + 90f), new Vector2(size.X - 2f, 180f), CardBorder);
-        Panel(new Vector2(pos.X + 3f, pos.Y + 92f), new Vector2(size.X - 6f, 176f), CardCream);
+        // Selected achievement, on a cream card like the ones of the list. The description has room for five lines
+        // (SelDescH), and everything under it is placed from there.
+        const float descY = 146f;
+        _selDescriptionOf = null; // new nodes: written on the next update
+        var under = descY + SelDescH + 6f; // the reward line
+        var cardH = under + 66f - 90f;
+
+        Panel(new Vector2(pos.X + 1f, pos.Y + 90f), new Vector2(size.X - 2f, cardH), CardBorder);
+        Panel(new Vector2(pos.X + 3f, pos.Y + 92f), new Vector2(size.X - 6f, cardH - 4f), CardCream);
         _selIcon = new IconImageNode { FitTexture = true, Position = new Vector2(x + 4f, pos.Y + 98f), Size = new Vector2(40f, 40f) };
         _selIcon.AttachNode(this);
-        _selName     = Label(new Vector2(x + 50f, pos.Y + 98f), w - 50f, 18f, 14, InkName);
-        _selCategory = Label(new Vector2(x + 50f, pos.Y + 120f), w - 50f, 15f, 11, InkMuted);
-        _selDescription = Label(new Vector2(x + 4f, pos.Y + 144f), w - 8f, 58f, 12, InkText, wrap: true);
-        _selReward   = Label(new Vector2(x + 4f, pos.Y + 206f), w - 8f, 15f, 12, CardGold);
-        _selState    = Label(new Vector2(x + 4f, pos.Y + 222f), w - 8f, 15f, 12, InkText);
-        new ColorImageNode { Color = new Vector4(0.20f, 0.14f, 0.08f, 0.30f), Position = new Vector2(x + 4f, pos.Y + 240f), Size = new Vector2(w - 8f, 8f) }.AttachNode(this);
-        _selBar      = new ColorImageNode { Color = BarBlue, Position = new Vector2(x + 4f, pos.Y + 240f), Size = new Vector2(1f, 8f) };
+        _selName     = Label(new Vector2(x + 50f, pos.Y + 98f), w - 50f, 18f, 15, InkName);
+        _selCategory = Label(new Vector2(x + 50f, pos.Y + 120f), w - 50f, 15f, 12, InkMuted);
+        _selDescription = Label(new Vector2(x + 6f, pos.Y + descY), w - 12f, SelDescH, 12, InkText, AlignmentType.TopLeft, wrap: true);
+        _selReward   = Label(new Vector2(x + 6f, pos.Y + under), w - 12f, 16f, 12, CardGold);
+        _selState    = Label(new Vector2(x + 6f, pos.Y + under + 18f), w - 12f, 16f, 12, InkText);
+        new ColorImageNode { Color = new Vector4(0.20f, 0.14f, 0.08f, 0.30f), Position = new Vector2(x + 6f, pos.Y + under + 37f), Size = new Vector2(w - 12f, 8f) }.AttachNode(this);
+        _selBar      = new ColorImageNode { Color = BarBlue, Position = new Vector2(x + 6f, pos.Y + under + 37f), Size = new Vector2(1f, 8f) };
         _selBar.AttachNode(this);
-        _selWhen     = Label(new Vector2(x + 4f, pos.Y + 251f), w - 8f, 15f, 11, InkMuted);
+        _selWhen     = Label(new Vector2(x + 6f, pos.Y + under + 48f), w - 12f, 15f, 11, InkMuted);
 
+        var buttonsY = pos.Y + 90f + cardH + 6f;
         var half = (w - 6f) / 2f;
-        _trackButton = Button(Tweak.Text("Detail.Track"), Tweak.Text("Detail.Track.Help"), new Vector2(x, pos.Y + 272f), half, ToggleSelected);
-        _openButton  = Button(Tweak.Text("Detail.Open"), Tweak.Text("Detail.Open.Help"), new Vector2(x + half + 6f, pos.Y + 272f), half,
+        _trackButton = Button(Tweak.Text("Detail.Track"), Tweak.Text("Detail.Track.Help"), new Vector2(x, buttonsY), half, ToggleSelected);
+        _openButton  = Button(Tweak.Text("Detail.Open"), Tweak.Text("Detail.Open.Help"), new Vector2(x + half + 6f, buttonsY), half,
             () => { if (_selected is not null) Tweak.OpenInGame(_selected.Id); });
 
-        Line(new Vector2(pos.X, pos.Y + 308f), size.X);
+        var toolsY = buttonsY + 38f;
+        Line(new Vector2(pos.X, toolsY), size.X);
 
         // The pinned list.
-        Label(new Vector2(x, pos.Y + 314f), w, 16f, 13, TitleGold).String = Tweak.Text("Tools.Title");
-        Button(Tweak.Text("Tools.Closest"), Tweak.Text("Tools.Closest.Help"), new Vector2(x, pos.Y + 334f), half, () => Tweak.TrackClosest(5));
-        Button(Tweak.Text("Tools.Clear"), Tweak.Text("Tools.Clear.Help"), new Vector2(x + half + 6f, pos.Y + 334f), half, Tweak.ClearTracked);
-        Button(Tweak.Text("Tools.Copy"), Tweak.Text("Tools.Copy.Help"), new Vector2(x, pos.Y + 364f), half, Tweak.CopyList);
-        Button(Tweak.Text("Tools.Paste"), Tweak.Text("Tools.Paste.Help"), new Vector2(x + half + 6f, pos.Y + 364f), half, Tweak.PasteList);
+        Label(new Vector2(x, toolsY + 6f), w, 16f, 13, TitleGold).String = Tweak.Text("Tools.Title");
+        Button(Tweak.Text("Tools.Closest"), Tweak.Text("Tools.Closest.Help"), new Vector2(x, toolsY + 26f), half, () => Tweak.TrackClosest(5));
+        Button(Tweak.Text("Tools.Clear"), Tweak.Text("Tools.Clear.Help"), new Vector2(x + half + 6f, toolsY + 26f), half, Tweak.ClearTracked);
+        Button(Tweak.Text("Tools.Copy"), Tweak.Text("Tools.Copy.Help"), new Vector2(x, toolsY + 56f), half, Tweak.CopyList);
+        Button(Tweak.Text("Tools.Paste"), Tweak.Text("Tools.Paste.Help"), new Vector2(x + half + 6f, toolsY + 56f), half, Tweak.PasteList);
 
         for (var i = 0; i < GoblinAchievements.ListSlots; i++)
         {
             var slot = i;
-            var y = pos.Y + 398f + i * 30f;
+            var y = toolsY + 90f + i * 30f;
             _slotLabels[i] = Label(new Vector2(x, y + 5f), w - 150f, 16f, 12, BodyGrey);
             Button(Tweak.Text("Tools.Save"), Tweak.Text("Tools.Save.Help"), new Vector2(x + w - 146f, y), 72f, () => Tweak.SaveList(slot));
             Button(Tweak.Text("Tools.Load"), Tweak.Text("Tools.Load.Help"), new Vector2(x + w - 72f, y), 72f, () => Tweak.LoadList(slot));
@@ -651,7 +664,12 @@ internal unsafe class AchievementsAddon : NativeAddon
             _selName!.String        = string.Empty;
             _selName.TextColor      = InkMuted;
             _selCategory!.String    = string.Empty;
-            _selDescription!.String = Tweak.Text("Detail.None");
+            if (_selDescriptionOf != 0)
+            {
+                _selDescriptionOf = 0;
+                TextFit.Fit(_selDescription!, Tweak.Text("Detail.None"), SelDescH, SelDescSizes);
+                _selDescription!.TextTooltip = string.Empty;
+            }
             _selReward!.String      = string.Empty;
             _selState!.String       = string.Empty;
             _selWhen!.String        = string.Empty;
@@ -669,7 +687,13 @@ internal unsafe class AchievementsAddon : NativeAddon
         _selName!.String        = info.Name;
         _selName.TextColor      = done ? InkDone : InkName;
         _selCategory!.String    = info.Kind.Length > 0 ? $"{info.Kind} - {info.Category}" : info.Category;
-        _selDescription!.String = info.Description;
+        // Written only when the achievement changes: UpdateDetail runs every second, and fitting measures the text.
+        if (_selDescriptionOf != info.Id)
+        {
+            _selDescriptionOf = info.Id;
+            var whole = TextFit.Fit(_selDescription!, info.Description, SelDescH, SelDescSizes);
+            _selDescription!.TextTooltip = whole ? string.Empty : info.Description;
+        }
         _selReward!.String      = info.Reward.Length > 0 ? $"{Tweak.Text("Row.Reward")}: {info.Reward}" : Tweak.Text("Detail.NoReward");
 
         if (!loaded)

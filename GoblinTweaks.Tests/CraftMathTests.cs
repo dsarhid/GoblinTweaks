@@ -167,6 +167,26 @@ public class CraftMathTests
     }
 
     [Fact]
+    public void MissingBaseMaterials_CountsWhatIsMissingUnderCraftableIngredients()
+    {
+        // Spear: 2 Ingot (3 Ore each) + 1 Lumber (2 Log). With nothing owned, Ore and Log are missing.
+        var data = Data();
+        Assert.Equal(2, CraftMath.MissingBaseMaterials(Spear, data));
+
+        // Enough Ore for both ingots: only Log is left to find.
+        data.Stock[Ore] = 6;
+        Assert.Equal(1, CraftMath.MissingBaseMaterials(Spear, data));
+
+        // The Lumber itself is owned: nothing is missing, though the ingots still have to be crafted.
+        data.Stock[Lumber] = 1;
+        Assert.Equal(0, CraftMath.MissingBaseMaterials(Spear, data));
+    }
+
+    [Fact]
+    public void MissingBaseMaterials_UnknownRecipeLacksNothing()
+        => Assert.Equal(0, CraftMath.MissingBaseMaterials(999, Data()));
+
+    [Fact]
     public void Cost_SumsAndFlags()
     {
         var result = CraftMath.Cost(

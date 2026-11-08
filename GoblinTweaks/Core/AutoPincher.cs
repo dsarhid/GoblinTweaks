@@ -2,6 +2,7 @@ using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Info;
 using FFXIVClientStructs.FFXIV.Component.GUI;
+using GoblinTweaks.Market;
 
 namespace GoblinTweaks.Core;
 
@@ -16,8 +17,6 @@ internal sealed record PinchRules(
     public long Undercut(long lowest)
         => UndercutIsPercent ? Math.Max(1, lowest * Math.Max(0, UndercutPercent) / 100) : Math.Max(0, UndercutAmount);
 }
-
-internal enum PinchOutcome { Repriced, Unchanged, Skipped }
 
 /// <summary>
 /// Reprices every listing of the retainer whose "Items for sale" window is open, one at a time:
@@ -180,6 +179,7 @@ internal sealed unsafe class AutoPincher
                 {
                     Fire(price, PriceCancel);
                     _skipped++;
+                    _say($"skipped|{ItemName(_expectedId)}|{(_expectedHq ? 1 : 0)}|keep|{_currentPrice}|0");
                     Enter(Step.WaitPriceClosed, MenuTimeout);
                     return;
                 }
@@ -200,7 +200,8 @@ internal sealed unsafe class AutoPincher
             case Step.WaitResults:
                 if (!Ready(ResultsAddon, out var results)) return;
                 var proxy = InfoProxyItemSearch.Instance();
-                if (proxy == null || !_watch.IsFresh(proxy, 0)) return;
+                // The search must be of the item whose price window is open, never one left over from before.
+                if (proxy == null || !_watch.IsFresh(proxy, _expectedId)) return;
 
                 // The item (and its HQ flag) come from the price window itself, not from a guess of the row order.
                 // What the game searched is the item; HQ comes from the window (id offset or the HQ symbol in the name).
@@ -209,7 +210,9 @@ internal sealed unsafe class AutoPincher
                 var hq = _expectedHq || NameHasHq((AddonRetainerSell*)price);
 
                 var rules   = _rules();
-                var outcome = Decide(proxy, itemId, hq, _currentPrice, rules, out var newPrice);
+                var lowest  = LowestListing(proxy, itemId, hq, out var lowestIsOwn);
+                var outcome = PinchMath.Decide(lowest, lowestIsOwn, _currentPrice, rules.Undercut, rules.MinPrice,
+                    rules.MaxUndercutPercent, out var newPrice, out var why);
                 results->Close(true);
 
                 if (!Ready(PriceAddon, out price)) { Stop("closed"); return; }
@@ -228,7 +231,13 @@ internal sealed unsafe class AutoPincher
                 else
                 {
                     Fire(price, PriceCancel);
-                    if (outcome == PinchOutcome.Unchanged) _unchanged++; else _skipped++;
+                    if (outcome == PinchOutcome.Unchanged) _unchanged++;
+                    else
+                    {
+                        _skipped++;
+                        // Why, for the chat: item, reason, current price, the cheapest other seller.
+                        _say($"skipped|{ItemName(itemId)}|{(hq ? 1 : 0)}|{why}|{_currentPrice}|{lowest ?? 0}");
+                    }
                 }
 
                 Enter(Step.WaitPriceClosed, MenuTimeout);
@@ -341,32 +350,6 @@ internal sealed unsafe class AutoPincher
         }
 
         return lowest == uint.MaxValue ? null : lowest;
-    }
-
-    /// <summary>
-    /// The new price is the cheapest listing that is not ours minus the undercut. Nothing changes when our own
-    /// listing already is the cheapest, nobody else sells it, or the cut would be bigger than the allowed maximum.
-    /// </summary>
-    private static PinchOutcome Decide(InfoProxyItemSearch* proxy, uint itemId, bool hq, int currentPrice, PinchRules rules, out int newPrice)
-    {
-        newPrice = currentPrice;
-
-        var reference = LowestListing(proxy, itemId, hq, out var lowestIsOwn);
-        var lowest    = reference ?? uint.MaxValue;
-
-        if (lowest == uint.MaxValue) return PinchOutcome.Skipped;      // nobody sells it: no reference price
-        if (lowestIsOwn) return PinchOutcome.Unchanged;                // we are already the cheapest
-
-        var target = (int)Math.Clamp(lowest - rules.Undercut(lowest), 0, int.MaxValue);
-        target = Math.Max(target, Math.Max(1, rules.MinPrice));
-        if (target == currentPrice) return PinchOutcome.Unchanged;
-
-        // Guard against bait listings: never cut deeper than allowed in a single pass.
-        if (currentPrice > 0 && rules.MaxUndercutPercent < 100 && target < currentPrice * (100 - rules.MaxUndercutPercent) / 100)
-            return PinchOutcome.Skipped;
-
-        newPrice = target;
-        return PinchOutcome.Repriced;
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

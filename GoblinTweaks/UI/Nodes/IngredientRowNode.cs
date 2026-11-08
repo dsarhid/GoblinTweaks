@@ -58,6 +58,7 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
     // updating ItemData, so reading ItemData during layout would use the stale value.
     private int  _depth;
     private bool _hasPrice;
+    private bool _craftable;
 
     public unsafe IngredientRowNode()
     {
@@ -86,6 +87,14 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
             if (eventData is not null && eventData->MouseData.ButtonId == 1 && ItemData.Check is not null)
                 OnItemRightClick?.Invoke(ItemData.Check.ItemId);
         });
+    }
+
+    // The list calls this every frame for the rows it shows: only a craftable ingredient has a caret.
+    public override void Update()
+    {
+        base.Update();
+        if (_caret.IsVisible != _craftable) _caret.IsVisible = _craftable;
+        if (_price.IsVisible != _hasPrice)  _price.IsVisible = _hasPrice;
     }
 
     protected override void OnSizeChanged()
@@ -128,9 +137,12 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
     {
         var ing = data.Check;
 
-        _depth = data.Depth;
-        _caret.IsVisible = data.Craftable;
+        _depth     = data.Depth;
+        _craftable = data.Craftable;
+        // Text first, then visibility: the first time a row is filled, its caret showed "+" on every ingredient,
+        // crystals included (Update puts it right if anything shows it again).
         _caret.String    = data.Expanded ? "-" : "+";
+        _caret.IsVisible = data.Craftable;
 
         _icon.IconId = ing.IconId;
         _name.String = ing.Name;
@@ -195,8 +207,8 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
 
         // My List totals: the price column, and the unit price under the locations when the row shows them.
         _hasPrice        = data.Price is not null;
-        _price.IsVisible = _hasPrice;
         _price.String    = data.Price ?? string.Empty;
+        _price.IsVisible = _hasPrice;
         if (!string.IsNullOrEmpty(data.PriceTip) && ItemTooltip == 0)
             TextTooltip = string.Join("\n", data.AllLocations.Select(FormatLocation)) + "\n" + data.PriceTip;
 

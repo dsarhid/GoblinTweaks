@@ -8,6 +8,16 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.5.2"] = (
+            "Pinch ya no sigue anuncios absurdos; Recipes List puede ocultar recetas fabricadas; arreglos en Crafting Materials y Logros.",
+            [
+                "Fix: el Pinch de Auto Goblin Retainer subía un precio hasta quedar debajo de un anuncio troll de mil millones de gil — el límite de precio ahora vale para los dos lados (ahora \"Mayor cambio de precio\"), y Pinch solo usa la búsqueda del Market Board del ítem que está repreciando",
+                "New: Auto Goblin Retainer dice en el chat por qué dejó cada ítem como estaba (bajada o subida demasiado grande, nadie más lo vende, está en \"Mantener mi precio\")",
+                "New: Recipe List completion marks — las casillas \"Ocultar fabricadas\" y \"Solo crafting log\" en la ventana Recipes List (también en Ajustes) ocultan las recetas ya fabricadas y las que no cuentan para el crafting log",
+                "Change: \"Menos faltantes\" de Crafting Materials cuenta los subingredientes: lo que todavía tendrías que conseguir una vez separados los ingredientes craftables (una opción en Ajustes lo vuelve a solo ingredientes directos)",
+                "Fix: Crafting Materials — hacer clic en un ingrediente craftable (Undyed Felt, Silk Thread...) no hacía nada, se lo llevaba My List oculta; y los cristales mostraban un \"+\" la primera vez que se abría una receta",
+                "Fix: Goblin Achievements — las descripciones largas pisaban el nombre y la barra de progreso; la ventana es más grande, las tarjetas más altas y el panel de la derecha le da lugar a la descripción",
+            ]),
         ["1.5.1"] = (
             "Goblin Glamour puede reteñir un conjunto; la lista de ventas del retainer muestra los tiempos de lo que acabás de listar.",
             [

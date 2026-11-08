@@ -28,7 +28,7 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
     {
         /// <summary>Gil taken off the cheapest other listing.</summary>
         public int UndercutAmount { get; set; } = 1;
-        /// <summary>Largest price cut allowed in one pass, as % of the current price (100 = no limit).</summary>
+        /// <summary>Largest price change allowed in one pass, down or up, as % of the current price (100 = no limit).</summary>
         public int MaxUndercutPercent { get; set; } = 70;
         /// <summary>Never price below this.</summary>
         public int MinPrice { get; set; } = 1;
@@ -371,6 +371,7 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
             "cycleStopped"  => string.Format(T("Msg.CycleStopped"), Part(parts, 1), Part(parts, 2), Part(parts, 3), Part(parts, 4)) + ChangeText(Part(parts, 5)),
             "visiting"      => string.Format(T("Msg.Visiting"), parts.Length > 1 ? parts[1] : "?"),
             "repriced"      => RepricedText(parts),
+            "skipped"       => SkippedText(parts),
             _               => code,
         };
         Svc.Chat.Print(text, Name);
@@ -398,10 +399,33 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
         long.TryParse(Part(parts, 3), out var before);
         long.TryParse(Part(parts, 4), out var after);
 
-        var change  = before > 0 ? Math.Abs(after - before) * 100d / before : 0d;
-        var percent = change.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
-        var key     = after < before ? "Msg.PriceDown" : "Msg.PriceUp";
-        return string.Format(T(key), name, before.ToString("N0"), after.ToString("N0"), percent);
+        var key = after < before ? "Msg.PriceDown" : "Msg.PriceUp";
+        return string.Format(T(key), name, before.ToString("N0"), after.ToString("N0"), Market.PinchMath.ChangePercent(before, after));
+    }
+
+    /// <summary>
+    /// "Item: left at 666,655 gil; the cheapest other seller asks 31,569 gil, 95.3% less (the limit is 70%)."
+    /// The code is "skipped|name|hq|reason|price|cheapest", reason a <see cref="Market.PinchSkip"/> or "keep".
+    /// </summary>
+    private string SkippedText(string[] parts)
+    {
+        var name = parts.Length > 1 ? parts[1] : "?";
+        if (parts.Length > 2 && parts[2] == "1") name += " (HQ)";
+
+        var reason = parts.Length > 3 ? parts[3] : string.Empty;
+        long.TryParse(Part(parts, 4), out var price);
+        long.TryParse(Part(parts, 5), out var cheapest);
+
+        return reason switch
+        {
+            "keep"        => string.Format(T("Msg.SkipKeep"), name, price.ToString("N0")),
+            "NoSellers"   => string.Format(T("Msg.SkipNoSellers"), name, price.ToString("N0")),
+            "CutTooDeep"  => string.Format(T("Msg.SkipCut"), name, price.ToString("N0"), cheapest.ToString("N0"),
+                                 Market.PinchMath.ChangePercent(price, cheapest), Settings.MaxUndercutPercent),
+            "RiseTooHigh" => string.Format(T("Msg.SkipRise"), name, price.ToString("N0"), cheapest.ToString("N0"),
+                                 Market.PinchMath.ChangePercent(price, cheapest), Settings.MaxUndercutPercent),
+            _             => $"{name}: {reason}",
+        };
     }
 
     /// <summary>The retainer a message is about, when a tour of several retainers is running.</summary>

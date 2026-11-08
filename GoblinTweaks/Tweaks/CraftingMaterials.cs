@@ -247,6 +247,11 @@ public sealed class CraftableEntry
     public uint[]                ForJobs         = [];
     public CraftStatus           Status;
     public int                   MissingCount;
+    /// <summary>
+    /// Base materials still missing with the craftable ingredients broken down (see CraftMath.MissingBaseMaterials);
+    /// worked out the first time the list is sorted by what is missing.
+    /// </summary>
+    public int?                  BaseMissingCount;
     public bool                  IsCrafted;
     public int                   ItemLevel;
     public int                   CraftLevel;   // recipe class-job level (1-100)
@@ -276,6 +281,8 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         public bool IncludeUnreadMasterRecipes { get; set; }
         /// <summary>Max missing ingredient types before a recipe moves from NearComplete → NotReady.</summary>
         public int  NearCompleteMissing { get; set; } = 2;
+        /// <summary>The "Fewest missing" sort counts the base materials still missing under craftable ingredients, not only the direct ingredients.</summary>
+        public bool MissingCountsSubRecipes { get; set; } = true;
         /// <summary>Old per-tweak window language. Only read to move it to the common language choice of the tweak.</summary>
         public string DataLanguage { get; set; } = string.Empty;
 
@@ -1203,41 +1210,8 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     private static HashSet<uint> AllRecipeBooks()
         => [.. Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.SecretRecipeBook>().Where(book => book.RowId != 0).Select(book => book.RowId)];
 
-    private HashSet<uint>? _logRecipeIds;
-
-    // NotebookDivisionCategory of the "Housing" group of the Special Recipes.
-    private const uint HousingCategory = 2;
-
-    /// <summary>
-    /// The recipes that count for the crafting log: the level-based recipes of every class and, of the Special Recipes,
-    /// the Housing ones. Master recipes and the other special groups (sidequests, deliveries, collectables...) don't.
-    /// </summary>
-    /// <remarks>
-    /// RecipeNotebookList has one row per class and log division: <c>craftType * 40 + division</c> for the level-based
-    /// divisions (0-39), <c>1000 + (division - 1000) * 8 + craftType</c> for the rest, whose NotebookDivision row says
-    /// which group of the log it is under.
-    /// </remarks>
-    private HashSet<uint> LogRecipeIds()
-    {
-        if (_logRecipeIds is not null) return _logRecipeIds;
-
-        var lists     = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.RecipeNotebookList>();
-        var divisions = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.NotebookDivision>();
-
-        var set = new HashSet<uint>();
-        foreach (var list in lists)
-        {
-            var counts = list.RowId < 1000
-                || (divisions.TryGetRow(1000 + (list.RowId - 1000) / 8, out var division)
-                    && division.NotebookDivisionCategory.RowId == HousingCategory);
-            if (!counts) continue;
-
-            foreach (var r in list.Recipe)
-                if (r.RowId != 0 && r.IsValid) set.Add(r.RowId);
-        }
-
-        return _logRecipeIds = set;
-    }
+    /// <summary>The recipes that count for the crafting log (see <see cref="CraftingLogRecipes"/>).</summary>
+    private static HashSet<uint> LogRecipeIds() => CraftingLogRecipes.Ids;
 
     public int NearCompleteMissing => Settings.NearCompleteMissing;
 

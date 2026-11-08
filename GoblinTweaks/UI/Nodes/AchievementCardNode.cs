@@ -38,7 +38,10 @@ internal sealed record AchievementCardLabels(string Reward, string Done, string 
 /// </summary>
 internal sealed class AchievementCardNode : ListItemNode<AchievementCard>, IListItemNode
 {
-    public static float ItemHeight => 84f;
+    public static float ItemHeight => 100f;
+
+    // The row of the progress bar, the state and the category, near the bottom of the card.
+    private const float BarY = 82f;
 
     internal static AchievementCardLabels Labels = new("Reward", "Done", "Pending", "Title", "Item");
 
@@ -99,6 +102,7 @@ internal sealed class AchievementCardNode : ListItemNode<AchievementCard>, IList
 
     private AchievementCard? _card;
     private float _rewardX;
+    private float _rewardY;
     private bool _hasBar;
     private bool _hovered;
 
@@ -115,7 +119,8 @@ internal sealed class AchievementCardNode : ListItemNode<AchievementCard>, IList
         _icon.AttachNode(this);
 
         _name = Text(15, InkName, AlignmentType.Left, wrap: false);
-        _description = Text(12, InkText, AlignmentType.Left, wrap: true);
+        // From the top of its box: a centred text that does not fit grows up over the name as well as down.
+        _description = Text(12, InkText, AlignmentType.TopLeft, wrap: true);
 
         _barTrack = new ColorImageNode { Color = BarTrack, Size = new Vector2(BarW, 7f) };
         _barTrack.AttachNode(this);
@@ -195,16 +200,19 @@ internal sealed class AchievementCardNode : ListItemNode<AchievementCard>, IList
         _points.Position = new Vector2(medalX + circleX - MedalW / 2f + GlyphShiftX, medalY + circleY - 11f + GlyphShiftY);
         _points.Size = new Vector2(MedalW, 22f);
 
+        // The reward box: a 56 high block of label, icon, name and state, in the middle of the card.
         _rewardX = medalX - 8f - RewardW;
-        _boxBorder.Position = new Vector2(_rewardX, 14f);
-        _boxBorder.Size = new Vector2(RewardW, h - 28f);
-        _boxFill.Position = new Vector2(_rewardX + 2f, 16f);
-        _boxFill.Size = new Vector2(RewardW - 4f, h - 32f);
-        _boxLabel.Position = new Vector2(_rewardX + 8f, 19f);
+        var boxY = Math.Max(4f, (h - 56f) / 2f);
+        _rewardY = boxY;
+        _boxBorder.Position = new Vector2(_rewardX, boxY);
+        _boxBorder.Size = new Vector2(RewardW, 56f);
+        _boxFill.Position = new Vector2(_rewardX + 2f, boxY + 2f);
+        _boxFill.Size = new Vector2(RewardW - 4f, 52f);
+        _boxLabel.Position = new Vector2(_rewardX + 8f, boxY + 5f);
         _boxLabel.Size = new Vector2(RewardW - 16f, 12f);
-        _boxIcon.Position = new Vector2(_rewardX + 8f, 34f);
-        _boxHit.Position = new Vector2(_rewardX, 14f);
-        _boxHit.Size = new Vector2(RewardW, h - 28f);
+        _boxIcon.Position = new Vector2(_rewardX + 8f, boxY + 20f);
+        _boxHit.Position = new Vector2(_rewardX, boxY);
+        _boxHit.Size = new Vector2(RewardW, 56f);
 
         PlaceReward(_boxIcon.IsVisible);
         Layout(_card?.Info.Reward.Length > 0);
@@ -215,9 +223,9 @@ internal sealed class AchievementCardNode : ListItemNode<AchievementCard>, IList
     {
         var x = _rewardX + (hasIcon ? 44f : 8f);
         var w = RewardW - (hasIcon ? 52f : 16f);
-        _boxName.Position = new Vector2(x, 33f);
+        _boxName.Position = new Vector2(x, _rewardY + 19f);
         _boxName.Size = new Vector2(w, 15f);
-        _boxState.Position = new Vector2(x, 50f);
+        _boxState.Position = new Vector2(x, _rewardY + 36f);
         _boxState.Size = new Vector2(w, 14f);
     }
 
@@ -229,16 +237,31 @@ internal sealed class AchievementCardNode : ListItemNode<AchievementCard>, IList
 
         _name.Position = new Vector2(TextX, 8f);
         _name.Size = new Vector2(textW, 18f);
-        _description.Position = new Vector2(TextX, 28f);
-        _description.Size = new Vector2(textW, 30f);
+        _description.Position = new Vector2(TextX, DescTop);
+        _description.Size = new Vector2(textW, DescMaxH);
+        FitDescription();
 
-        _barTrack.Position = new Vector2(TextX, 66f);
-        _bar.Position = new Vector2(TextX, 66f);
-        _state.Position = new Vector2(_hasBar ? TextX + BarW + 8f : TextX, 61f);
+        _barTrack.Position = new Vector2(TextX, BarY);
+        _bar.Position = new Vector2(TextX, BarY);
+        _state.Position = new Vector2(_hasBar ? TextX + BarW + 8f : TextX, BarY - 5f);
         _state.Size = new Vector2(Math.Min(120f, textW), 16f);
-        _category.Position = new Vector2(TextX + BarW + 132f, 62f);
+        _category.Position = new Vector2(TextX + BarW + 132f, BarY - 4f);
         _category.Size = new Vector2(Math.Max(0f, textW - BarW - 132f), 14f);
     }
+
+    // The description goes between the name and the progress bar: three lines at the normal size.
+    private const float DescTop = 28f;
+    private static float DescMaxH => BarY - 4f - DescTop;
+
+    // Font size and line spacing tried in turn until the description fits; past the last it is cut with "…".
+    private static readonly (uint Font, uint Spacing)[] DescSizes = [(12, 14), (11, 13)];
+
+    /// <summary>
+    /// Fits the description in its box: a smaller font when it is long, and when that does not fit either, cut at a
+    /// word with "…" (the card's tooltip and the panel on the right have all of it).
+    /// </summary>
+    private void FitDescription()
+        => TextFit.Fit(_description, _card?.Info.Description ?? string.Empty, DescMaxH, DescSizes);
 
     /// <summary>A light border under the mouse, since the card covers the list's own highlight.</summary>
     public override void Update()
@@ -268,8 +291,7 @@ internal sealed class AchievementCardNode : ListItemNode<AchievementCard>, IList
 
         _name.String = data.Name;
         _name.TextColor = card.Done ? InkDone : InkUndone;
-        _description.String = data.Description;
-        _category.String = data.Category;
+        _category.String = data.Category; // the description is written by Layout, which fits it to its width
 
         _state.String = card.State;
         _state.TextColor = card.Done ? InkDone : card.StateColor;

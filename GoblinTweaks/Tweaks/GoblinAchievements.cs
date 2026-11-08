@@ -263,7 +263,7 @@ public sealed unsafe class GoblinAchievements : Tweak<GoblinAchievements.Options
     {
         InternalName = "GtkAchievements",
         Title        = T("Title"),
-        Size         = new Vector2(1300f, 720f),
+        Size         = new Vector2(1400f, 780f),
         Tweak        = this,
     };
 

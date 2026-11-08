@@ -34,6 +34,16 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.5.2", "2026-11-08",
+            "Pinch no longer follows absurd listings; Recipes List can hide crafted recipes; Crafting Materials and Achievements fixes.",
+            [
+                "Fix: Auto Goblin Retainer Pinch raised a price to just under a troll listing of a billion gil — the price limit now works both ways (now \"Largest price change\"), and Pinch only uses the Market Board search of the item being repriced",
+                "New: Auto Goblin Retainer says in the chat why each item was left alone (cut or rise too big, nobody else sells it, on the \"Keep my price\" list)",
+                "New: Recipe List completion marks — \"Hide crafted\" and \"Only crafting log\" boxes on the Recipes List window (also in Settings) hide the recipes already crafted and those that don't count for the crafting log",
+                "Change: Crafting Materials \"Fewest missing\" counts the sub-ingredients: what you would still have to get once the craftable ingredients are broken down (an option in Settings turns it back to direct ingredients only)",
+                "Fix: Crafting Materials — clicking a craftable ingredient (Undyed Felt, Silk Thread...) did nothing, the hidden My List took the click; and crystals showed a \"+\" the first time a recipe was opened",
+                "Fix: Goblin Achievements — long descriptions ran over the name and the progress bar; the window is bigger, the cards taller and the panel on the right gives the description room",
+            ]),
         new("1.5.1", "2026-11-03",
             "Goblin Glamour can recolor an outfit; the retainer sell list shows the times of what you just listed.",
             [

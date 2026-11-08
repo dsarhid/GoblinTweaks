@@ -7,6 +7,7 @@ using GoblinTweaks.Core;
 using GoblinTweaks.Localization;
 using GoblinTweaks.Native;
 using GoblinTweaks.UI;
+using KamiToolKit.Nodes;
 using CraftTypeRow = Lumina.Excel.Sheets.CraftType;
 using RecipeRow = Lumina.Excel.Sheets.Recipe;
 
@@ -33,6 +34,12 @@ public sealed unsafe class RecipeListCompletionMarks : Tweak<RecipeListCompletio
 
         /// <summary>"!" mark on the recipes never crafted.</summary>
         public bool MarkMissing { get; set; }
+
+        /// <summary>Hide the rows of the recipes already crafted.</summary>
+        public bool HideCrafted { get; set; }
+
+        /// <summary>Hide the rows of the recipes that don't count for the crafting log (master, quest, delivery...).</summary>
+        public bool HideNotInLog { get; set; }
     }
 
     private const string AddonName = "RecipeProductList";
@@ -77,6 +84,13 @@ public sealed unsafe class RecipeListCompletionMarks : Tweak<RecipeListCompletio
     {
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PreDraw, AddonName, OnPreDraw);
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PreFinalize, AddonName, OnPreFinalize);
+
+        // The window may be open: give it back every row and take the boxes off it.
+        var open = (AtkUnitBase*)Svc.GameGui.GetAddonByName(AddonName).Address;
+        var list = open != null ? TreeListOf(open) : null;
+        if (list != null) ShowHiddenRows(list);
+        _hiddenByUs.Clear();
+        DetachBoxes();
 
         RemoveMarks();
         _recipesByClass.Clear();
@@ -128,6 +142,16 @@ public sealed unsafe class RecipeListCompletionMarks : Tweak<RecipeListCompletio
             new(T("AnyClass"), T("AnyClass.Help"), () => Settings.AnyClass, on =>
             {
                 Settings.AnyClass = on;
+                SaveSettings();
+            }),
+            new(T("HideCrafted"), T("HideCrafted.Help"), () => Settings.HideCrafted, on =>
+            {
+                Settings.HideCrafted = on;
+                SaveSettings();
+            }),
+            new(T("HideNotInLog"), T("HideNotInLog.Help"), () => Settings.HideNotInLog, on =>
+            {
+                Settings.HideNotInLog = on;
                 SaveSettings();
             }),
         ],
@@ -182,7 +206,21 @@ public sealed unsafe class RecipeListCompletionMarks : Tweak<RecipeListCompletio
             _recipesByItem[item] = [.. ids];
     }
 
-    private void OnPreFinalize(AddonEvent type, AddonArgs args) => RemoveMarks();
+    private void OnPreFinalize(AddonEvent type, AddonArgs args)
+    {
+        try
+        {
+            DetachBoxes();
+            _hiddenByUs.Clear();
+            _refreshStreak = 0;
+            _hidingGaveUp  = false;
+            RemoveMarks();
+        }
+        catch (Exception ex)
+        {
+            ReportFailure(ex);
+        }
+    }
 
     private void OnPreDraw(AddonEvent type, AddonArgs args)
     {
@@ -196,25 +234,41 @@ public sealed unsafe class RecipeListCompletionMarks : Tweak<RecipeListCompletio
         }
     }
 
-    private void UpdateMarks(AtkUnitBase* addon)
+    /// <summary>The window's list of recipes; null (with one warning in the log) when its layout is not the expected one.</summary>
+    private AtkComponentTreeList* TreeListOf(AtkUnitBase* addon)
     {
-        if (addon == null || !addon->IsVisible)
-            return;
-
         // Component nodes have type ids >= 1000; anything else means the window layout changed.
         var listNode = (AtkComponentNode*)addon->GetNodeById(TreeListNodeId);
         var treeList = listNode != null && (ushort)listNode->AtkResNode.Type >= 1000
             ? (AtkComponentTreeList*)listNode->Component
             : null;
-        if (treeList == null)
+        if (treeList == null && !_layoutWarningShown)
         {
-            if (!_layoutWarningShown)
-            {
-                Svc.Log.Warning("{addon} layout changed: node {id} is not a list. Marks disabled until the next update.", AddonName, TreeListNodeId);
-                _layoutWarningShown = true;
-            }
-            return;
+            Svc.Log.Warning("{addon} layout changed: node {id} is not a list. Marks disabled until the next update.", AddonName, TreeListNodeId);
+            _layoutWarningShown = true;
         }
+        return treeList;
+    }
+
+    private void UpdateMarks(AtkUnitBase* addon)
+    {
+        if (addon == null || !addon->IsVisible)
+            return;
+
+        var treeList = TreeListOf(addon);
+        if (treeList == null)
+            return;
+
+        AttachBoxes(addon);
+        SyncBoxes();
+
+        if (DateTime.UtcNow >= _craftedUntil)
+        {
+            _crafted.Clear();
+            _craftedUntil = DateTime.UtcNow + CraftedCacheLife;
+        }
+
+        HideRows(treeList);
 
         // Rows are reused while scrolling: hide every mark, then show the ones that apply now.
         foreach (var mark in _marks.Values)
@@ -222,12 +276,6 @@ public sealed unsafe class RecipeListCompletionMarks : Tweak<RecipeListCompletio
 
         if (!Settings.MarkCrafted && !Settings.MarkMissing)
             return;
-
-        if (DateTime.UtcNow >= _craftedUntil)
-        {
-            _crafted.Clear();
-            _craftedUntil = DateTime.UtcNow + CraftedCacheLife;
-        }
 
         uint sectionCraftType = 0;
 
@@ -239,7 +287,7 @@ public sealed unsafe class RecipeListCompletionMarks : Tweak<RecipeListCompletio
 
             // Section headers ("Smithing", "Cooking"...) set the class of the rows below them. Any other
             // header (a level range...) leaves the class as it is.
-            if ((item->Type & (TreeListItemType.Group | TreeListItemType.SectionHeader)) != 0)
+            if (IsHeader(item))
             {
                 if (_craftTypes.TryGetValue(ReadText(item), out var craftType))
                     sectionCraftType = craftType;
@@ -256,6 +304,222 @@ public sealed unsafe class RecipeListCompletionMarks : Tweak<RecipeListCompletio
             else if (crafted == false && Settings.MarkMissing)
                 GetOrCreateMark(item->Renderer, MissingNodeId, MissingMark, MissingX, MissingY)?.SetVisible(true);
         }
+    }
+
+    private static bool IsHeader(AtkComponentTreeListItem* item)
+        => (item->Type & (TreeListItemType.Group | TreeListItemType.SectionHeader)) != 0;
+
+    // ── Hiding rows ───────────────────────────────────────────────────────────
+
+    // Rows this tweak hid (the game hides rows of folded groups too: those are left to it).
+    private readonly HashSet<nint> _hiddenByUs = [];
+
+    // Frames in a row in which the list had to be laid out again. If the game keeps showing the rows we hide, hiding
+    // stops for this window instead of laying the list out every frame.
+    private const int MaxRefreshStreak = 30;
+    private int  _refreshStreak;
+    private bool _hidingGaveUp;
+
+    /// <summary>
+    /// Hides, through the list's own "hidden" flag (the one folded groups use), the rows the options leave out, and
+    /// the class headers left with no row. Asks the list to lay itself out again only when something changed.
+    /// </summary>
+    private void HideRows(AtkComponentTreeList* treeList)
+    {
+        var hiding = (Settings.HideCrafted || Settings.HideNotInLog) && !_hidingGaveUp;
+        if (!hiding)
+        {
+            if (_hiddenByUs.Count > 0) ShowHiddenRows(treeList);
+            return;
+        }
+
+        // What each row should be: rows under their header, the header hidden when every row under it is.
+        var items = treeList->Items.AsSpan();
+        var hide = new bool[items.Length];
+        uint sectionCraftType = 0;
+        var header = -1;
+        var headerRows = 0;
+        var headerHidden = 0;
+
+        void CloseHeader()
+        {
+            if (header >= 0 && headerRows > 0 && headerHidden == headerRows) hide[header] = true;
+        }
+
+        for (var i = 0; i < items.Length; i++)
+        {
+            var item = items[i].Value;
+            if (item == null) continue;
+
+            if (IsHeader(item))
+            {
+                CloseHeader();
+                header = i;
+                headerRows = headerHidden = 0;
+                if (_craftTypes.TryGetValue(ReadText(item), out var craftType))
+                    sectionCraftType = craftType;
+                continue;
+            }
+
+            headerRows++;
+            if (ShouldHide(sectionCraftType, ReadText(item)))
+            {
+                hide[i] = true;
+                headerHidden++;
+            }
+        }
+        CloseHeader();
+
+        var changed = false;
+        for (var i = 0; i < items.Length; i++)
+        {
+            var item = items[i].Value;
+            if (item == null) continue;
+
+            if (hide[i] && !item->IsHidden)
+            {
+                item->IsHidden = true;
+                _hiddenByUs.Add((nint)item);
+                changed = true;
+            }
+            else if (!hide[i] && _hiddenByUs.Remove((nint)item))
+            {
+                item->IsHidden = false;
+                changed = true;
+            }
+        }
+
+        if (!changed)
+        {
+            _refreshStreak = 0;
+            return;
+        }
+
+        treeList->LayoutRefreshPending = true;
+        if (++_refreshStreak > MaxRefreshStreak)
+        {
+            Svc.Log.Warning("{addon}: the list keeps showing the rows hidden by {tweak}; hiding stops until the window opens again.", AddonName, Name);
+            _hidingGaveUp = true;
+            ShowHiddenRows(treeList);
+        }
+    }
+
+    /// <summary>Gives back the rows this tweak hid (only rows still in the list: the pointers are never followed).</summary>
+    private void ShowHiddenRows(AtkComponentTreeList* treeList)
+    {
+        var changed = false;
+        foreach (var entry in treeList->Items.AsSpan())
+        {
+            var item = entry.Value;
+            if (item == null || !_hiddenByUs.Contains((nint)item)) continue;
+            item->IsHidden = false;
+            changed = true;
+        }
+
+        _hiddenByUs.Clear();
+        if (changed) treeList->LayoutRefreshPending = true;
+    }
+
+    /// <summary>Whether the options hide a row: crafted, or not counting for the crafting log. Unknown rows stay.</summary>
+    private bool ShouldHide(uint craftType, string itemName)
+    {
+        if (itemName.Length == 0) return false;
+        if (Settings.HideCrafted && WasCrafted(craftType, itemName) == true) return true;
+        if (Settings.HideNotInLog && RecipesOf(craftType, itemName) is { } recipes && !recipes.Any(CraftingLogRecipes.Ids.Contains))
+            return true;
+        return false;
+    }
+
+    /// <summary>The recipes of a row: those of its class when the class is known, else every recipe of the item.</summary>
+    private uint[]? RecipesOf(uint craftType, string itemName)
+    {
+        if (craftType != 0 && _recipesByClass.TryGetValue((craftType, itemName), out var classRecipes)) return classRecipes;
+        return _recipesByItem.TryGetValue(itemName, out var recipes) ? recipes : null;
+    }
+
+    // ── Boxes on the window ───────────────────────────────────────────────────
+
+    // Where the boxes go: right of the class buttons under the item, right-aligned (unscaled window coordinates).
+    private const float BoxesY      = 98f;
+    private const float BoxesRight  = 16f;
+    private const float BoxesHeight = 20f;
+    private const float BoxesGap    = 12f;
+
+    private CheckboxNode? _hideCraftedBox;
+    private CheckboxNode? _hideNotInLogBox;
+    private nint   _boxWindow;
+    private ushort _boxWindowId;
+    private bool   _syncingBoxes;
+
+    /// <summary>Puts the two boxes on the window, once per window.</summary>
+    private void AttachBoxes(AtkUnitBase* addon)
+    {
+        if (_boxWindow == (nint)addon && _hideCraftedBox is not null) return;
+        DetachBoxes();
+
+        _hideNotInLogBox = NewBox(T("Box.HideNotInLog"), T("HideNotInLog.Help"), Settings.HideNotInLog, on => Settings.HideNotInLog = on);
+        _hideCraftedBox  = NewBox(T("Box.HideCrafted"), T("HideCrafted.Help"), Settings.HideCrafted, on => Settings.HideCrafted = on);
+
+        // Right-aligned, the "not in the log" box last; each is as wide as its text.
+        var width = addon->GetScaledWidth(true) / Math.Max(addon->Scale, 0.01f);
+        var right = width - BoxesRight;
+        _hideNotInLogBox.Position = new System.Numerics.Vector2(right - _hideNotInLogBox.Width, BoxesY);
+        right -= _hideNotInLogBox.Width + BoxesGap;
+        _hideCraftedBox.Position = new System.Numerics.Vector2(right - _hideCraftedBox.Width, BoxesY);
+
+        _hideCraftedBox.AttachNode(addon);
+        _hideNotInLogBox.AttachNode(addon);
+        _boxWindow   = (nint)addon;
+        _boxWindowId = addon->Id;
+    }
+
+    private CheckboxNode NewBox(string label, string tooltip, bool isChecked, Action<bool> set)
+    {
+        var box = new CheckboxNode
+        {
+            String      = label,
+            Height      = BoxesHeight,
+            TextTooltip = tooltip,
+        };
+        box.String = label; // the width follows the text and the height
+        _syncingBoxes = true;
+        box.IsChecked = isChecked;
+        _syncingBoxes = false;
+        box.OnClick = on =>
+        {
+            if (_syncingBoxes) return;
+            set(on);
+            SaveSettings();
+        };
+        return box;
+    }
+
+    /// <summary>Keeps the boxes in line with the options when they change in the settings window.</summary>
+    private void SyncBoxes()
+    {
+        _syncingBoxes = true;
+        try
+        {
+            if (_hideCraftedBox is { } crafted && crafted.IsChecked != Settings.HideCrafted) crafted.IsChecked = Settings.HideCrafted;
+            if (_hideNotInLogBox is { } log && log.IsChecked != Settings.HideNotInLog) log.IsChecked = Settings.HideNotInLog;
+        }
+        finally
+        {
+            _syncingBoxes = false;
+        }
+    }
+
+    private void DetachBoxes()
+    {
+        foreach (var box in new[] { _hideCraftedBox, _hideNotInLogBox })
+        {
+            if (box is null) continue;
+            NativeFocus.ReleaseNode(_boxWindow, _boxWindowId, box);
+            box.Dispose();
+        }
+
+        _hideCraftedBox = _hideNotInLogBox = null;
+        _boxWindow = 0;
     }
 
     private static string ReadText(AtkComponentTreeListItem* item)

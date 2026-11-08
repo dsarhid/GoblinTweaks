@@ -13,6 +13,7 @@
   <ItemGroup>
     <Compile Include="..\GoblinTweaks\Crafting\*.cs" Link="Crafting\%(Filename)%(Extension)" />
     <Compile Include="..\GoblinTweaks\Glamour\*.cs" Link="Glamour\%(Filename)%(Extension)" />
+    <Compile Include="..\GoblinTweaks\Market\*.cs" Link="Market\%(Filename)%(Extension)" />
     <None Include="..\GoblinTweaks\Glamour\themes.json" Link="themes.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\GoblinTweaks\Glamour\shapes.json" Link="shapes.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
