@@ -34,6 +34,13 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.5.6", "2026-11-08",
+            "Goblin Damage Done scrolls with the mouse wheel; Goblin Loot opens from a dice on the game's loot window.",
+            [
+                "New: Goblin Damage Done scrolls — turn the mouse wheel over the table to see everyone past the lines shown; a thin bar on the right shows where you are, and your own line still stays in sight",
+                "New: Goblin Loot dice — a small button in the title bar of the game's loot window opens and closes Goblin Loot",
+                "Change: Goblin Loot no longer opens by itself with every loot — it opens from the dice; \"Open when loot appears\" in its settings turns the old way back on",
+            ]),
         new("1.5.5", "2026-11-08",
             "Pinch works again; Goblin Loot drops players who left; Damage Done counts boss parts; Battle Text fixes.",
             [

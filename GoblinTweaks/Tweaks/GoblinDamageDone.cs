@@ -204,6 +204,9 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
     private bool _seedExtra;
     private Vector2? _placedExtra;
     private readonly List<uint> _mainIds = [];
+
+    /// <summary>How many lines the main table is scrolled down (0 = from the top).</summary>
+    private int _scroll;
     private uint _breakdownId;
     private int _fightCount;
     private DateTime _nextPoll = DateTime.MinValue;
@@ -246,6 +249,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
             OnToggleHistory = () => SetSide(_side == SideView.None ? SideView.History : SideView.None),
             OnCopy          = CopyTable,
             OnRow           = OpenBreakdown,
+            OnScroll        = ScrollMain,
             OnToggleLock = () =>
             {
                 Settings.Locked = !Settings.Locked;
@@ -558,7 +562,18 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
     private void ClearTable()
     {
         _fight = null;
+        _scroll = 0;
         _dirty = true;
+    }
+
+    /// <summary>The wheel over the main table: one line up (+1) or down (-1). How far it can go is checked when it is drawn.</summary>
+    private void ScrollMain(int direction)
+    {
+        if (Previewing) return;
+
+        _scroll = Math.Max(0, _scroll - direction);
+        _dirty = true;
+        _nextRefresh = DateTime.MinValue;
     }
 
     private void ResetPosition()
@@ -1233,6 +1248,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         }
 
         var fight = _fight = new Fight { Number = ++_fightCount, Start = now, Last = now, Territory = territory };
+        _scroll = 0;
         _history.Add(fight);
         if (_history.Count > HistoryLimit) _history.RemoveAt(0);
         _skipped = default;
@@ -1466,7 +1482,8 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
             node.TitleTooltip = fight.Boss;
         }
 
-        node.SetRows(RowsOf(fight, Settings.Mode, Math.Clamp(Settings.Rows, 1, MaxRows), null, _mainIds));
+        var rows = RowsOf(fight, Settings.Mode, Math.Clamp(Settings.Rows, 1, MaxRows), null, _mainIds, ref _scroll, out var total);
+        node.SetRows(rows, _scroll, total);
     }
 
     private static long AmountOf(Stat stat, Meter mode) => mode switch
@@ -1484,6 +1501,16 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
     /// </summary>
     private List<DamageMeterRow> RowsOf(Fight fight, Meter mode, int limit, Fight? before, List<uint>? ids = null)
     {
+        var first = 0;
+        return RowsOf(fight, mode, limit, before, ids, ref first, out _);
+    }
+
+    /// <summary>
+    /// The same, starting at line <paramref name="first"/> of the ranking (scrolled down), which is brought within what
+    /// can be shown; <paramref name="count"/> is how many lines the whole ranking has.
+    /// </summary>
+    private List<DamageMeterRow> RowsOf(Fight fight, Meter mode, int limit, Fight? before, List<uint>? ids, ref int first, out int count)
+    {
         var myGroup = (char)0;
         var letters = Settings.ShowGroup || Settings.OnlyMyGroup ? GroupLetters(out myGroup) : null;
         var ranked = fight.Players.Where(pair => AmountOf(pair.Value, mode) > 0)
@@ -1493,6 +1520,8 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
                                   .ToList();
         var total = ranked.Sum(pair => AmountOf(pair.Value, mode));
         var rows = new List<DamageMeterRow>();
+        count = ranked.Count;
+        first = Math.Clamp(first, 0, Math.Max(0, ranked.Count - limit));
         if (total == 0) return rows;
 
         var seconds = SecondsOf(fight);
@@ -1502,7 +1531,7 @@ public sealed unsafe class GoblinDamageDone : Tweak<GoblinDamageDone.Options>
         var beforeSeconds = before is null ? 1d : SecondsOf(before);
         var oldRate = before?.Players.ToDictionary(pair => pair.Key, pair => AmountOf(pair.Value, mode) / beforeSeconds);
 
-        for (var i = 0; i < ranked.Count && rows.Count < limit; i++)
+        for (var i = first; i < ranked.Count && rows.Count < limit; i++)
         {
             var (id, stat) = (ranked[i].Key, ranked[i].Value);
 

@@ -95,7 +95,30 @@ internal static unsafe class MeterRows
         return slots;
     }
 
-    public static MeterRow Build(NodeBase parent, float width, int index, Action? onClick, int cells = 0)
+    /// <summary>
+    /// The mouse wheel over <paramref name="area"/>: +1 up, -1 down. The game can hand one turn of the wheel to more than one
+    /// area under the mouse, so a frame counts once.
+    /// </summary>
+    public static void Wheel(CollisionNode area, Action<int> onWheel)
+    {
+        area.AddEvent(AtkEventType.MouseWheel, (_, _, _, _, eventData) =>
+        {
+            if (eventData is null) return;
+            var direction = eventData->MouseData.WheelDirection;
+            if (direction == 0) return;
+
+            var framework = FFXIVClientStructs.FFXIV.Client.System.Framework.Framework.Instance();
+            var frame = framework == null ? 0u : framework->FrameCounter;
+            if (frame != 0 && frame == _lastWheelFrame) return;
+            _lastWheelFrame = frame;
+
+            onWheel(direction > 0 ? 1 : -1);
+        });
+    }
+
+    private static uint _lastWheelFrame;
+
+    public static MeterRow Build(NodeBase parent, float width, int index, Action? onClick, int cells = 0, Action<int>? onWheel = null)
     {
         var y = DamageMeterNode.HeaderH + 2f + index * DamageMeterNode.RowH;
         var h = DamageMeterNode.RowH;
@@ -117,6 +140,7 @@ internal static unsafe class MeterRows
         row.Name.AttachNode(parent);
         row.Value.AttachNode(parent);
         foreach (var cell in row.Cells) cell.AttachNode(parent);
+        if (row.Hit is not null && onWheel is not null) Wheel(row.Hit, onWheel);
         if (row.Hit is not null && onClick is not null) Click(row.Hit, parent, onClick);
         row.Visible = false;
         return row;

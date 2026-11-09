@@ -1,4 +1,7 @@
+using System.Numerics;
 using System.Reflection;
+using Dalamud.Game.Addon.Lifecycle;
+using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Game.Chat;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
@@ -7,6 +10,8 @@ using FFXIVClientStructs.FFXIV.Component.GUI;
 using GoblinTweaks.Core;
 using GoblinTweaks.Localization;
 using GoblinTweaks.UI;
+using KamiToolKit.Enums;
+using KamiToolKit.Nodes;
 using LuminaAddon = Lumina.Excel.Sheets.Addon;
 using LuminaClassJobCategory = Lumina.Excel.Sheets.ClassJobCategory;
 using LuminaItem = Lumina.Excel.Sheets.Item;
@@ -27,8 +32,11 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
 {
     public sealed class Options
     {
-        /// <summary>Open the window when an item is added to the loot list.</summary>
-        public bool AutoOpen { get; set; } = true;
+        /// <summary>Open the window when an item is added to the loot list. Off: it opens from the dice on the game's loot window.</summary>
+        public bool AutoOpen { get; set; }
+
+        /// <summary>Changes made once to settings saved by an earlier version (1: opening by itself turned off).</summary>
+        public int Revision { get; set; }
 
         /// <summary>The table shows the item selected in the loot window of the game.</summary>
         public bool FollowSelection { get; set; } = true;
@@ -49,6 +57,9 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
 
     private static readonly TimeSpan AutoCloseDelay = TimeSpan.FromSeconds(10);
 
+    private const string LootWindow = "NeedGreed";
+    private const float  DiceSize   = 22f;
+
     // The job columns of ClassJobCategory, in ClassJob order (ADV, GLA, PGL...): column n is the job of row n.
     private static readonly PropertyInfo[] JobColumns =
         [.. typeof(LuminaClassJobCategory).GetProperties().Where(property => property.PropertyType == typeof(bool))];
@@ -67,6 +78,9 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
     private bool               _openedByLoot;
     private bool               _wasOpen;
     private DateTime?          _closeAt;
+    private CircleButtonNode?  _dice;
+    private nint               _diceWindow;
+    private ushort             _diceWindowId;
 
     internal LootRolls Rolls => _rolls ??= NewRolls();
 
@@ -85,15 +99,32 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
         _wasOpen      = false;
         _closeAt      = null;
 
+        // Since 1.5.6 the window opens from the dice on the loot window, not by itself; whoever wants it back can turn it on.
+        if (Settings.Revision < 1)
+        {
+            Settings.AutoOpen = false;
+            Settings.Revision = 1;
+            SaveSettings();
+        }
+
         _rolls.Added += OnAdded;
         Svc.Framework.Update += OnUpdate;
         Svc.Chat.LogMessage  += OnLogMessage;
+        Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup,   LootWindow, OnLootWindowSetup);
+        Svc.AddonLifecycle.RegisterListener(AddonEvent.PreFinalize, LootWindow, OnLootWindowClosing);
+
+        // The loot window may already be open when the tweak is switched on.
+        var open = (AtkUnitBase*)Svc.GameGui.GetAddonByName(LootWindow).Address;
+        if (open != null && open->IsVisible) AttachDice(open);
     }
 
     protected internal override void Disable()
     {
         Svc.Framework.Update -= OnUpdate;
         Svc.Chat.LogMessage  -= OnLogMessage;
+        Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup,   LootWindow, OnLootWindowSetup);
+        Svc.AddonLifecycle.UnregisterListener(AddonEvent.PreFinalize, LootWindow, OnLootWindowClosing);
+        DetachDice();
 
         if (_rolls is not null) _rolls.Added -= OnAdded;
         _addon?.Dispose();
@@ -108,7 +139,7 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
         _forJob.Clear();
     }
 
-    public override TweakButton? OpenButton => new(TMain("Open"), TMain("Open.Help"), () => _addon?.Toggle());
+    public override TweakButton? OpenButton => new(TMain("Open"), TMain("Open.Help"), ToggleWindow);
 
     public override TweakButton? HelpButton => new(Loc.Get("Window.Help"), null, OpenHelp);
 
@@ -119,7 +150,21 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
 
     protected override IReadOnlyList<string> CommandNames => ["/gloot", "/gloottable"];
 
-    protected override void OnCommand() => _addon?.Toggle();
+    protected override void OnCommand() => ToggleWindow();
+
+    /// <summary>Opens or closes the window; the first time it opens, next to the loot window of the game when that is open.</summary>
+    private void ToggleWindow()
+    {
+        if (_addon is null) return;
+        if (_addon.IsOpen)
+        {
+            _addon.Close();
+            return;
+        }
+
+        _addon.Open();
+        if (!_placed) Svc.Framework.RunOnTick(PlaceNextToLoot, delayTicks: 3);
+    }
 
     internal Options Config => Settings;
 
@@ -422,6 +467,85 @@ public sealed unsafe class GoblinLoot : Tweak<GoblinLoot.Options>
 
         // Next to the loot window of the game, the first time: after that, where the player left it.
         if (!_placed) Svc.Framework.RunOnTick(PlaceNextToLoot, delayTicks: 3);
+    }
+
+    // ── The dice on the loot window ───────────────────────────────────────────
+
+    private void OnLootWindowSetup(AddonEvent type, AddonArgs args)
+    {
+        try   { AttachDice((AtkUnitBase*)args.Addon.Address); }
+        catch (Exception ex) { ReportFailure(ex); }
+    }
+
+    private void OnLootWindowClosing(AddonEvent type, AddonArgs args)
+    {
+        try   { DetachDice(); }
+        catch (Exception ex) { ReportFailure(ex); }
+    }
+
+    /// <summary>A small dice in the title bar of the game's loot window, left of its own buttons: opens and closes Goblin Loot.</summary>
+    private void AttachDice(AtkUnitBase* window)
+    {
+        DetachDice();
+        if (window == null) return;
+
+        _dice = new CircleButtonNode
+        {
+            Icon        = CircleButtonIcon.Dice,
+            Position    = DicePosition(window),
+            Size        = new Vector2(DiceSize, DiceSize),
+            TextTooltip = T("Dice.Tooltip"),
+            OnClick     = ToggleWindow,
+        };
+        _dice.AttachNode(window);
+
+        _diceWindow   = (nint)window;
+        _diceWindowId = window->Id;
+    }
+
+    private void DetachDice()
+    {
+        // A button clicked stays the game window's focus: freed with the window open, the next click in it crashed.
+        if (_dice is not null) NativeFocus.ReleaseNode(_diceWindow, _diceWindowId, _dice);
+        _diceWindow = 0;
+
+        _dice?.Dispose();
+        _dice = null;
+    }
+
+    /// <summary>
+    /// Left of the buttons in the title bar (close, and help or settings when there are): the leftmost button component of
+    /// the window frame on the right half of its top. Without one, where the close button usually is.
+    /// </summary>
+    private static Vector2 DicePosition(AtkUnitBase* window)
+    {
+        var scale = Math.Max(window->Scale, 0.01f);
+        var width = window->GetScaledWidth(true) / scale;
+        var fallback = new Vector2(width - 34f - DiceSize - 4f, 8f);
+
+        var frame = window->WindowNode;
+        if (frame == null || frame->Component == null) return fallback;
+
+        var origin   = new Vector2(frame->AtkResNode.X, frame->AtkResNode.Y);
+        var manager  = &frame->Component->UldManager;
+        var found    = false;
+        var left     = float.MaxValue;
+        var middle   = 0f;
+        for (var i = 0; i < manager->NodeListCount; i++)
+        {
+            var node = manager->NodeList[i];
+            if (node == null || (ushort)node->Type < 1000 || !node->IsVisible()) continue;
+
+            var component = (AtkComponentNode*)node;
+            if (component->Component == null || component->Component->GetComponentType() != ComponentType.Button) continue;
+            if (node->Y > 40f || node->X < width / 2f || node->X >= left) continue;
+
+            found  = true;
+            left   = node->X;
+            middle = node->Y + node->Height / 2f;
+        }
+
+        return found ? origin + new Vector2(left - DiceSize - 2f, middle - DiceSize / 2f) : fallback;
     }
 
     private void PlaceNextToLoot()

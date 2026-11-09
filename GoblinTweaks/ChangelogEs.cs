@@ -8,6 +8,13 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.5.6"] = (
+            "Goblin Damage Done se scrollea con la rueda del mouse; Goblin Loot se abre desde un dado en la ventana de loot del juego.",
+            [
+                "New: Goblin Damage Done con scroll — girá la rueda del mouse sobre la tabla para ver a todos los que no entran; una barrita a la derecha muestra dónde estás, y tu propia línea sigue a la vista",
+                "New: dado de Goblin Loot — un botón chico en la barra de título de la ventana de loot del juego abre y cierra Goblin Loot",
+                "Change: Goblin Loot ya no se abre solo con cada loot — se abre desde el dado; \"Abrir al aparecer loot\" en sus ajustes vuelve a la forma de antes",
+            ]),
         ["1.5.5"] = (
             "Pinch vuelve a andar; Goblin Loot saca a los que se fueron; Damage Done cuenta las partes del jefe; arreglos en Battle Text.",
             [

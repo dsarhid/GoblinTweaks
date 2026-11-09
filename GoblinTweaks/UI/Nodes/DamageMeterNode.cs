@@ -101,6 +101,7 @@ internal sealed class DamageMeterNode : OverlayNode
     private const float ButtonGap = 3f;
     private const int Buttons     = 7;
     public const float SideGap    = 4f;
+    private const float ScrollBarW = 3f;
 
     /// <summary>The header is this much of the opacity of the rest of the table.</summary>
     public const float HeaderShare = 0.5f;
@@ -117,6 +118,9 @@ internal sealed class DamageMeterNode : OverlayNode
 
     private readonly ColorImageNode _panel;
     private readonly ColorImageNode _buttonsBackground;
+    private readonly CollisionNode _wheelArea;
+    private readonly ColorImageNode _scrollTrack;
+    private readonly ColorImageNode _scrollThumb;
     private readonly CollisionNode _titleTip;
     private readonly float _titleWidth;
     private bool _locked;
@@ -149,6 +153,9 @@ internal sealed class DamageMeterNode : OverlayNode
     /// <summary>Clicked the two sheets: copies the table.</summary>
     public Action? OnCopy { get; set; }
 
+    /// <summary>Turned the mouse wheel over the lines: +1 up, -1 down.</summary>
+    public Action<int>? OnScroll { get; set; }
+
     /// <summary>Clicked a line of the table (its index, from the top).</summary>
     public Action<int>? OnRow { get; set; }
 
@@ -169,14 +176,26 @@ internal sealed class DamageMeterNode : OverlayNode
         _panel = new ColorImageNode { Color = Panel, Position = new Vector2(0f, HeaderH), Size = new Vector2(PanelWidth, 0f), IsVisible = false };
         _panel.AttachNode(this);
 
+        // Behind the lines, so the wheel scrolls them wherever the mouse is over the table; the lines that can be
+        // clicked listen to it too. Only there when there is more to see, so otherwise the table lets the mouse through.
+        _wheelArea = new CollisionNode { CollisionType = CollisionType.Hit, Position = new Vector2(0f, HeaderH), Size = new Vector2(PanelWidth, 0f), IsVisible = false };
+        MeterRows.Wheel(_wheelArea, direction => OnScroll?.Invoke(direction));
+        _wheelArea.AttachNode(this);
+
         _buttonsBackground = new ColorImageNode { Color = HeaderColor, Position = new Vector2(titleW, 0f), Size = new Vector2(buttonsW, HeaderH) };
         _buttonsBackground.AttachNode(this);
 
         for (var i = 0; i < MaxRows; i++)
         {
             var index = i;
-            _rows[i] = MeterRows.Build(this, PanelWidth, i, () => OnRow?.Invoke(index));
+            _rows[i] = MeterRows.Build(this, PanelWidth, i, () => OnRow?.Invoke(index), onWheel: direction => OnScroll?.Invoke(direction));
         }
+
+        // A thin bar on the right edge: where the lines shown are among all of them.
+        _scrollTrack = new ColorImageNode { Color = TrackBg, Position = new Vector2(PanelWidth - ScrollBarW - 1f, HeaderH + 2f), Size = new Vector2(ScrollBarW, 0f), IsVisible = false };
+        _scrollTrack.AttachNode(this);
+        _scrollThumb = new ColorImageNode { Color = Glyph, Position = new Vector2(PanelWidth - ScrollBarW - 1f, HeaderH + 2f), Size = new Vector2(ScrollBarW, 0f), IsVisible = false };
+        _scrollThumb.AttachNode(this);
 
         // Header buttons, left to right: leaf, plus, list, padlock, cog, sheets, X.
         var y0 = (HeaderH - ButtonSize) / 2f;
@@ -304,8 +323,11 @@ internal sealed class DamageMeterNode : OverlayNode
         set => IsVisible = Handle.IsVisible = value;
     }
 
-    /// <summary>Shows the rows: the table is as tall as they are.</summary>
-    public void SetRows(IReadOnlyList<DamageMeterRow> rows)
+    /// <summary>
+    /// Shows the rows: the table is as tall as they are. <paramref name="first"/> and <paramref name="total"/> say which part
+    /// of a longer list they are (the first one shown and how many there are); with more than fit, the wheel scrolls them.
+    /// </summary>
+    public void SetRows(IReadOnlyList<DamageMeterRow> rows, int first = 0, int total = 0)
     {
         var count = Math.Min(rows.Count, MaxRows);
         for (var i = 0; i < MaxRows; i++)
@@ -323,6 +345,19 @@ internal sealed class DamageMeterNode : OverlayNode
         _panel.IsVisible = count > 0;
         _panel.Size = new Vector2(PanelWidth, Math.Max(0f, height - HeaderH));
         Size = new Vector2(PanelWidth, height);
+
+        var scrolls = count > 0 && total > count;
+        _wheelArea.IsVisible   = scrolls;
+        _wheelArea.Size        = new Vector2(PanelWidth, Math.Max(0f, height - HeaderH));
+        _scrollTrack.IsVisible = _scrollThumb.IsVisible = scrolls;
+        if (!scrolls) return;
+
+        var trackH = count * RowH - 2f;
+        var thumbH = Math.Max(6f, trackH * count / total);
+        var room   = total - count;
+        _scrollTrack.Height = trackH;
+        _scrollThumb.Height = thumbH;
+        _scrollThumb.Y      = HeaderH + 2f + (trackH - thumbH) * Math.Clamp(first, 0, room) / room;
     }
 
     protected override void OnUpdate()
