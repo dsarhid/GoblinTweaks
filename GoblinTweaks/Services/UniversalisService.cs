@@ -28,12 +28,21 @@ public sealed record MarketSales(long AverageNq, long AverageHq, double WorldSal
     public static readonly MarketSales None = new(0, 0, 0, 0, DateTime.MinValue);
 }
 
+/// <summary>
+/// How far a market scan reaches: the home world, its data center, or its whole region. The region is the physical
+/// data center (all of North America, all of Europe...): since patch 7.58 its worlds are a World Visit away.
+/// </summary>
+public enum MarketScope { World, DataCenter, Region }
+
+/// <summary>A data center as Universalis knows it: its name, its region and the ids of its worlds.</summary>
+public sealed record MarketDataCenter(string Name, string Region, uint[] Worlds);
+
 /// <summary>One sale from the history of an item.</summary>
 public sealed record SaleEntry(long PricePerUnit, int Quantity, bool Hq, DateTime Time);
 
 /// <summary>Current listings (cheapest first) of one item and how it has been selling.</summary>
 /// <param name="Home">
-/// When a whole data center is scanned: the same item as seen from the home world alone (its own listings, sales
+/// When a whole data center or region is scanned: the same item as seen from the home world alone (its own listings, sales
 /// figures of the home world first), so a deal there is not hidden by cheaper listings elsewhere. Null otherwise.
 /// </param>
 public sealed record MarketSnapshot(uint ItemId, List<MarketListing> Listings, MarketSales Sales, MarketSnapshot? Home = null);
@@ -52,25 +61,26 @@ public sealed class UniversalisService : IDisposable
 
     /// <summary>
     /// Fetches listings and normal sale prices for up to <see cref="MarketBatchSize"/> items.
-    /// <paramref name="scope"/> is the world or data center whose listings are wanted; sales figures are
-    /// always asked for <paramref name="homeWorld"/>, which also returns its data center and region.
-    /// With <paramref name="wholeDataCenter"/>, the listings of the home world are fetched too and come
-    /// back in <see cref="MarketSnapshot.Home"/>. Throws on network or parse errors.
+    /// <paramref name="area"/> is the world, data center or region whose listings are wanted, as Universalis names
+    /// it; <paramref name="scope"/> says which of the three it is. Sales figures are always asked for
+    /// <paramref name="homeWorld"/>, which also returns its data center and region. Wider than the home world, the
+    /// listings of the home world are fetched too and come back in <see cref="MarketSnapshot.Home"/>.
+    /// Throws on network or parse errors.
     /// </summary>
     /// <remarks>
     /// Sale history is deliberately not requested: Universalis needs about a second per item for it and
     /// answers 504 beyond a handful of items. Listings without history and the pre-computed averages of
     /// the "aggregated" endpoint each come back in a second or two for a full batch.
     /// </remarks>
-    public static async Task<List<MarketSnapshot>> GetMarketAsync(string scope, string homeWorld, IReadOnlyCollection<uint> itemIds, bool wholeDataCenter, CancellationToken token)
+    public static async Task<List<MarketSnapshot>> GetMarketAsync(string area, string homeWorld, IReadOnlyCollection<uint> itemIds, MarketScope scope, CancellationToken token)
     {
         var ids = string.Join(',', itemIds);
-        var listingsTask = GetJsonAsync(ListingsUrl(scope, ids), token);
+        var listingsTask = GetJsonAsync(ListingsUrl(area, ids), token);
         var averagesTask = GetJsonAsync($"https://universalis.app/api/v2/aggregated/{Uri.EscapeDataString(homeWorld)}/{ids}", token);
 
-        // The data center's five cheapest listings may all be on other worlds, and a home world deal is judged
-        // against the home world's own prices: its listings are asked for separately.
-        var homeTask = wholeDataCenter ? GetJsonAsync(ListingsUrl(homeWorld, ids), token) : null;
+        // The cheapest listings of a data center or region may all be on other worlds, and a home world deal is
+        // judged against the home world's own prices: its listings are asked for separately.
+        var homeTask = scope != MarketScope.World ? GetJsonAsync(ListingsUrl(homeWorld, ids), token) : null;
 
         using var listings = await listingsTask.ConfigureAwait(false);
         using var averages = await averagesTask.ConfigureAwait(false);
@@ -81,9 +91,56 @@ public sealed class UniversalisService : IDisposable
         if (home is null)
             return ParseSnapshots(listings, worldSales);
 
+        var areaSales = ReadSales(averages, scope == MarketScope.Region ? ["region", "dc", "world"] : ["dc", "region", "world"]);
         var homeSnapshots = ParseSnapshots(home, worldSales).ToDictionary(snapshot => snapshot.ItemId);
-        return [.. ParseSnapshots(listings, ReadSales(averages, ["dc", "region", "world"]))
+        return [.. ParseSnapshots(listings, areaSales)
             .Select(snapshot => snapshot with { Home = homeSnapshots.GetValueOrDefault(snapshot.ItemId) })];
+    }
+
+    /// <summary>
+    /// Listings of up to <see cref="MarketBatchSize"/> items on one data center, with the sales figures of that data
+    /// center (of the region when it has none): an area judged on its own prices, not those of the home world.
+    /// No home world listings. Throws on network or parse errors.
+    /// </summary>
+    public static async Task<List<MarketSnapshot>> GetDataCenterMarketAsync(string dataCenter, IReadOnlyCollection<uint> itemIds, CancellationToken token)
+    {
+        var ids = string.Join(',', itemIds);
+        var listingsTask = GetJsonAsync(ListingsUrl(dataCenter, ids), token);
+        var averagesTask = GetJsonAsync($"https://universalis.app/api/v2/aggregated/{Uri.EscapeDataString(dataCenter)}/{ids}", token);
+
+        using var listings = await listingsTask.ConfigureAwait(false);
+        using var averages = await averagesTask.ConfigureAwait(false);
+        return ParseSnapshots(listings, ReadSales(averages, ["dc", "region"]));
+    }
+
+    private static volatile IReadOnlyList<MarketDataCenter>? _dataCenters;
+
+    /// <summary>
+    /// Every data center Universalis knows, with its region ("North-America", "Europe", "Japan", "Oceania") and the
+    /// ids of its worlds, asked once and kept. These are the data centers players choose from (Aether, Primal...):
+    /// since patch 7.58 the game's own data no longer has them. Throws on network or parse errors.
+    /// </summary>
+    public static async Task<IReadOnlyList<MarketDataCenter>> GetDataCentersAsync(CancellationToken token)
+    {
+        if (_dataCenters is { } known) return known;
+
+        using var document = await GetJsonAsync("https://universalis.app/api/v2/data-centers", token).ConfigureAwait(false);
+        var result = new List<MarketDataCenter>();
+        if (document.RootElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var entry in document.RootElement.EnumerateArray())
+            {
+                if (!entry.TryGetProperty("name", out var name) || name.GetString() is not { Length: > 0 } dcName) continue;
+                if (!entry.TryGetProperty("region", out var region) || region.GetString() is not { Length: > 0 } regionName) continue;
+                if (!entry.TryGetProperty("worlds", out var worlds) || worlds.ValueKind != JsonValueKind.Array) continue;
+
+                var ids = worlds.EnumerateArray().Where(world => world.TryGetUInt32(out _)).Select(world => world.GetUInt32()).ToArray();
+                result.Add(new MarketDataCenter(dcName, regionName, ids));
+            }
+        }
+
+        if (result.Count == 0) throw new JsonException("Universalis returned no data centers");
+        return _dataCenters = result;
     }
 
     /// <summary>

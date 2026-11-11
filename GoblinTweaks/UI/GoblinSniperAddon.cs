@@ -65,6 +65,7 @@ internal unsafe class GoblinSniperAddon : NativeAddon
     private string _worldFilter = AllWorlds;
     private string _ageFilter = AnyAge;
     private List<string> _worlds = [];
+    private Dictionary<string, string> _worldLabels = [];
     private bool _pendingFilter;
     private bool _resetScroll;
     private int _collisionRebuildFrames;
@@ -225,7 +226,7 @@ internal unsafe class GoblinSniperAddon : NativeAddon
         // which crashes the game when the window closes.
         _worldDropdown = new StringDropDownNode
         {
-            GetLabelFunction = world => world == AllWorlds ? Tweak.Text("Filter.AllWorlds") : world,
+            GetLabelFunction = world => world == AllWorlds ? Tweak.Text("Filter.AllWorlds") : _worldLabels.GetValueOrDefault(world, world),
             Position         = new Vector2(pos.X + 474f, cy + 1f),
             Size             = new Vector2(150f, 24f),
             MaxListOptions   = 10,
@@ -407,16 +408,22 @@ internal unsafe class GoblinSniperAddon : NativeAddon
     /// <summary>Keeps the world filter options in step with the worlds that currently have a deal.</summary>
     private void UpdateWorlds(IReadOnlyList<SniperDeal> deals)
     {
-        var worlds = deals.Select(deal => deal.World).Distinct().Order(StringComparer.OrdinalIgnoreCase).ToList();
-        if (worlds.SequenceEqual(_worlds)) return;
+        // The worlds of the home data center first, then those of the others, each data center together.
+        var worlds = deals.DistinctBy(deal => deal.World)
+            .OrderBy(deal => deal.DataCenter is not null)
+            .ThenBy(deal => deal.DataCenter, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(deal => deal.World, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (worlds.Select(deal => deal.World).SequenceEqual(_worlds)) return;
 
-        _worlds = worlds;
-        if (_worldFilter != AllWorlds && !worlds.Contains(_worldFilter))
+        _worldLabels = worlds.ToDictionary(deal => deal.World, deal => deal.WorldLabel);
+        _worlds = [.. worlds.Select(deal => deal.World)];
+        if (_worldFilter != AllWorlds && !_worlds.Contains(_worldFilter))
             _worldFilter = AllWorlds;
 
         if (_worldDropdown is not null)
         {
-            _worldDropdown.Options        = [AllWorlds, .. worlds];
+            _worldDropdown.Options        = [AllWorlds, .. _worlds];
             _worldDropdown.SelectedOption = _worldFilter;
         }
     }
@@ -434,7 +441,7 @@ internal unsafe class GoblinSniperAddon : NativeAddon
 
         var term = _searchText.Trim();
         if (term.Length > 0)
-            deals = deals.Where(deal => deal.Name.Contains(term, StringComparison.OrdinalIgnoreCase) || deal.World.Contains(term, StringComparison.OrdinalIgnoreCase));
+            deals = deals.Where(deal => deal.Name.Contains(term, StringComparison.OrdinalIgnoreCase) || deal.WorldLabel.Contains(term, StringComparison.OrdinalIgnoreCase));
 
         if (_worldFilter != AllWorlds)
             deals = deals.Where(deal => deal.World == _worldFilter);
@@ -454,7 +461,8 @@ internal unsafe class GoblinSniperAddon : NativeAddon
             SortLevel   => deals.OrderByDescending(deal => deal.ItemLevel).ThenBy(deal => deal.Name),
             SortName    => deals.OrderBy(deal => deal.Name, StringComparer.OrdinalIgnoreCase),
             SortType    => deals.OrderBy(TypeLabel, StringComparer.OrdinalIgnoreCase).ThenByDescending(deal => deal.Discount),
-            SortWorld   => deals.OrderBy(deal => deal.World, StringComparer.OrdinalIgnoreCase).ThenByDescending(deal => deal.Discount),
+            SortWorld   => deals.OrderBy(deal => deal.DataCenter is not null).ThenBy(deal => deal.DataCenter, StringComparer.OrdinalIgnoreCase)
+                               .ThenBy(deal => deal.World, StringComparer.OrdinalIgnoreCase).ThenByDescending(deal => deal.Discount),
             SortUpdated => deals.OrderByDescending(deal => deal.Reviewed).ThenByDescending(deal => deal.Discount),
             _           => deals.OrderByDescending(deal => deal.Discount).ThenByDescending(deal => deal.Profit),
         };

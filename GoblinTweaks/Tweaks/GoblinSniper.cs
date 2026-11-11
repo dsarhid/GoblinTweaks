@@ -19,10 +19,15 @@ namespace GoblinTweaks.Tweaks;
 /// <param name="AveragePrice">Average sale price of the last days, the "normal" price of the item.</param>
 /// <param name="NextPrice">Cheapest listing of another seller, 0 if there is none.</param>
 /// <param name="SalesPerDay">Units of the item sold per day on the home world, where it would be resold.</param>
+/// <param name="DataCenter">The data center of <paramref name="World"/> when it is not the home one, else null.</param>
 public sealed record SniperDeal(
     uint ItemId, string Name, uint IconId, int ItemLevel, string? Category,
-    long AveragePrice, long Price, long NextPrice, int Quantity, string World, bool Hq, DateTime Reviewed, double SalesPerDay)
+    long AveragePrice, long Price, long NextPrice, int Quantity, string World, bool Hq, DateTime Reviewed, double SalesPerDay,
+    string? DataCenter = null)
 {
+    /// <summary>The world, with its data center when it is not the home one: "Zalera (Crystal)".</summary>
+    public string WorldLabel => DataCenter is null ? World : $"{World} ({DataCenter})";
+
     /// <summary>Days given to the resale when estimating <see cref="ResaleChance"/>.</summary>
     public const int ResaleDays = 7;
 
@@ -76,8 +81,14 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         /// <summary>Show the entry with the number of deals found in the Server Info Bar.</summary>
         public bool Notify { get; set; } = true;
 
-        /// <summary>Scan every world of the home data center as well as the home world.</summary>
-        public bool WholeDataCenter { get; set; } = true;
+        /// <summary>Where to look for deals: the home world, its data center or its whole region (physical data center).</summary>
+        public MarketScope Scope { get; set; } = MarketScope.Region;
+
+        /// <summary>
+        /// Earlier versions only had "scan the whole data center" on or off. Moved to <see cref="Scope"/> on enable
+        /// (off is the home world; on, the default then, is the region, the default now), then left null.
+        /// </summary>
+        public bool? WholeDataCenter { get; set; }
 
         /// <summary>How far below the normal price a listing has to be, in percent.</summary>
         public int DiscountPercent { get; set; } = 30;
@@ -158,7 +169,13 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
     private static readonly TimeSpan RescanDelay = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan RetryDelay = TimeSpan.FromMinutes(2);
 
-    private sealed record ScanRequest(string Scope, string HomeWorld, int WorldsInDataCenter, bool WholeDataCenter, int Discount, int MinAveragePrice, TimeSpan MaxAge, TimeSpan MaxTimeWithoutSale, HashSet<string> Categories, HashSet<uint> Items, HashSet<uint> Ignored, bool HideOwned, ClientLanguage Language);
+    /// <param name="Area">The world, data center or region asked to Universalis, as it names them. Until the scan starts
+    /// and asks Universalis for its data centers, the home world.</param>
+    /// <param name="DataCenterOfWorld">The data center of every world of the region, by name: says which deals are on another one.</param>
+    /// <param name="RegionDataCenters">The data centers of the home region, each scanned on its own with the region scope.</param>
+    private sealed record ScanRequest(string Area, MarketScope Scope, string HomeWorld, uint HomeWorldId, string HomeDataCenter, int WorldsInDataCenter,
+        IReadOnlyList<string> RegionDataCenters,
+        IReadOnlyDictionary<string, string> DataCenterOfWorld, int Discount, int MinAveragePrice, TimeSpan MaxAge, TimeSpan MaxTimeWithoutSale, HashSet<string> Categories, HashSet<uint> Items, HashSet<uint> Ignored, bool HideOwned, ClientLanguage Language);
 
     private sealed class Catalog(ClientLanguage language, Dictionary<uint, SniperItem> items, HashSet<uint> usable)
     {
@@ -246,6 +263,7 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
     protected internal override void Enable()
     {
         MoveOldLanguageSetting();
+        MoveOldScopeSetting();
 
         _deals = [];
         _status = new SniperStatus(false, 0, 0, DateTime.MinValue, SniperError.None);
@@ -298,6 +316,16 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
 
         if (Language.Length == 0) SetLanguage(Settings.DataLanguage);
         Settings.DataLanguage = string.Empty;
+        SaveSettings(notify: false);
+    }
+
+    /// <summary>Earlier versions had a "whole data center" switch: off stays the home world, on becomes the region.</summary>
+    private void MoveOldScopeSetting()
+    {
+        if (Settings.WholeDataCenter is not { } whole) return;
+
+        if (!whole) Settings.Scope = MarketScope.World;
+        Settings.WholeDataCenter = null;
         SaveSettings(notify: false);
     }
 
@@ -446,7 +474,7 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         var tip = new StringBuilder();
         tip.AppendLine(string.Format(Text("DtrTooltip"), deals.Count, unseen));
         foreach (var deal in deals.Take(5))
-            tip.AppendLine($"  -{deal.Discount}%  {deal.Name}  {deal.Price:N0} ({deal.World})");
+            tip.AppendLine($"  -{deal.Discount}%  {deal.Name}  {deal.Price:N0} ({deal.WorldLabel})");
         tip.Append(Text("DtrClick"));
         var tooltip = tip.ToString();
 
@@ -497,7 +525,7 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
                     var line = new SeStringBuilder()
                         .AddText(Text("Chat.New") + " ")
                         .AddItemLink(deal.ItemId, deal.Hq)
-                        .AddText(" " + string.Format(Text("Chat.Deal"), deal.Price.ToString("N0"), deal.Discount, deal.World))
+                        .AddText(" " + string.Format(Text("Chat.Deal"), deal.Price.ToString("N0"), deal.Discount, deal.WorldLabel))
                         .Build();
                     Svc.Chat.Print(line, Text("Name"));
                 }
@@ -515,15 +543,16 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
     {
         if (_status.Scanning || DateTime.UtcNow < _nextScan || !Svc.PlayerState.IsLoaded) return;
 
-        var world     = Svc.PlayerState.HomeWorld.Value;
-        var homeWorld = world.Name.ExtractText();
-        var scope     = Settings.WholeDataCenter ? world.DataCenter.Value.Name.ExtractText() : homeWorld;
-        if (string.IsNullOrEmpty(scope)) return;
+        var world     = Svc.PlayerState.HomeWorld;
+        var homeWorld = world.Value.Name.ExtractText();
+        var scope     = Enum.IsDefined(Settings.Scope) ? Settings.Scope : MarketScope.Region;
+        if (string.IsNullOrEmpty(homeWorld)) return;
 
         _nextScan = DateTime.UtcNow.AddMinutes(Math.Clamp(Settings.ScanMinutes, 5, 120));
 
-        var worlds  = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.World>().Count(other => other.IsPublic && other.DataCenter.RowId == world.DataCenter.RowId);
-        var request = new ScanRequest(scope, homeWorld, Math.Max(1, worlds), Settings.WholeDataCenter, Math.Clamp(Settings.DiscountPercent, 1, 99), Settings.MinAveragePrice,
+        // The data center and region are worked out when the scan starts (see ResolveAreaAsync).
+        var request = new ScanRequest(homeWorld, scope, homeWorld, world.RowId, string.Empty, 1, [], new Dictionary<string, string>(),
+            Math.Clamp(Settings.DiscountPercent, 1, 99), Settings.MinAveragePrice,
             TimeSpan.FromHours(Math.Clamp(Settings.MaxAgeHours, 1, 72)),
             TimeSpan.FromDays(Math.Clamp(Settings.MaxDaysWithoutSale, 1, 365)),
             [.. Settings.Categories], [.. Settings.Items], [.. Settings.Ignored], Settings.HideOwned, DataLanguage);
@@ -542,10 +571,63 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         _ = Task.Run(() => ScanAsync(request, generation, token), token);
     }
 
+    private static Dictionary<uint, string>? _worldNames;
+
+    /// <summary>The English name of every public world, by id: the name Universalis gives its listings.</summary>
+    private static Dictionary<uint, string> WorldNames()
+    {
+        if (_worldNames is { } known) return known;
+
+        var result = new Dictionary<uint, string>();
+        foreach (var world in Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.World>(ClientLanguage.English))
+            if (world.IsPublic && world.Name.ExtractText() is { Length: > 0 } name)
+                result[world.RowId] = name;
+
+        return _worldNames = result;
+    }
+
+    /// <summary>
+    /// The home data center, the region and the data center of every world of the region, from Universalis. Not from
+    /// the game: since patch 7.58 its World sheet puts every world of a region in one data center (all of North America
+    /// under "Aether"). Throws when Universalis cannot answer, failing the scan as any other request would.
+    /// </summary>
+    private async Task<ScanRequest> ResolveAreaAsync(ScanRequest request, CancellationToken token)
+    {
+        var dataCenters = await UniversalisService.GetDataCentersAsync(token).ConfigureAwait(false);
+        var home = dataCenters.FirstOrDefault(dc => dc.Worlds.Contains(request.HomeWorldId));
+        if (home is null)
+        {
+            Svc.Log.Warning("{tweak}: Universalis does not know the data center of {world}; scanning the home world", Id, request.HomeWorld);
+            return request with { Area = request.HomeWorld, Scope = MarketScope.World };
+        }
+
+        var names = WorldNames();
+        var dataCenterOfWorld = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var dc in dataCenters.Where(dc => dc.Region == home.Region))
+            foreach (var id in dc.Worlds)
+                if (names.TryGetValue(id, out var name))
+                    dataCenterOfWorld[name] = dc.Name;
+
+        return request with
+        {
+            Area = request.Scope switch
+            {
+                MarketScope.World      => request.HomeWorld,
+                MarketScope.DataCenter => home.Name,
+                _                      => home.Region,
+            },
+            HomeDataCenter    = home.Name,
+            WorldsInDataCenter = Math.Max(1, home.Worlds.Length),
+            RegionDataCenters = [.. dataCenters.Where(dc => dc.Region == home.Region).Select(dc => dc.Name)],
+            DataCenterOfWorld = dataCenterOfWorld,
+        };
+    }
+
     private async Task ScanAsync(ScanRequest request, int generation, CancellationToken token)
     {
         try
         {
+            request = await ResolveAreaAsync(request, token).ConfigureAwait(false);
             var catalog = GetCatalog(request.Language);
             var candidates = catalog.Items.Values
                 .Where(item => (item.Category != null && request.Categories.Contains(item.Category)) || request.Items.Contains(item.Id))
@@ -578,10 +660,11 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
                 SetStatus(generation, status => status with { Done = done, Total = ids.Length });
                 batches++;
 
-                List<MarketSnapshot> market;
+                List<SniperDeal> found;
+                Dictionary<uint, long> cheapest;
                 try
                 {
-                    market = await UniversalisService.GetMarketAsync(request.Scope, request.HomeWorld, batch, request.WholeDataCenter, token).ConfigureAwait(false);
+                    (found, cheapest) = await FindDealsAsync(batch, catalog, request, token).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (!token.IsCancellationRequested && UniversalisService.IsTransient(ex))
                 {
@@ -593,21 +676,15 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
                     continue;
                 }
 
-                var found = new List<SniperDeal>();
-                foreach (var snapshot in market)
-                {
-                    if (!catalog.Items.TryGetValue(snapshot.ItemId, out var item)) continue;
-
-                    var deal = Evaluate(item, snapshot, request);
-                    if (deal != null) found.Add(deal);
-
-                    // Scanning the data center must not hide what scanning only the home world finds: a listing that is
-                    // cheap for the home world can lose against cheaper listings or a lower average elsewhere.
-                    if (snapshot.Home is { } home && Evaluate(item, home, request) is { } homeDeal && homeDeal.Key != deal?.Key)
-                        found.Add(homeDeal);
-                }
-
                 var confirmed = await ConfirmWithSalesAsync(found, request, token).ConfigureAwait(false);
+
+                // Across the region, an item on sale on several data centers is listed once: where it is cheapest. And only
+                // when nothing in the region is cheaper, deal or not: a data center where everyone sells it for less makes
+                // the deal found elsewhere no deal at all.
+                if (request.Scope == MarketScope.Region)
+                    confirmed = [.. confirmed.GroupBy(deal => deal.ItemId)
+                        .Select(same => same.OrderBy(deal => deal.Price).ThenBy(deal => deal.DataCenter is not null).First())
+                        .Where(deal => !cheapest.TryGetValue(deal.ItemId, out var lowest) || deal.Price <= lowest)];
                 deals.AddRange(confirmed);
 
                 done += batch.Length;
@@ -649,6 +726,77 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
             // Usually Universalis being overloaded: keep what is listed so far and try again soon.
             SetNextScan(generation, DateTime.UtcNow + RetryDelay);
             SetStatus(generation, status => status with { Scanning = false, Error = ErrorOf(ex) });
+        }
+    }
+
+    /// <summary>
+    /// The deals among one batch of items. Across the region, each data center is judged by its own prices and its own
+    /// sellers, as if it were the one scanned: an item that is cheap on Dynamis is a deal there, however it sells on
+    /// the others. Every data center must answer, or the batch fails.
+    /// </summary>
+    /// <returns>The deals, and across the region the lowest price each item is listed at anywhere in it (listings no
+    /// older than the maximum data age), to keep only the deals nothing beats.</returns>
+    private async Task<(List<SniperDeal> Found, Dictionary<uint, long> Cheapest)> FindDealsAsync(uint[] batch, Catalog catalog, ScanRequest request, CancellationToken token)
+    {
+        var found    = new List<SniperDeal>();
+        var cheapest = new Dictionary<uint, long>();
+        if (request.Scope != MarketScope.Region)
+        {
+            AddDeals(found, await UniversalisService.GetMarketAsync(request.Area, request.HomeWorld, batch, request.Scope, token).ConfigureAwait(false), catalog, request);
+            return (found, cheapest);
+        }
+
+        void NoteCheapest(List<MarketSnapshot> market)
+        {
+            foreach (var snapshot in market)
+            {
+                var fresh = snapshot.Listings.Where(listing => listing.Reviewed == DateTime.MinValue || DateTime.UtcNow - listing.Reviewed <= request.MaxAge);
+                if (!fresh.Any()) continue;
+
+                var lowest = fresh.Min(listing => listing.Price);
+                if (!cheapest.TryGetValue(snapshot.ItemId, out var known) || lowest < known)
+                    cheapest[snapshot.ItemId] = lowest;
+            }
+        }
+
+        var home = await UniversalisService.GetMarketAsync(request.HomeDataCenter, request.HomeWorld, batch, MarketScope.DataCenter, token).ConfigureAwait(false);
+        AddDeals(found, home, catalog, request);
+        NoteCheapest(home);
+        var homeSales = home.ToDictionary(snapshot => snapshot.ItemId, snapshot => snapshot.Sales);
+
+        // One data center at a time: Universalis allows a few connections at once, and each answers in a second or two.
+        // Every one must answer (each request already retries): without one, nothing says a deal is the cheapest in the
+        // region, so the batch fails as a whole and its items keep the deals of the previous scan.
+        foreach (var dataCenter in request.RegionDataCenters)
+        {
+            if (string.Equals(dataCenter, request.HomeDataCenter, StringComparison.OrdinalIgnoreCase)) continue;
+            token.ThrowIfCancellationRequested();
+
+            var market = await UniversalisService.GetDataCenterMarketAsync(dataCenter, batch, token).ConfigureAwait(false);
+            NoteCheapest(market);
+
+            // Resale happens on the home world: its sales per day go with every deal, wherever it was found.
+            AddDeals(found, [.. market.Select(snapshot => homeSales.TryGetValue(snapshot.ItemId, out var sales)
+                ? snapshot with { Sales = snapshot.Sales with { WorldSalesPerDay = sales.WorldSalesPerDay, DataCenterSalesPerDay = sales.DataCenterSalesPerDay } }
+                : snapshot)], catalog, request);
+        }
+
+        return (found, cheapest);
+    }
+
+    private static void AddDeals(List<SniperDeal> found, List<MarketSnapshot> market, Catalog catalog, ScanRequest request)
+    {
+        foreach (var snapshot in market)
+        {
+            if (!catalog.Items.TryGetValue(snapshot.ItemId, out var item)) continue;
+
+            var deal = Evaluate(item, snapshot, request);
+            if (deal != null) found.Add(deal);
+
+            // Scanning the data center or region must not hide what scanning only the home world finds: a listing that is
+            // cheap for the home world can lose against cheaper listings or a lower average elsewhere.
+            if (snapshot.Home is { } home && Evaluate(item, home, request) is { } homeDeal && homeDeal.Key != deal?.Key)
+                found.Add(homeDeal);
         }
     }
 
@@ -700,9 +848,14 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
         // and they may well be just as low.
         if (competitor == null && market.Listings.Count >= UniversalisService.MarketListings) return null;
 
+        // A world of another data center is reached from the aetheryte by choosing that data center first: it is said.
+        var world = cheapest.World ?? request.HomeWorld;
+        var dataCenter = request.DataCenterOfWorld.TryGetValue(world, out var dc) && !string.Equals(dc, request.HomeDataCenter, StringComparison.OrdinalIgnoreCase)
+            ? dc : null;
+
         return new SniperDeal(item.Id, item.Name, item.IconId, item.ItemLevel, item.Category,
             average, cheapest.Price, competitor?.Price ?? 0, cheapest.Quantity,
-            cheapest.World ?? request.HomeWorld, cheapest.Hq, cheapest.Reviewed, salesPerDay);
+            world, cheapest.Hq, cheapest.Reviewed, salesPerDay, dataCenter);
     }
 
     // Universalis needs about a second per item for sale history and gives up beyond a handful: few items per request.
@@ -720,14 +873,19 @@ public sealed class GoblinSniper : Tweak<GoblinSniper.Options>
 
         var keep      = 100 - request.Discount;
         var confirmed = new List<SniperDeal>(deals.Count);
-        foreach (var batch in deals.Select(deal => deal.ItemId).Distinct().Chunk(HistoryBatchSize))
+
+        // Each deal is checked against the sales where it was judged: the data center it was found on, across the region.
+        string AreaOf(SniperDeal deal) => request.Scope != MarketScope.Region ? request.Area : deal.DataCenter ?? request.HomeDataCenter;
+
+        foreach (var (area, batch) in deals.GroupBy(AreaOf)
+                     .SelectMany(group => group.Select(deal => deal.ItemId).Distinct().Chunk(HistoryBatchSize).Select(ids => (group.Key, ids))))
         {
-            var batchDeals = deals.Where(deal => batch.Contains(deal.ItemId)).ToList();
+            var batchDeals = deals.Where(deal => AreaOf(deal) == area && batch.Contains(deal.ItemId)).ToList();
 
             Dictionary<uint, List<SaleEntry>> history;
             try
             {
-                history = await UniversalisService.GetRecentSalesAsync(request.Scope, batch, request.MaxTimeWithoutSale, token).ConfigureAwait(false);
+                history = await UniversalisService.GetRecentSalesAsync(area, batch, request.MaxTimeWithoutSale, token).ConfigureAwait(false);
             }
             catch (Exception ex) when (!token.IsCancellationRequested && UniversalisService.IsTransient(ex))
             {

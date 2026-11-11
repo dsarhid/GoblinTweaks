@@ -15,7 +15,7 @@ internal readonly record struct SniperColumns(float NameX, float NameW, float Le
     public const float PriceW    = 112f;
     public const float DiscountW = 64f;
     public const float ResaleW   = 70f;
-    public const float WorldW    = 104f;
+    public const float WorldW    = 150f;   // room for "Halicarnassus (Dynamis)"
     public const float AgeW      = 60f;
     private const float Gap      = 8f;
 
@@ -109,6 +109,7 @@ internal sealed class SniperRowNode : ListItemNode<SniperDeal>, IListItemNode
         _perDay   = Column(11, ColorMuted, AlignmentType.Right);
         _world    = Column(12, ColorName, AlignmentType.Left);
         _age      = Column(12, ColorMuted, AlignmentType.Right);
+        _world.AddTextFlags(TextFlags.Ellipsis);
 
         // MouseDown (not MouseClick) reliably fires for the right button here.
         AddEvent(AtkEventType.MouseDown, (_, _, _, _, eventData) =>
@@ -185,7 +186,8 @@ internal sealed class SniperRowNode : ListItemNode<SniperDeal>, IListItemNode
         _resale.String    = $"{data.ResaleChance}%";
         _resale.TextColor = data.ResaleChance >= 75 ? ColorLikely : data.ResaleChance >= 40 ? ColorMaybe : ColorUnlikely;
         _perDay.String    = string.Format(PerDayFormat, data.SalesPerDay >= 10 ? $"{data.SalesPerDay:0}" : $"{data.SalesPerDay:0.##}");
-        _world.String    = data.World;
+        // A world of another data center says which: "Golem (Dynamis)".
+        _world.String    = data.WorldLabel;
         _age.String      = FormatAge(data.Reviewed);
 
         ItemTooltip = data.ItemId;

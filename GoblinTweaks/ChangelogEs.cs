@@ -8,6 +8,16 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.5.7"] = (
+            "Goblin Sniper busca en todos los data centers de tu región; arreglos en Battle Text para pulls grandes, cooldowns de PvP e íconos de mascotas.",
+            [
+                "New: \"Dónde buscar\" en Goblin Sniper — Mi mundo, Mi data center o Mi región (por defecto); desde el parche 7.58 todos los data centers de tu región están a un World Visit desde el aetherito",
+                "New: Goblin Sniper en toda la región — cada data center se juzga con sus propios precios, y una oferta solo se lista si no hay nada más barato en toda la región; los mundos de otro data center lo dicen, por ejemplo \"Golem (Dynamis)\"",
+                "Fix: Goblin Sniper tomaba todos los mundos de Norteamérica como parte de tu data center — desde la 7.58 los datos del juego los ponen todos juntos; ahora los data centers salen de Universalis",
+                "Fix: Goblin Battle Text partía un AoE sobre muchos objetivos en dos mensajes (\"x8\" y \"x3\") — los golpes de un mismo uso de una acción se unen aunque el juego los muestre tarde",
+                "Fix: Goblin Battle Text anunciaba las weaponskills de PvP (Drill, Scattergun, Full Metal Field...) como \"ready now\" después de cada GCD — ahora solo cuenta su propio cooldown",
+                "Fix: Goblin Battle Text mostraba sin ícono las acciones de las mascotas de otros jugadores (el Embrace de la hada)",
+            ]),
         ["1.5.6"] = (
             "Goblin Damage Done se scrollea con la rueda del mouse; Goblin Loot se abre desde un dado en la ventana de loot del juego.",
             [

@@ -476,6 +476,14 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     private static readonly TimeSpan YourActionWindow = TimeSpan.FromSeconds(5);
     private readonly Dictionary<uint, DateTime> _yourActions = [];
     private int _counterLogs;
+
+    // Your last use of each action and whom it hit, so that all its hits merge into one message however late the
+    // game shows them: on many targets they come in batches, the last ones after the merge window. Several packets
+    // of one action close together (a use on many targets may come in more than one) are taken as one use.
+    private static readonly TimeSpan SameUseWindow = TimeSpan.FromMilliseconds(500);
+    private readonly Dictionary<uint, (int Id, HashSet<uint> Targets, DateTime At)> _uses = [];
+    private int _nextUseId;
+    private int _useLogs;
     private OverlayNodes? _overlay;
     private BattleTextAddon? _addon;
     private Exception? _failure;
@@ -823,6 +831,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         _shieldPending.Clear();
         _myCasts.Clear();
         _yourActions.Clear();
+        _uses.Clear();
         _statusSeen.Clear();
         _statusEntitiesSeen.Clear();
         _statusStarted.Clear();
@@ -1399,7 +1408,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
             : null;
 
         // What a monster, a boss or any other NPC does to you shows no action icon; what another player does (PvP) does.
-        var fromNpc = !outgoing && !mine && from != null && from->ObjectKind != ObjectKind.Pc;
+        // The pet of another player (a faerie's Embrace, a carbuncle) is no monster: its actions keep their icon.
+        var fromNpc = !outgoing && !mine && from != null && from->ObjectKind != ObjectKind.Pc && !OwnedByPlayer(from);
 
         // Fall damage comes as a plain hit on you with no action and no one behind it (or you as your own source).
         var fall = damage && !outgoing && !tick && actionKind == 0 && actionId == 0 && (from == null || from == player)
@@ -1480,6 +1490,16 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                          | (countering != 0 ? 1UL << 62 : 0UL)
                        : 0,
         };
+
+        // Hits of one use of your action merge whenever they show; a counter-attack is not a use of yours.
+        if (message.MergeKey != 0 && outgoing && from == player && !tick && !healTick && countering == 0 && actionKind == ActionKindAction)
+        {
+            message.UseId = UseOf(actionId, to->EntityId, out var sinceMs);
+
+            // TEMP: to check in game how late the hits of an action on many targets show.
+            if (message.UseId != 0 && sinceMs > 300 && _useLogs++ < 60)
+                Svc.Log.Info($"GBT use check: action {actionId} use {message.UseId} hit shown {sinceMs:F0} ms after the action, key {message.MergeKey:X}");
+        }
 
         MarkHit(message, crit, directHit, heal ? HitSource.Heal : outgoing ? HitSource.Dealt : HitSource.Taken);
 
@@ -1728,6 +1748,7 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
         if (player == null || player->EntityId != casterEntityId) return;
 
         _yourActions[header->ActionId] = DateTime.UtcNow;
+        RecordUse(header, targetEntityIds);
         RecordCast(header, targetEntityIds);
         CapturePositional(player, header, effects, targetEntityIds);
 
@@ -2231,6 +2252,16 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     /// Whether an object is something of yours that fights for you. The NPCs that go with you in a duty (Trust, Duty
     /// Support) are told apart by their kind: they are not pets, and they are shown only if the option for NPCs is on, and never for healing: that is theirs, not yours.
     /// </summary>
+    /// <summary>Whether a character belongs to a player: a pet, a faerie, a chocobo companion.</summary>
+    private static bool OwnedByPlayer(GameObject* other)
+    {
+        if (other == null || other->OwnerId is 0 or NoEntity) return false;
+
+        var manager = GameObjectManager.Instance();
+        var owner   = manager == null ? null : manager->Objects.GetObjectByEntityId(other->OwnerId);
+        return owner != null && owner->ObjectKind == ObjectKind.Pc;
+    }
+
     private bool IsMyPet(GameObject* player, GameObject* other, bool healing = false)
     {
         if (other == null || other->ObjectKind != ObjectKind.BattleNpc) return false;
@@ -2285,6 +2316,31 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     /// </summary>
     private bool UsedByYouJustNow(uint actionId)
         => _yourActions.TryGetValue(actionId, out var at) && DateTime.UtcNow - at < YourActionWindow;
+
+    /// <summary>Notes whom a use of your action hit: see <see cref="_uses"/>.</summary>
+    private void RecordUse(ActionEffectHandler.Header* header, GameObjectId* targetEntityIds)
+    {
+        if (targetEntityIds == null || header->NumTargets == 0) return;
+
+        var now = DateTime.UtcNow;
+        if (!_uses.TryGetValue(header->ActionId, out var use) || now - use.At > SameUseWindow)
+            use = (++_nextUseId, [], now);
+
+        for (var target = 0; target < header->NumTargets; target++)
+            use.Targets.Add(targetEntityIds[target].ObjectId);
+
+        _uses[header->ActionId] = use;
+    }
+
+    /// <summary>The use of your action that hit this target a moment ago, or 0.</summary>
+    private int UseOf(uint actionId, uint targetId, out double sinceMs)
+    {
+        sinceMs = 0;
+        if (!_uses.TryGetValue(actionId, out var use) || !use.Targets.Contains(targetId)) return 0;
+
+        sinceMs = (DateTime.UtcNow - use.At).TotalMilliseconds;
+        return sinceMs < YourActionWindow.TotalMilliseconds ? use.Id : 0;
+    }
 
     private (string? Name, uint IconId) LookupAction(uint actionId)
     {
@@ -2622,11 +2678,35 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                 continue;
             }
 
-            if (manager->IsRecastTimerActive(ActionType.Action, actionId))
+            if (OwnCooldownActive(manager, actionId))
                 _coolingDown.Add(actionId);
             else if (_coolingDown.Remove(actionId))
+            {
+                // TEMP: to check in game (PvP) that only real cooldowns are told.
+                if (Svc.ClientState.IsPvP && _cooldownLogs++ < 40)
+                    Svc.Log.Info($"GBT cooldown check: {actionId} ready, groups {manager->GetRecastGroup((int)ActionType.Action, actionId)}/{manager->GetAdditionalRecastGroup(ActionType.Action, actionId)}");
                 Queue(BattleTextEvent.Cooldown, CooldownMessage(LookupAction(ReadyAction(manager, actionId))));
+            }
         }
+    }
+
+    private int _cooldownLogs;
+
+    /// <summary>
+    /// Whether the action's own cooldown is running. Not the global cooldown: a weaponskill with a cooldown of its own
+    /// (PvP Drill, Scattergun...) has the global one too, and the game's own check counts that, so every GCD you
+    /// pressed would make it come back with the GCD.
+    /// </summary>
+    private static bool OwnCooldownActive(ActionManager* manager, uint actionId)
+        => GroupActive(manager, manager->GetRecastGroup((int)ActionType.Action, actionId))
+           || GroupActive(manager, manager->GetAdditionalRecastGroup(ActionType.Action, actionId));
+
+    private static bool GroupActive(ActionManager* manager, int group)
+    {
+        if (group < 0 || group == GlobalCooldownGroup) return false;
+
+        var detail = manager->GetRecastGroupDetail(group);
+        return detail != null && detail->IsActive && detail->Elapsed < detail->Total;
     }
 
     /// <summary>

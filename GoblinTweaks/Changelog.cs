@@ -34,6 +34,16 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.5.7", "2026-11-11",
+            "Goblin Sniper searches every data center of your region; Battle Text fixes for big pulls, PvP cooldowns and pet icons.",
+            [
+                "New: Goblin Sniper \"Where to look\" — My world, My data center or My region (the default); since patch 7.58 every data center of your region is a World Visit away from the aetheryte",
+                "New: Goblin Sniper across the region — each data center is judged by its own prices, and a deal is only listed when nothing in the whole region is cheaper; worlds of another data center say which, e.g. \"Golem (Dynamis)\"",
+                "Fix: Goblin Sniper took every North American world as part of your data center — since 7.58 the game data puts them all under one; data centers now come from Universalis",
+                "Fix: Goblin Battle Text split one AoE on many targets into two messages (\"x8\" and \"x3\") — hits of one use of an action now merge however late the game shows them",
+                "Fix: Goblin Battle Text announced PvP weaponskills (Drill, Scattergun, Full Metal Field...) as \"ready now\" after every GCD — only their own cooldown counts now",
+                "Fix: Goblin Battle Text showed the actions of other players' pets (a faerie's Embrace) without their icon",
+            ]),
         new("1.5.6", "2026-11-08",
             "Goblin Damage Done scrolls with the mouse wheel; Goblin Loot opens from a dice on the game's loot window.",
             [

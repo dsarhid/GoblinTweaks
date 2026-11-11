@@ -79,6 +79,12 @@ internal sealed class BattleTextMessage
 
     /// <summary>Messages with the same non-zero key that arrive together are merged into one.</summary>
     public ulong MergeKey { get; set; }
+
+    /// <summary>
+    /// The use of your action this hit belongs to, or 0. Hits of one use merge however late they show:
+    /// the game shows those of many targets over more than the merge window.
+    /// </summary>
+    public int UseId { get; set; }
 }
 
 /// <summary>
@@ -415,8 +421,8 @@ internal sealed class BattleTextAreaNode : OverlayNode
         for (var i = _active.Count - 1; i >= 0; i--)
         {
             var slot = _active[i];
-            if (slot.Age > window) break;
             if (slot.Message.MergeKey != message.MergeKey) continue;
+            if (slot.Age > window && (message.UseId == 0 || slot.Message.UseId != message.UseId)) continue;
 
             // Messages with the same key look the same: the key tells critical and direct hits apart, so normal
             // hits merge with normal ones and critical ones with critical ones, never with each other.

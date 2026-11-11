@@ -1,6 +1,8 @@
 using System.Numerics;
 using FFXIVClientStructs.FFXIV.Component.GUI;
+using GoblinTweaks.Services;
 using GoblinTweaks.Tweaks;
+using GoblinTweaks.UI.Nodes;
 using KamiToolKit.BaseTypes;
 using KamiToolKit.Nodes;
 
@@ -43,8 +45,7 @@ internal sealed unsafe class GoblinSniperSettingsAddon : SettingsPanelAddon
 
         Toggle(Tweak.Text("Notify"), Tweak.Text("Notify.Help"), options.Notify,
             on => { options.Notify = on; Tweak.SaveCurrent(); });
-        Toggle(Tweak.Text("WholeDataCenter"), Tweak.Text("WholeDataCenter.Help"), options.WholeDataCenter,
-            on => { options.WholeDataCenter = on; Tweak.SaveCurrent(); });
+        ScopeSwitch(options);
 
         Section(Tweak.Text("Alerts"));
         Toggle(Tweak.Text("ChatAlert"), Tweak.Text("ChatAlert.Help"), options.ChatAlert,
@@ -89,6 +90,36 @@ internal sealed unsafe class GoblinSniperSettingsAddon : SettingsPanelAddon
         _loading  = Note(Tweak.Text("Loading"), Pad, ContentW, Muted);
         _rowsTop  = Y;
         TryBuildItems();
+    }
+
+    private static readonly MarketScope[] Scopes = [MarketScope.World, MarketScope.DataCenter, MarketScope.Region];
+
+    /// <summary>Where deals are looked for: home world, data center or region, as a switch of three segments.</summary>
+    private void ScopeSwitch(GoblinSniper.Options options)
+    {
+        if (Tweak is null) return;
+
+        new TextNode
+        {
+            String    = Tweak.Text("Scope"),
+            Position  = new Vector2(Pad, Y),
+            Size      = new Vector2(ContentW, 20f),
+            TextColor = White,
+            FontSize  = 14,
+        }.AttachNode(Host);
+        Y += 24f;
+
+        var scopes = new SegmentSwitchNode([.. Scopes.Select(scope => Tweak.Text($"Scope.{scope}"))], ContentW)
+        {
+            Position = new Vector2(Pad, Y),
+        };
+        scopes.AttachNode(Host);
+        scopes.Selected   = Array.IndexOf(Scopes, options.Scope) is >= 0 and var index ? index : Array.IndexOf(Scopes, MarketScope.Region);
+        scopes.OnSelected = selected => { options.Scope = Scopes[selected]; Tweak.SaveCurrent(); };
+        Y += SegmentSwitchNode.SwitchHeight + 6f;
+
+        Note(Tweak.Text("Scope.Help"), Pad, ContentW, Muted);
+        Y += 8f;
     }
 
     protected override void OnUpdate(AtkUnitBase* addon)
