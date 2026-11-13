@@ -8,6 +8,14 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.6.0"] = (
+            "Nuevo Goblin Hunts: los hunts y FATEs que avisa Sonar en una tabla chica, con botones de mapa y teleport.",
+            [
+                "New: Goblin Hunts — una tabla chica con los hunts A y S y las FATEs que avisa Sonar, del más nuevo al más viejo, con jugadores cerca, vida o progreso, zona y mundo (en amarillo si no es el tuyo); necesita el plugin Sonar y nunca se conecta a ningún servidor",
+                "New: botones de Goblin Hunts — uno abre el mapa con el flag, el otro te teletransporta a la aetherita sintonizada más cercana, o a Ul'dah con un aviso si el hunt está en otro mundo",
+                "New: avisos de Goblin Hunts — un sonido por cada hunt o FATE nuevo, elegido por separado para rank S, rank A y FATEs, y un filtro All / S / A / FATE en el encabezado",
+                "Change: Goblin Damage Done, sus tablas laterales y el seguimiento de logros ahora quedan detrás de las ventanas del juego en vez de taparlas",
+            ]),
         ["1.5.7"] = (
             "Goblin Sniper busca en todos los data centers de tu región; arreglos en Battle Text para pulls grandes, cooldowns de PvP e íconos de mascotas.",
             [

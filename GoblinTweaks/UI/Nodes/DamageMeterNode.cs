@@ -40,7 +40,7 @@ internal sealed class DamageMeterHandleNode : OverlayNode
         Size = new Vector2(width, height);
     }
 
-    public override OverlayLayer OverlayLayer => OverlayLayer.AboveUserInterface;
+    public override OverlayLayer OverlayLayer => OverlayLayer.BehindUserInterface;
 
     /// <summary>The whole title, even if what shows had to be cut with "...".</summary>
     public string FullTitle => _full;
@@ -226,7 +226,7 @@ internal sealed class DamageMeterNode : OverlayNode
         Size = new Vector2(PanelWidth, HeaderH);
     }
 
-    public override OverlayLayer OverlayLayer => OverlayLayer.AboveUserInterface;
+    public override OverlayLayer OverlayLayer => OverlayLayer.BehindUserInterface;
 
     public string Title
     {

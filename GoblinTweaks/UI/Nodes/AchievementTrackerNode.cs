@@ -120,7 +120,7 @@ internal sealed class AchievementTrackerNode : OverlayNode
         Size = new Vector2(PanelWidth, HeaderH);
     }
 
-    public override OverlayLayer OverlayLayer => OverlayLayer.AboveUserInterface;
+    public override OverlayLayer OverlayLayer => OverlayLayer.BehindUserInterface;
 
     public string Title
     {

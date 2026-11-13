@@ -17,7 +17,7 @@ internal sealed class DragHandleNode : OverlayNode
         _area.AttachNode(this);
     }
 
-    public override OverlayLayer OverlayLayer => OverlayLayer.AboveUserInterface;
+    public override OverlayLayer OverlayLayer => OverlayLayer.BehindUserInterface;
 
     public bool Movable
     {
@@ -122,7 +122,7 @@ internal sealed class SidePanelNode : OverlayNode
         if (Handle is not null) Handle.IsVisible = false;
     }
 
-    public override OverlayLayer OverlayLayer => OverlayLayer.AboveUserInterface;
+    public override OverlayLayer OverlayLayer => OverlayLayer.BehindUserInterface;
 
     /// <summary>Whether the table is on screen.</summary>
     public bool Open

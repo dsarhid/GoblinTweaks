@@ -34,6 +34,14 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.6.0", "2026-11-13",
+            "New Goblin Hunts: the hunts and FATEs Sonar announces in a small table, with map and teleport buttons.",
+            [
+                "New: Goblin Hunts — a small table of the A and S hunts and FATEs Sonar announces, newest first, with players nearby, HP or progress, zone and world (yellow when it is not yours); needs the Sonar plugin and never connects to any server",
+                "New: Goblin Hunts buttons — one opens the map with the flag, the other teleports to the nearest attuned aetheryte, or to Ul'dah with a notice when the hunt is on another world",
+                "New: Goblin Hunts alerts — a sound for each new hunt or FATE, chosen separately for S ranks, A ranks and FATEs, and an All / S / A / FATE filter in the header",
+                "Change: Goblin Damage Done, its side tables and the achievement tracker now sit behind the game's windows instead of covering them",
+            ]),
         new("1.5.7", "2026-11-11",
             "Goblin Sniper searches every data center of your region; Battle Text fixes for big pulls, PvP cooldowns and pet icons.",
             [

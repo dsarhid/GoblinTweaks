@@ -28,6 +28,7 @@ internal sealed class Svc
     [PluginService] public static IClientState ClientState { get; private set; } = null!;
     [PluginService] public static IToastGui Toasts { get; private set; } = null!;
     [PluginService] public static IUnlockState UnlockState { get; private set; } = null!;
+    [PluginService] public static IObjectTable Objects { get; private set; } = null!;
 
     public static void Initialize(IDalamudPluginInterface pluginInterface) => pluginInterface.Create<Svc>();
 
