@@ -34,6 +34,12 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.6.1", "2026-11-13",
+            "Goblin Hunts: teleport also flags the hunt on the map; the first line's teleport button works again.",
+            [
+                "New: Goblin Hunts teleport also puts the map's flag on the hunt, so it is waiting when you land",
+                "Fix: Goblin Hunts — the teleport button of the first line could stop answering (no click, no tooltip) after a dead hunt had been there — the buttons now stay clickable whatever was shown before",
+            ]),
         new("1.6.0", "2026-11-13",
             "New Goblin Hunts: the hunts and FATEs Sonar announces in a small table, with map and teleport buttons.",
             [

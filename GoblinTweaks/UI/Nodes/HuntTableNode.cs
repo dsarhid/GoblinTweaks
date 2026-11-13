@@ -120,7 +120,7 @@ internal sealed class HuntTableNode : OverlayNode
         _panel.AttachNode(this);
 
         _wheelArea = new CollisionNode { CollisionType = CollisionType.Hit, Position = new Vector2(0f, HeaderH), Size = new Vector2(PanelWidth, 0f), IsVisible = false };
-        MeterRows.Wheel(_wheelArea, direction => { Svc.Log.Debug($"GoblinHunts [diag] wheel behind lines: {direction}"); OnScroll?.Invoke(direction); });
+        MeterRows.Wheel(_wheelArea, direction => OnScroll?.Invoke(direction));
         _wheelArea.AttachNode(this);
 
         _buttonsBackground = new ColorImageNode { Color = DamageMeterNode.HeaderColor, Position = new Vector2(titleW, 0f), Size = new Vector2(buttonsW, HeaderH) };
@@ -234,6 +234,7 @@ internal sealed class HuntTableNode : OverlayNode
     /// <summary>Shows the lines; <paramref name="first"/> and <paramref name="total"/> place them in the whole list for the scroll bar.</summary>
     public void SetRows(IReadOnlyList<HuntRow> rows, int first, int total)
     {
+        var hitsBefore = HitsShown();
         var count = Math.Min(rows.Count, MaxRows);
         for (var i = 0; i < MaxRows; i++)
         {
@@ -241,7 +242,17 @@ internal sealed class HuntTableNode : OverlayNode
             l.Visible = i < count;
             if (i < count) Fill(l, rows[i]);
         }
+        PlaceScroll(first, total, count);
 
+        // A hit area with a tooltip loses its collision flag while hidden (KamiToolKit), and the game only knows the
+        // areas that had it when it last made its list. Make it again when the buttons shown change, or a button that
+        // was hidden then (a dead hunt's teleport) stays dead: no click, no tooltip.
+        if (HitsShown() != hitsBefore) RefreshCollisions();
+    }
+
+    /// <summary>Sizes the table to its lines and shows the scroll bar when there are more than fit.</summary>
+    private void PlaceScroll(int first, int total, int count)
+    {
         var height = HeaderH + (count == 0 ? 0f : 4f + count * RowH);
         _panel.IsVisible = count > 0;
         _panel.Size = new Vector2(PanelWidth, Math.Max(0f, height - HeaderH));
@@ -263,6 +274,40 @@ internal sealed class HuntTableNode : OverlayNode
 
     protected override void OnUpdate()
     {
+    }
+
+    /// <summary>Which hit areas are shown now, one character each.</summary>
+    private string HitsShown()
+    {
+        var shown = new char[_lines.Length * 3 + 1];
+        for (var i = 0; i < _lines.Length; i++)
+        {
+            var l = _lines[i];
+            shown[i * 3]     = l.RowHit.IsVisible ? '1' : '0';
+            shown[i * 3 + 1] = l.MapHit.IsVisible ? '1' : '0';
+            shown[i * 3 + 2] = l.TpHit.IsVisible ? '1' : '0';
+        }
+        shown[^1] = _wheelArea.IsVisible ? '1' : '0';
+        return new string(shown);
+    }
+
+    /// <summary>Has the overlay window that holds this table make its list of collision nodes again.</summary>
+    private unsafe void RefreshCollisions()
+    {
+        AtkResNode* root = this;
+        if (root == null) return;
+        while (root->ParentNode != null) root = root->ParentNode;
+
+        var stage = AtkStage.Instance();
+        if (stage == null || stage->RaptureAtkUnitManager == null) return;
+        var list = &stage->RaptureAtkUnitManager->AtkUnitManager.AllLoadedUnitsList;
+        for (var i = 0; i < list->Count; i++)
+        {
+            var addon = list->Entries[i].Value;
+            if (addon == null || addon->RootNode != root) continue;
+            addon->UpdateCollisionNodeList(false);
+            return;
+        }
     }
 
     private static void Fill(Line l, HuntRow r)
@@ -342,15 +387,15 @@ internal sealed class HuntTableNode : OverlayNode
         // The whole line listens to the wheel, like the lines of the damage meter: a hit area with a click (here doing
         // nothing) and the wheel, no tooltip. Under the two buttons, which are attached after it and so stay clickable.
         var rowHit = new CollisionNode { CollisionType = CollisionType.Hit, Position = new Vector2(2f, y), Size = new Vector2(PanelWidth - 4f, h - 2f) };
-        MeterRows.Wheel(rowHit, direction => { Svc.Log.Debug($"GoblinHunts [diag] wheel on line {index}: {direction}"); OnScroll?.Invoke(direction); });
+        MeterRows.Wheel(rowHit, direction => OnScroll?.Invoke(direction));
         MeterRows.Click(rowHit, this, () => { });
 
         var mapHit = new CollisionNode { CollisionType = CollisionType.Hit, Position = new Vector2(MapX, by), Size = new Vector2(ButtonSize, ButtonSize) };
         var tpHit  = new CollisionNode { CollisionType = CollisionType.Hit, Position = new Vector2(TpX, by), Size = new Vector2(ButtonSize, ButtonSize) };
-        MeterRows.Wheel(mapHit, direction => { Svc.Log.Debug($"GoblinHunts [diag] wheel on map {index}: {direction}"); OnScroll?.Invoke(direction); });
+        MeterRows.Wheel(mapHit, direction => OnScroll?.Invoke(direction));
         MeterRows.Wheel(tpHit, direction => OnScroll?.Invoke(direction));
         MeterRows.Click(mapHit, this, () => OnMap?.Invoke(index));
-        MeterRows.Click(tpHit, this, () => { Svc.Log.Debug($"GoblinHunts [diag] teleport click on line {index}"); OnTeleport?.Invoke(index); });
+        MeterRows.Click(tpHit, this, () => OnTeleport?.Invoke(index));
 
         var line = new Line
         {

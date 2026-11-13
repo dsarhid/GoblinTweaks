@@ -8,6 +8,12 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.6.1"] = (
+            "Goblin Hunts: el teleport también marca el hunt en el mapa; el teleport de la primera fila vuelve a andar.",
+            [
+                "New: el teleport de Goblin Hunts también pone el flag del mapa en el hunt, así está esperándote cuando llegás",
+                "Fix: Goblin Hunts — el botón de teleport de la primera fila podía dejar de responder (sin clic ni ayuda) después de que hubiera un hunt muerto ahí — ahora los botones siguen andando sin importar qué se mostró antes",
+            ]),
         ["1.6.0"] = (
             "Nuevo Goblin Hunts: los hunts y FATEs que avisa Sonar en una tabla chica, con botones de mapa y teleport.",
             [

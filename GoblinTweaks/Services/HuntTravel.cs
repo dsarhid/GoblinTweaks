@@ -1,6 +1,8 @@
 using Dalamud.Game;
 using Dalamud.Game.Text.SeStringHandling.Payloads;
+using System.Numerics;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using GoblinTweaks.Hunts;
 using Lumina.Excel.Sheets;
 
@@ -56,6 +58,18 @@ internal static unsafe class HuntTravel
     {
         if (e.ZoneId == 0 || e.MapId == 0) return;
         Svc.GameGui.OpenMapWithMapLink(new MapLinkPayload(e.ZoneId, e.MapId, e.X, e.Y, 0f));
+    }
+
+    /// <summary>Puts the map's flag on the hunt without opening the map, so it is there when you land.</summary>
+    public static void SetFlag(HuntEntry e)
+    {
+        if (e.ZoneId == 0 || e.MapId == 0) return;
+        var agent = AgentMap.Instance();
+        if (agent == null) return;
+
+        // The flag takes the game position; the map link turns the hunt's map coordinates back into it (×1000).
+        var link = new MapLinkPayload(e.ZoneId, e.MapId, e.X, e.Y, 0f);
+        agent->SetFlagMapMarker(e.ZoneId, e.MapId, new Vector3(link.RawX / 1000f, 0f, link.RawY / 1000f));
     }
 
     /// <summary>True when the hunt's world is in another region (NA, EU, JP, OC) than the current world: World Visit cannot reach it.</summary>

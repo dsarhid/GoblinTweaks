@@ -135,7 +135,6 @@ public sealed unsafe class GoblinHunts : Tweak<GoblinHunts.Options>
             {
                 _scroll = Math.Max(0, _scroll - direction);
                 _dirty = true;
-                Svc.Log.Debug($"GoblinHunts [diag] scroll now {_scroll} (direction {direction})");
             },
         };
         _overlay.AddNode(_node.Handle);
@@ -217,14 +216,13 @@ public sealed unsafe class GoblinHunts : Tweak<GoblinHunts.Options>
 
     private void Teleport(int line)
     {
-        Svc.Log.Debug($"GoblinHunts [diag] teleport line {line} of {_shown.Count}, loaded {Svc.PlayerState.IsLoaded}");
         if (line < 0 || line >= _shown.Count || !Svc.PlayerState.IsLoaded) return;
         var e = _shown[line];
         if (e.Dead) return;
 
         var world = Svc.PlayerState.CurrentWorld.RowId;
+        HuntTravel.SetFlag(e);   // the flag waits on the map when you land
         var result = HuntTravel.Teleport(e, world, Svc.ClientState.TerritoryType, Svc.ClientState.Instance);
-        Svc.Log.Debug($"GoblinHunts [diag] teleport {e.Name} world {e.WorldId} (you {world}) zone {e.ZoneId} map {e.MapId} at {e.X:0.0},{e.Y:0.0}: {result}");
         var notice = result switch
         {
             TravelResult.TeleportedOtherWorld or TravelResult.AlreadyInUldah => HuntTravel.OtherRegion(e.WorldId, world)
@@ -463,9 +461,7 @@ public sealed unsafe class GoblinHunts : Tweak<GoblinHunts.Options>
 
         var all = list.Visible(Settings.Filter);
         var rows = Math.Clamp(Settings.Rows, 1, HuntTableNode.MaxRows);
-        var wanted = _scroll;
         _scroll = Math.Clamp(_scroll, 0, Math.Max(0, all.Count - rows));
-        if (wanted != _scroll) Svc.Log.Debug($"GoblinHunts [diag] scroll {wanted} clamped to {_scroll} ({all.Count} entries, {rows} lines)");
 
         _shown.Clear();
         _shown.AddRange(all.Skip(_scroll).Take(rows));
