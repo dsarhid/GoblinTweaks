@@ -54,20 +54,23 @@ internal sealed class GatheringSources
         var vendor = new HashSet<uint>();
         ExcelSheet<Item>? items = null;
 
-        // A sheet that no longer reads leaves what was read before it; the rest of the items just have no source.
-        try
+        // Each part is read on its own: a sheet that no longer reads loses only its part (keeping what was read before
+        // it), and the rest still works. The partial result is cached like a full one, so a broken sheet isn't retried.
+        void Read(string part, System.Action read)
         {
-            items = Svc.Data.GetExcelSheet<Item>(lang);
-            AddGathering(lang, spots);
-            AddFishing(lang, spots);
+            try { read(); }
+            catch (Exception ex) { Svc.Log.Warning(ex, $"GatheringSources: could not read the {part} data ({lang})"); }
+        }
+
+        Read("item",      () => items = Svc.Data.GetExcelSheet<Item>(lang));
+        Read("gathering", () => AddGathering(lang, spots));
+        Read("fishing",   () => AddFishing(lang, spots));
+        Read("vendor",    () =>
+        {
             foreach (var shop in Svc.Data.GetSubrowExcelSheet<GilShopItem>(lang))
                 foreach (var entry in shop)
                     if (entry.Item.RowId != 0) vendor.Add(entry.Item.RowId);
-        }
-        catch (Exception ex)
-        {
-            Svc.Log.Warning(ex, $"GatheringSources: could not read all the game data ({lang})");
-        }
+        });
 
         var byItem = spots
             .GroupBy(kv => kv.Key.Item, kv => kv.Value)
@@ -97,10 +100,10 @@ internal sealed class GatheringSources
 
         foreach (var gatheringItem in gatheringItems)
         {
-            if (!IsItem(gatheringItem) || !itemPoints.TryGetRow(gatheringItem.RowId, out var subrows)) continue;
+            if (!itemPoints.TryGetRow(gatheringItem.RowId, out var subrows)) continue;
             foreach (var entry in subrows)
                 if (entry.GatheringPoint.IsValid)
-                    AddPoint(spots, gatheringItem.Item.RowId, LevelOf(gatheringItem.GatheringItemLevel), entry.GatheringPoint.Value, transients);
+                    AddGatheringItem(spots, gatheringItem, entry.GatheringPoint.Value, transients);
         }
 
         foreach (var point in points)
@@ -119,14 +122,19 @@ internal sealed class GatheringSources
                     if (fishes.TryGetRow(entry.RowId, out var fish) && fish.Item.RowId != 0 && fish.Item.IsValid)
                         AddPoint(spots, fish.Item.RowId, LevelOf(fish.GatheringItemLevel), point, transients);
                 }
-                else if (gatheringItems.TryGetRow(entry.RowId, out var gatheringItem) && IsItem(gatheringItem))
-                    AddPoint(spots, gatheringItem.Item.RowId, LevelOf(gatheringItem.GatheringItemLevel), point, transients);
+                else if (gatheringItems.TryGetRow(entry.RowId, out var gatheringItem))
+                    AddGatheringItem(spots, gatheringItem, point, transients);
             }
         }
     }
 
-    /// <summary>False for quest items, whose GatheringItem.Item is an EventItem.</summary>
-    private static bool IsItem(GatheringItem gatheringItem) => gatheringItem.Item.RowId != 0 && gatheringItem.Item.Is<Item>();
+    /// <summary>Adds the gathering item at the point, unless it is a quest item (whose GatheringItem.Item is an EventItem).</summary>
+    private static void AddGatheringItem(Dictionary<(uint, uint, string, GatherClass), GatherSpot> spots, GatheringItem gatheringItem,
+        GatheringPoint point, ExcelSheet<GatheringPointTransient> transients)
+    {
+        if (gatheringItem.Item.RowId == 0 || !gatheringItem.Item.Is<Item>()) return;
+        AddPoint(spots, gatheringItem.Item.RowId, LevelOf(gatheringItem.GatheringItemLevel), point, transients);
+    }
 
     private static void AddPoint(Dictionary<(uint, uint, string, GatherClass), GatherSpot> spots, uint itemId, int level,
         GatheringPoint point, ExcelSheet<GatheringPointTransient> transients)
