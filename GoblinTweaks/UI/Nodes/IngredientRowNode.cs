@@ -13,7 +13,8 @@ namespace GoblinTweaks.UI.Nodes;
 /// </summary>
 /// <see cref="Price"/> (My List totals only) adds a price column; <see cref="PriceTip"/> is added to the location tooltip.
 /// My List "By source" only: <see cref="Header"/> makes the row a group title (<see cref="HeaderRight"/> on its right,
-/// open or folded by <see cref="Expanded"/>); <see cref="QtyText"/> replaces "have/need"; <see cref="Place"/> is shown
+/// open or folded by <see cref="Expanded"/>); <see cref="QtyText"/> replaces "have/need" (a "Craft first" row, shown in
+/// gold); <see cref="Place"/> is shown
 /// instead of "Not found" when the item is missing and owned nowhere; <see cref="ExtraTip"/> is added to the tooltip.
 internal readonly record struct IngredientRow(
     IngredientCheck Check, string PrimaryLocation,
@@ -239,6 +240,10 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
                 ItemTooltip = ing.ItemId;
             }
         }
+
+        // A "Craft first" row (the only one with its own qty text) is something to do, not something missing: gold.
+        // Set on every fill, so a recycled row gets its own color back.
+        if (data.QtyText is not null) statusColor = ColorCaret;
 
         _name.TextColor     = statusColor;
         _qty.TextColor      = statusColor;

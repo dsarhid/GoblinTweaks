@@ -883,7 +883,8 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             if (!AddHeader(CraftsGroupKey, CraftLoc.Get("src.crafts"), CraftLoc.Fmt("src.recipes", _sourceCrafts.Count))) return;
             foreach (var craft in _sourceCrafts)
                 rows.Add(new IngredientRow(new IngredientCheck(craft.ItemId, craft.Name, craft.IconId, 1, 0, 0), string.Empty, [],
-                    0, false, false, 0, string.Empty, null, QtyText: CraftLoc.Fmt("src.crafts.qty", craft.Crafts), Place: string.Empty));
+                    0, false, false, 0, string.Empty, null, QtyText: craft.Crafts == 1 ? CraftLoc.Get("src.crafts.qty1") : CraftLoc.Fmt("src.crafts.qty", craft.Crafts),
+                    Place: string.Empty));
         }
 
         foreach (var (group, nodes) in _sourceGroups)
