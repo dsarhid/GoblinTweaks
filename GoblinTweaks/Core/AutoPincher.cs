@@ -210,9 +210,11 @@ internal sealed unsafe class AutoPincher
                 var hq = _expectedHq || NameHasHq((AddonRetainerSell*)price);
 
                 var rules   = _rules();
-                var lowest  = LowestListing(proxy, itemId, hq, out var lowestIsOwn);
-                var outcome = PinchMath.Decide(lowest, lowestIsOwn, _currentPrice, rules.Undercut, rules.MinPrice,
-                    rules.MaxUndercutPercent, out var newPrice, out var why);
+                var others   = Competition(proxy, itemId, hq, out var ownLowest);
+                var decision = PinchMath.Decide(others, ownLowest, _currentPrice, rules.Undercut, rules.MinPrice,
+                    rules.MaxUndercutPercent);
+                var outcome  = decision.Outcome;
+                var newPrice = decision.NewPrice;
                 results->Close(true);
 
                 if (!Ready(PriceAddon, out price)) { Stop("closed"); return; }
@@ -225,8 +227,9 @@ internal sealed unsafe class AutoPincher
                     _repriced++;
                     _priceChange += (long)(newPrice - _currentPrice) * quantity;
 
-                    // What changed, for the chat: item, old price, new price (the tweak works out the percentage).
-                    _say($"repriced|{ItemName(itemId)}|{(hq ? 1 : 0)}|{_currentPrice}|{newPrice}");
+                    // What changed, for the chat: item, old price, new price (the tweak works out the percentage),
+                    // and the bait listings passed over (how many, the cheapest).
+                    _say($"repriced|{ItemName(itemId)}|{(hq ? 1 : 0)}|{_currentPrice}|{newPrice}|{decision.Ignored}|{decision.LowestIgnored}");
                 }
                 else
                 {
@@ -236,7 +239,8 @@ internal sealed unsafe class AutoPincher
                     {
                         _skipped++;
                         // Why, for the chat: item, reason, current price, the cheapest other seller.
-                        _say($"skipped|{ItemName(itemId)}|{(hq ? 1 : 0)}|{why}|{_currentPrice}|{lowest ?? 0}");
+                        var cheapest = others.Count > 0 ? others[0] : 0u;
+                        _say($"skipped|{ItemName(itemId)}|{(hq ? 1 : 0)}|{decision.Why}|{_currentPrice}|{cheapest}");
                     }
                 }
 
@@ -342,10 +346,11 @@ internal sealed unsafe class AutoPincher
     // ── Pricing ───────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Cheapest current listing of the item in the Market Board search, and whether it is one of ours.
-    /// An HQ item competes with HQ listings only; a normal one with everything. Null when nobody sells it.
+    /// Unit prices of the other sellers' listings of the item in the Market Board search, cheapest first, and the
+    /// cheapest of our own (null when we have none there). An HQ item competes with HQ listings only; a normal one
+    /// with everything.
     /// </summary>
-    internal static uint? LowestListing(InfoProxyItemSearch* proxy, uint itemId, bool hq, out bool lowestIsOwn)
+    internal static List<uint> Competition(InfoProxyItemSearch* proxy, uint itemId, bool hq, out uint? ownLowest)
     {
         var own = new HashSet<ulong>();
         for (var i = 0; i < proxy->PlayerRetainerCount && i < proxy->PlayerRetainers.Length; i++)
@@ -359,24 +364,21 @@ internal sealed unsafe class AutoPincher
                 if (ret != null) own.Add(ret->RetainerId);
             }
 
-        uint lowest = uint.MaxValue;
-        lowestIsOwn = false;
-        var  count = Math.Min((int)proxy->ListingCount, proxy->Listings.Length);
+        var others = new List<uint>();
+        ownLowest  = null;
+        var count  = Math.Min((int)proxy->ListingCount, proxy->Listings.Length);
         for (var i = 0; i < count; i++)
         {
             ref var listing = ref proxy->Listings[i];
             if (listing.ItemId != itemId || listing.UnitPrice == 0) continue;
             if (hq && !listing.IsHqItem) continue;
 
-            var isOwn = own.Contains(listing.RetainerId);
-            if (listing.UnitPrice < lowest || (listing.UnitPrice == lowest && lowestIsOwn && !isOwn))
-            {
-                lowest      = listing.UnitPrice;
-                lowestIsOwn = isOwn;
-            }
+            if (!own.Contains(listing.RetainerId)) others.Add(listing.UnitPrice);
+            else if (ownLowest is not { } o || listing.UnitPrice < o) ownLowest = listing.UnitPrice;
         }
 
-        return lowest == uint.MaxValue ? null : lowest;
+        others.Sort();
+        return others;
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

@@ -361,7 +361,7 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
             "noItems"       => T("Msg.NoItems"),
             "allExcluded"   => T("Msg.AllExcluded"),
             "noList"        => T("Msg.NoList"),
-            "listedOne"     => string.Format(T("Msg.ListedOne"), parts.Length > 1 ? parts[1] : "?", Part(parts, 2), Gil(Part(parts, 3))),
+            "listedOne"     => string.Format(T("Msg.ListedOne"), parts.Length > 1 ? parts[1] : "?", Part(parts, 2), Gil(Part(parts, 3))) + IgnoredText(parts, 4),
             "noSelection"   => T("Msg.NoSelection"),
             "noCapacity"    => T("Msg.NoCapacity"),
             "sellDone"      => string.Format(T("Msg.SellDone"), Part(parts, 1), Part(parts, 2), Part(parts, 3)) + ListedText(Part(parts, 4)),
@@ -390,7 +390,10 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
 
     private static string Gil(string value) => long.TryParse(value, out var gil) ? gil.ToString("N0") : value;
 
-    /// <summary>"Item: 1,200 → 1,150 gil, down 4.2%". The code is "repriced|name|hq|old|new".</summary>
+    /// <summary>
+    /// "Item: 1,200 → 1,150 gil, down 4.2%", plus the bait listings passed over when there were any.
+    /// The code is "repriced|name|hq|old|new|ignored|lowestIgnored".
+    /// </summary>
     private string RepricedText(string[] parts)
     {
         var name = parts.Length > 1 ? parts[1] : "?";
@@ -400,7 +403,15 @@ public sealed unsafe class AutoGoblinRetainer : Tweak<AutoGoblinRetainer.Options
         long.TryParse(Part(parts, 4), out var after);
 
         var key = after < before ? "Msg.PriceDown" : "Msg.PriceUp";
-        return string.Format(T(key), name, before.ToString("N0"), after.ToString("N0"), Market.PinchMath.ChangePercent(before, after));
+        return string.Format(T(key), name, before.ToString("N0"), after.ToString("N0"), Market.PinchMath.ChangePercent(before, after))
+             + IgnoredText(parts, 5);
+    }
+
+    /// <summary>" 2 cheaper listing(s) passed over as bait (the cheapest at 200 gil)."; empty when none was.</summary>
+    private string IgnoredText(string[] parts, int at)
+    {
+        if (!int.TryParse(Part(parts, at), out var ignored) || ignored <= 0) return string.Empty;
+        return string.Format(T("Msg.IgnoredBait"), ignored, Gil(Part(parts, at + 1)));
     }
 
     /// <summary>

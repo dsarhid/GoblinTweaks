@@ -3,6 +3,7 @@ using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Client.UI.Info;
 using FFXIVClientStructs.FFXIV.Component.GUI;
+using GoblinTweaks.Market;
 using GoblinTweaks.Services;
 
 namespace GoblinTweaks.Core;
@@ -86,6 +87,8 @@ internal sealed unsafe class SellRunner
     private bool _confirmed;
     private int _listingsBefore;
     private int _pricePaid;
+    private int _ignored;          // bait listings passed over when pricing the current stack
+    private uint _lowestIgnored;   // the cheapest of them
     private DateTime _verifyUntil;
 
     private int _listed, _skipped, _unplaced, _visited;
@@ -285,6 +288,8 @@ internal sealed unsafe class SellRunner
                 }
 
                 _task = _queue.Dequeue();
+                _ignored      = 0;
+                _lowestIgnored = 0;
                 _menuOwner    = _windowId;
                 _armouryAsked = false;
                 _retried      = false;
@@ -388,7 +393,7 @@ internal sealed unsafe class SellRunner
 
                     _listed++;
                     _listedGil += (long)_pricePaid * Math.Max(1, _task!.Quantity);
-                    _say($"listedOne|{_task.Name}|{_task.Quantity}|{_pricePaid}");
+                    _say($"listedOne|{_task.Name}|{_task.Quantity}|{_pricePaid}|{_ignored}|{_lowestIgnored}");
                     Enter(Step.NextItem);
                 }
                 else if (_verifySeen != DateTime.MinValue)
@@ -539,15 +544,15 @@ internal sealed unsafe class SellRunner
         // Only sales of the same quality count.
         var normal = _fallback.TryGetValue(task.ItemId, out var prices) ? (task.Hq ? prices.Hq : prices.Nq) : 0;
 
-        var lowest = AutoPincher.LowestListing(proxy, task.ItemId, task.Hq, out var own);
-        if (lowest is { } l)
+        var others = AutoPincher.Competition(proxy, task.ItemId, task.Hq, out var ownLowest);
+        if (others.Count > 0 || ownLowest is not null)
         {
-            var target = own ? (long)l : l - rules.Undercut(l);
+            // Listings far below the normal price are bait: passed over for the next seller.
+            var target = PinchMath.NewListingPrice(others, ownLowest, normal, rules.Undercut, rules.MaxUndercutPercent,
+                out _ignored, out _lowestIgnored);
+            if (target is not { } t) return (null, "Bait");
 
-            if (normal > 0 && rules.MaxUndercutPercent < 100 && target < normal * (100 - rules.MaxUndercutPercent) / 100)
-                return (null, "Bait");
-
-            return ((int)Math.Clamp(target, floor, int.MaxValue), null);
+            return ((int)Math.Clamp(t, floor, int.MaxValue), null);
         }
 
         if (normal > 0) return ((int)Math.Clamp(normal, floor, int.MaxValue), null);
