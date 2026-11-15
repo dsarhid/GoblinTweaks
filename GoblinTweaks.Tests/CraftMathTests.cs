@@ -211,23 +211,23 @@ public class CraftMathTests
     }
 
     [Fact]
-    public void BreakdownKeepsTheDeepestDepthOfAnIntermediate()
+    public void BreakdownListsAnIntermediateUsedAtTwoLevelsBeforeWhatUsesIt()
     {
         var d = WhetstoneData();
         d.Recipes[Chain]       = new CraftRecipe(1, [P(Blade, 1)]);
         d.Recipes[BladeRecipe] = new CraftRecipe(1, [P(Whetstone, 1)]);
         d.ByResult[Blade] = BladeRecipe;
 
-        // Sword B needs a Whetstone at depth 1; the chain needs one inside a Blade, at depth 2.
+        // Sword B needs a Whetstone directly (and comes first); the chain needs one inside a Blade.
         var crafts = CraftMath.Breakdown([Item(SwordB, 1), Item(Chain, 1)], d, true).Crafts;
 
         Assert.Equal(new[] { Whetstone, Blade }, crafts.Select(c => c.ItemId));
-        Assert.Equal(new[] { 2, 1 }, crafts.Select(c => c.Depth));
+        Assert.Equal(new[] { 1, 2 }, crafts.Select(c => c.Depth)); // height: the Blade stands on the Whetstone
         Assert.Equal(2, crafts[0].Crafts);
     }
 
     [Fact]
-    public void BreakdownOrdersDeepestFirst()
+    public void BreakdownOrdersIngredientsBeforeWhatTheyMake()
     {
         var d = new FakeData();
         d.Recipes[Chain]       = new CraftRecipe(1, [P(Blade, 1)]);
@@ -239,7 +239,45 @@ public class CraftMathTests
         var crafts = CraftMath.Breakdown([Item(Chain, 1)], d, true).Crafts;
 
         Assert.Equal(new[] { Plank, Blade }, crafts.Select(c => c.ItemId));
-        Assert.Equal(new[] { 2, 1 }, crafts.Select(c => c.Depth));
+        Assert.Equal(new[] { 1, 2 }, crafts.Select(c => c.Depth)); // height over the base materials
+    }
+
+    [Fact]
+    public void BreakdownListsAnIngredientBeforeWhatUsesItWhenLeftoversCoverItsDeeperUse()
+    {
+        // Bolt: 1 Ore → 3. Plank: 1 Bolt. Blade: 1 Plank. Sword A: 1 Bolt. Chain: 1 Blade.
+        var d = new FakeData();
+        d.Recipes[BoltRecipe]  = new CraftRecipe(3, [P(Ore, 1)]);
+        d.Recipes[PlankRecipe] = new CraftRecipe(1, [P(Bolt, 1)]);
+        d.Recipes[BladeRecipe] = new CraftRecipe(1, [P(Plank, 1)]);
+        d.Recipes[SwordA]      = new CraftRecipe(1, [P(Bolt, 1)]);
+        d.Recipes[Chain]       = new CraftRecipe(1, [P(Blade, 1)]);
+        d.ByResult[Bolt]  = BoltRecipe;
+        d.ByResult[Plank] = PlankRecipe;
+        d.ByResult[Blade] = BladeRecipe;
+
+        // The Bolt inside the chain's Plank comes from the leftovers of the craft for Sword A, so it is never crafted
+        // that deep; the Plank still needs it.
+        var crafts = CraftMath.Breakdown([Item(SwordA, 1), Item(Chain, 1)], d, true).Crafts;
+
+        Assert.Equal(new[] { Bolt, Plank, Blade }, crafts.Select(c => c.ItemId));
+        Assert.Equal(new[] { 1, 2, 3 }, crafts.Select(c => c.Depth));
+        Assert.Equal(new[] { 1, 1, 1 }, crafts.Select(c => c.Crafts));
+    }
+
+    [Fact]
+    public void BreakdownOrdersCraftsThatMakeEachOtherWithoutHanging()
+    {
+        var data = new FakeData();
+        data.Recipes[LoopARecipe] = new CraftRecipe(1, [P(LoopB, 1)]);
+        data.Recipes[LoopBRecipe] = new CraftRecipe(1, [P(LoopA, 1)]);
+        data.ByResult[LoopA] = LoopARecipe;
+        data.ByResult[LoopB] = LoopBRecipe;
+
+        // Loop B is crafted from Loop A, which is crafted from Loop B again: that one is left as a base material.
+        var crafts = CraftMath.Breakdown([Item(LoopARecipe, 1)], data, true).Crafts;
+
+        Assert.Equal(new[] { LoopA, LoopB }, crafts.Select(c => c.ItemId));
     }
 
     [Fact]

@@ -24,7 +24,11 @@ public interface ICraftData
 /// <summary>An item and how many of it are needed.</summary>
 public readonly record struct Need(uint ItemId, string Name, uint IconId, int Amount);
 
-/// <summary>An intermediate item that has to be crafted: how many crafts it takes and the deepest level it is needed at.</summary>
+/// <summary>
+/// An intermediate item that has to be crafted: how many crafts it takes and its height over the base materials.
+/// <see cref="Depth"/> 1: none of its ingredients is crafted in the same list; otherwise one more than the tallest of the
+/// ingredients that are, so every crafted ingredient an item needs has a lower one.
+/// </summary>
 public readonly record struct Craft(uint ItemId, string Name, uint IconId, int Crafts, int Depth);
 
 /// <summary>
@@ -87,8 +91,8 @@ public static class CraftMath
 
     /// <summary>
     /// What <see cref="BaseMaterials"/> returns plus the intermediate items that have to be crafted along the way: the
-    /// crafts of each one added up across every recipe that needs it, with the deepest level it is needed at. Crafts are
-    /// ordered deepest first (what has to be made before what uses it), then by first appearance.
+    /// crafts of each one added up across every recipe that needs it, with its height (see <see cref="Craft"/>). Crafts are
+    /// ordered by height, lowest first (each one after the crafted ingredients it needs), then by first appearance.
     /// </summary>
     public static (List<Need> Base, List<Craft> Crafts) Breakdown(IEnumerable<CartItem> items, ICraftData data, bool deductOwned)
     {
@@ -120,11 +124,11 @@ public static class CraftMath
                 stock[id] = stock.GetValueOrDefault(id) + crafts * makes - missing; // what the crafts make beyond what is needed
 
                 if (byId.TryGetValue(id, out var seen))
-                    byId[id] = seen with { Crafts = seen.Crafts + crafts, Depth = Math.Max(seen.Depth, depth) };
+                    byId[id] = seen with { Crafts = seen.Crafts + crafts };
                 else
                 {
                     made.Add(id);
-                    byId[id] = new Craft(id, name, icon, crafts, depth);
+                    byId[id] = new Craft(id, name, icon, crafts, 0); // height set at the end
                 }
 
                 path.Add(id);
@@ -142,7 +146,29 @@ public static class CraftMath
                 foreach (var part in recipe.Ingredients)
                     Add(part.ItemId, part.Name, part.IconId, part.Amount * item.Count, 1);
 
-        var crafted = made.Select(id => byId[id]).OrderByDescending(c => c.Depth).ToList(); // stable: ties keep first appearance
+        // Heights come from the recipes, not from where an item was crafted: a deeper use can be covered by the leftovers
+        // of an earlier craft, so the depth it was crafted at may be shallower than that of something that needs it.
+        var heights  = new Dictionary<uint, int>();
+        var visiting = new HashSet<uint>(); // heights being worked out (recipes that make each other: no loops)
+
+        int Height(uint id)
+        {
+            if (heights.TryGetValue(id, out var known)) return known;
+            if (!visiting.Add(id)) return 0;
+
+            var height = 1;
+            if (data.Recipe(data.RecipeFor(id)) is { } recipe)
+                foreach (var part in recipe.Ingredients)
+                    if (byId.ContainsKey(part.ItemId))
+                        height = Math.Max(height, Height(part.ItemId) + 1);
+
+            visiting.Remove(id);
+            heights[id] = height;
+            return height;
+        }
+
+        var crafted = made.Select(id => byId[id] with { Depth = Height(id) })
+            .OrderBy(c => c.Depth).ToList(); // stable: ties keep first appearance
         return (raw.ToList(), crafted);
     }
 
