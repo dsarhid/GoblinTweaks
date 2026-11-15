@@ -199,6 +199,34 @@ public class CraftMathTests
     }
 
     [Fact]
+    public void BreakdownCraftsOnlyTheMissingPartOfAnOwnedIntermediate()
+    {
+        var data = WhetstoneData();
+        data.Stock[Whetstone] = 1;
+
+        var craft = Assert.Single(CraftMath.Breakdown([Item(SwordA, 1)], data, true).Crafts);
+
+        Assert.Equal(Whetstone, craft.ItemId);
+        Assert.Equal(1, craft.Crafts);
+    }
+
+    [Fact]
+    public void BreakdownKeepsTheDeepestDepthOfAnIntermediate()
+    {
+        var d = WhetstoneData();
+        d.Recipes[Chain]       = new CraftRecipe(1, [P(Blade, 1)]);
+        d.Recipes[BladeRecipe] = new CraftRecipe(1, [P(Whetstone, 1)]);
+        d.ByResult[Blade] = BladeRecipe;
+
+        // Sword B needs a Whetstone at depth 1; the chain needs one inside a Blade, at depth 2.
+        var crafts = CraftMath.Breakdown([Item(SwordB, 1), Item(Chain, 1)], d, true).Crafts;
+
+        Assert.Equal(new[] { Whetstone, Blade }, crafts.Select(c => c.ItemId));
+        Assert.Equal(new[] { 2, 1 }, crafts.Select(c => c.Depth));
+        Assert.Equal(2, crafts[0].Crafts);
+    }
+
+    [Fact]
     public void BreakdownOrdersDeepestFirst()
     {
         var d = new FakeData();
