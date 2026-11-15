@@ -131,6 +131,89 @@ public class CraftMathTests
         Assert.Equal(4, map[Log]);
     }
 
+    // Items for the Breakdown tests.
+    private const uint Whetstone = 10, Annite = 11, WindCrystal = 12, Bolt = 13, Plank = 14, Blade = 15;
+    private const uint WhetstoneRecipe = 210, BoltRecipe = 220, PlankRecipe = 230, BladeRecipe = 240;
+    private const uint SwordA = 200, SwordB = 201, Chain = 300;
+
+    // Whetstone: 1 Annite + 1 Wind Crystal → 1. Sword A: 2 Whetstone. Sword B: 1 Whetstone.
+    private static FakeData WhetstoneData()
+    {
+        var d = new FakeData();
+        d.Recipes[WhetstoneRecipe] = new CraftRecipe(1, [P(Annite, 1), P(WindCrystal, 1)]);
+        d.Recipes[SwordA]          = new CraftRecipe(1, [P(Whetstone, 2)]);
+        d.Recipes[SwordB]          = new CraftRecipe(1, [P(Whetstone, 1)]);
+        d.ByResult[Whetstone] = WhetstoneRecipe;
+        return d;
+    }
+
+    [Fact]
+    public void BreakdownBaseEqualsBaseMaterials()
+    {
+        var data = Data();
+        data.Stock[Ingot] = 1;
+        CartItem[] cart = [Item(Spear, 2), Item(Lance, 1)];
+
+        foreach (var deduct in new[] { true, false })
+            Assert.Equal(CraftMath.BaseMaterials(cart, data, deduct), CraftMath.Breakdown(cart, data, deduct).Base);
+    }
+
+    [Fact]
+    public void BreakdownCountsCraftsOfIntermediates()
+    {
+        var result = CraftMath.Breakdown([Item(SwordA, 1)], WhetstoneData(), true);
+
+        Assert.Equal([new Craft(Whetstone, $"Item{Whetstone}", Whetstone * 10, 2, 1)], result.Crafts);
+    }
+
+    [Fact]
+    public void BreakdownSumsCraftsAcrossRecipes()
+    {
+        var result = CraftMath.Breakdown([Item(SwordB, 1), Item(SwordB, 1)], WhetstoneData(), true);
+
+        Assert.Equal(2, Assert.Single(result.Crafts).Crafts);
+    }
+
+    [Fact]
+    public void BreakdownUsesLeftoversOfACraft()
+    {
+        var d = new FakeData();
+        d.Recipes[BoltRecipe] = new CraftRecipe(3, [P(Ore, 1)]);
+        d.Recipes[SwordA]     = new CraftRecipe(1, [P(Bolt, 2)]);
+        d.Recipes[SwordB]     = new CraftRecipe(1, [P(Bolt, 2)]);
+        d.ByResult[Bolt] = BoltRecipe;
+
+        var result = CraftMath.Breakdown([Item(SwordA, 1), Item(SwordB, 1)], d, true);
+
+        Assert.Equal(2, Assert.Single(result.Crafts).Crafts); // 4 needed, 6 made
+    }
+
+    [Fact]
+    public void BreakdownDeductsOwnedIntermediates()
+    {
+        var data = WhetstoneData();
+        data.Stock[Whetstone] = 2;
+
+        Assert.Empty(CraftMath.Breakdown([Item(SwordA, 1)], data, true).Crafts);
+        Assert.Equal(2, Assert.Single(CraftMath.Breakdown([Item(SwordA, 1)], data, false).Crafts).Crafts);
+    }
+
+    [Fact]
+    public void BreakdownOrdersDeepestFirst()
+    {
+        var d = new FakeData();
+        d.Recipes[Chain]       = new CraftRecipe(1, [P(Blade, 1)]);
+        d.Recipes[BladeRecipe] = new CraftRecipe(1, [P(Plank, 1)]);
+        d.Recipes[PlankRecipe] = new CraftRecipe(1, [P(Ore, 1)]);
+        d.ByResult[Blade] = BladeRecipe;
+        d.ByResult[Plank] = PlankRecipe;
+
+        var crafts = CraftMath.Breakdown([Item(Chain, 1)], d, true).Crafts;
+
+        Assert.Equal(new[] { Plank, Blade }, crafts.Select(c => c.ItemId));
+        Assert.Equal(new[] { 2, 1 }, crafts.Select(c => c.Depth));
+    }
+
     [Fact]
     public void BaseMaterials_StopsOnLoop()
     {

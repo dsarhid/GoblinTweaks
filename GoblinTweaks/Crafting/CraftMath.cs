@@ -24,6 +24,9 @@ public interface ICraftData
 /// <summary>An item and how many of it are needed.</summary>
 public readonly record struct Need(uint ItemId, string Name, uint IconId, int Amount);
 
+/// <summary>An intermediate item that has to be crafted: how many crafts it takes and the deepest level it is needed at.</summary>
+public readonly record struct Craft(uint ItemId, string Name, uint IconId, int Crafts, int Depth);
+
 /// <summary>
 /// What a set of items costs. <see cref="Loading"/>: some price hasn't arrived yet. <see cref="Partial"/>: some item has
 /// no price, so <see cref="Gil"/> is a minimum.
@@ -80,9 +83,19 @@ public static class CraftMath
     /// leftovers of a sub-craft serve the next one. Each entry's amount is the total needed, in order of first appearance.
     /// </summary>
     public static List<Need> BaseMaterials(IEnumerable<CartItem> items, ICraftData data, bool deductOwned)
+        => Breakdown(items, data, deductOwned).Base;
+
+    /// <summary>
+    /// What <see cref="BaseMaterials"/> returns plus the intermediate items that have to be crafted along the way: the
+    /// crafts of each one added up across every recipe that needs it, with the deepest level it is needed at. Crafts are
+    /// ordered deepest first (what has to be made before what uses it), then by first appearance.
+    /// </summary>
+    public static (List<Need> Base, List<Craft> Crafts) Breakdown(IEnumerable<CartItem> items, ICraftData data, bool deductOwned)
     {
         var stock = new Dictionary<uint, int>(); // what is left to use, by item
         var raw   = new Sum();                   // base materials
+        var made  = new List<uint>();            // crafted items, in order of first appearance
+        var byId  = new Dictionary<uint, Craft>();
         var path  = new HashSet<uint>();         // sub-recipes being followed (no loops)
 
         int Take(uint id, int amount)
@@ -106,6 +119,14 @@ public static class CraftMath
                 var crafts = (missing + makes - 1) / makes;
                 stock[id] = stock.GetValueOrDefault(id) + crafts * makes - missing; // what the crafts make beyond what is needed
 
+                if (byId.TryGetValue(id, out var seen))
+                    byId[id] = seen with { Crafts = seen.Crafts + crafts, Depth = Math.Max(seen.Depth, depth) };
+                else
+                {
+                    made.Add(id);
+                    byId[id] = new Craft(id, name, icon, crafts, depth);
+                }
+
                 path.Add(id);
                 foreach (var part in sub.Ingredients)
                     Add(part.ItemId, part.Name, part.IconId, part.Amount * crafts, depth + 1);
@@ -121,7 +142,8 @@ public static class CraftMath
                 foreach (var part in recipe.Ingredients)
                     Add(part.ItemId, part.Name, part.IconId, part.Amount * item.Count, 1);
 
-        return raw.ToList();
+        var crafted = made.Select(id => byId[id]).OrderByDescending(c => c.Depth).ToList(); // stable: ties keep first appearance
+        return (raw.ToList(), crafted);
     }
 
     /// <summary>
