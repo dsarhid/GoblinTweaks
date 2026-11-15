@@ -874,13 +874,14 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             return open;
         }
 
-        // The intermediates to craft first, deepest first: how many crafts of each, no price (the column stays, empty,
-        // so the other columns line up), nothing in the place column.
+        // The intermediates to craft first, each after the crafted ingredients it needs: how many crafts of each, no
+        // price (the column stays, empty, so the other columns line up), nothing in the place column.
         void AddCrafts()
         {
             craftsAdded = true;
             if (_sourceCrafts.Count == 0) return;
-            if (!AddHeader(CraftsGroupKey, CraftLoc.Get("src.crafts"), CraftLoc.Fmt("src.recipes", _sourceCrafts.Count))) return;
+            var count = _sourceCrafts.Count == 1 ? CraftLoc.Get("src.recipes1") : CraftLoc.Fmt("src.recipes", _sourceCrafts.Count);
+            if (!AddHeader(CraftsGroupKey, CraftLoc.Get("src.crafts"), count)) return;
             foreach (var craft in _sourceCrafts)
                 rows.Add(new IngredientRow(new IngredientCheck(craft.ItemId, craft.Name, craft.IconId, 1, 0, 0), string.Empty, [],
                     0, false, false, 0, string.Empty, null, QtyText: craft.Crafts == 1 ? CraftLoc.Get("src.crafts.qty1") : CraftLoc.Fmt("src.crafts.qty", craft.Crafts),
@@ -934,7 +935,9 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         if (line.Spot is { } spot)
         {
             var where = string.IsNullOrEmpty(spot.PlaceName) ? spot.ZoneName : spot.PlaceName;
-            parts.Add(CraftLoc.Fmt("src.tip.gather", where, GatherClassName(spot.Class), spot.Level));
+            parts.Add(spot.Level > 0
+                ? CraftLoc.Fmt("src.tip.gather", where, GatherClassName(spot.Class), spot.Level)
+                : CraftLoc.Fmt("src.tip.gather0", where, GatherClassName(spot.Class))); // level row missing
             if (spot.Timed) parts.Add(CraftLoc.Get("src.tip.timed"));
         }
         if (line.AlsoIn.Count > 0) parts.Add(CraftLoc.Fmt("src.tip.also", string.Join(", ", line.AlsoIn)));

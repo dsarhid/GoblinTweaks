@@ -70,7 +70,7 @@ internal unsafe class CraftingHelpAddon : NativeAddon
             new Line("", White, "help.tips.t7", 40f),
             new Line("", White, "help.tips.t8", 40f),
             new Line("", White, "help.tips.t9", 56f),
-            new Line("", White, "help.tips.t10", 72f),
+            new Line("", White, "help.tips.t10", 80f),
         ]),
     ];
 
