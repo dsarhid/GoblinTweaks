@@ -5,6 +5,7 @@ using FFXIVClientStructs.FFXIV.Component.GUI;
 using KamiToolKit.BaseTypes;
 using KamiToolKit.Enums;
 using KamiToolKit.Nodes;
+using GoblinTweaks.Core;
 using GoblinTweaks.Crafting;
 using GoblinTweaks.Localization;
 using GoblinTweaks.Services;
@@ -85,6 +86,20 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     private readonly Dictionary<int, IngTreeNode> _cartById     = new();
     private readonly HashSet<string>              _cartExpanded = [];
     private List<Need>                            _cartBase     = [];
+    // The totals "By source": each group with the tree node of each of its lines (in _cartById, for prices and highlights),
+    // the intermediates to craft first, the group of each title row (by its negative NodeId), and the groups folded
+    // while the window is open.
+    private const string CartModeTree   = "tree";
+    private const string CartModeSource = "source";
+    private bool InSourceMode => Tweak?.Current.CartMode == CartModeSource;
+    private static List<string> CartModes => [CartModeTree, CartModeSource];
+    // The option the selector shows: anything but "source" in the settings is the tree.
+    private string CartModeOption => InSourceMode ? CartModeSource : CartModeTree;
+    private readonly List<(SourceGroup Group, List<IngTreeNode> Nodes)> _sourceGroups = [];
+    private List<Craft>                           _sourceCrafts    = [];
+    private readonly Dictionary<int, string>      _sourceHeaders   = new();
+    private readonly HashSet<string>              _sourceCollapsed = [];
+    private const string CraftsGroupKey = "crafts";
     // Items of the totals with a price answer at the last check: when it grows, the prices are written again.
     private int      _cartPricedCount = -1;
     private DateTime _nextCartPriceCheck = DateTime.MinValue;
@@ -186,6 +201,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     // ── My List totals node refs (the detail panel in the My List view) ─────────
     private TextNode?     _cartTitle;
     private CheckboxNode? _cartDeductCheck;
+    private StringDropDownNode? _cartModeDropdown;
     private TextNode?     _cartColItem;
     private TextNode?     _cartColQty;
     private TextNode?     _cartColPrice;
@@ -417,6 +433,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         _clearCartBtn                      = null;
         _cartTitle       = null;
         _cartDeductCheck = null;
+        _cartModeDropdown = null;
         _cartColItem     = null;
         _cartColQty      = null;
         _cartColPrice    = null;
@@ -426,6 +443,9 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         _cartRoots.Clear();
         _cartById.Clear();
         _cartBase = [];
+        ClearSourceView();
+        // Folded groups last only while the window is open.
+        _sourceCollapsed.Clear();
 
         base.OnFinalize(addon);
     }
@@ -682,7 +702,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             _ingredientList.IsVisible = true;
         }
 
-        foreach (var node in new NodeBase?[] { _cartTitle, _cartDeductCheck, _clearCartBtn, _cartColItem, _cartColQty, _cartColPrice, _cartList, _cartTotal })
+        foreach (var node in new NodeBase?[] { _cartTitle, _cartDeductCheck, _cartModeDropdown, _clearCartBtn, _cartColItem, _cartColQty, _cartColPrice, _cartList, _cartTotal })
             if (node is not null) SetShown(node, show && !empty);
         if (_cartEmpty is not null) _cartEmpty.IsVisible = show && empty;
 
@@ -691,6 +711,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             _cartRoots.Clear();
             _cartById.Clear();
             _cartBase = [];
+            ClearSourceView();
             if (_cartList is not null) _cartList.OptionsList = [];
         }
         RequestCollisionRebuild();
@@ -702,6 +723,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         _cartRoots.Clear();
         _cartById.Clear();
         _cartBase = [];
+        ClearSourceView();
         if (Tweak is null || !InCartView) return;
 
         ShowCartPanel(true);
@@ -709,9 +731,35 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         var data   = Tweak.CraftData(_snapshot);
         var deduct = Tweak.Current.CartDeductOwned;
         var listed = ListedCart;
-        foreach (var need in CraftMath.Direct(listed, data))
-            _cartRoots.Add(MakeCartNode(need, 0, string.Empty, data, deduct));
-        _cartBase = CraftMath.BaseMaterials(listed, data, deduct);
+        if (InSourceMode)
+        {
+            // Every base material once, by where it comes from: the same base materials the gil total is made of.
+            var (bases, crafts) = CraftMath.Breakdown(listed, data, deduct);
+            _cartBase     = bases;
+            _sourceCrafts = crafts;
+            // The gathering index is built the first time it is asked for (only here, when this view shows something).
+            if (bases.Count > 0)
+            {
+                var sources = GatheringSources.For(CraftingMaterials.DataLanguage);
+                foreach (var group in SourcePlan.Build(bases, _snapshot.GetTotal, sources.Get))
+                {
+                    var nodes = new List<IngTreeNode>(group.Lines.Count);
+                    foreach (var line in group.Lines)
+                    {
+                        var node = MakeIngNode(CraftingMaterials.Check(line.Need, _snapshot), 0, _cartById);
+                        node.Craftable = false;
+                        nodes.Add(node);
+                    }
+                    _sourceGroups.Add((group, nodes));
+                }
+            }
+        }
+        else
+        {
+            foreach (var need in CraftMath.Direct(listed, data))
+                _cartRoots.Add(MakeCartNode(need, 0, string.Empty, data, deduct));
+            _cartBase = CraftMath.BaseMaterials(listed, data, deduct);
+        }
 
         // Prices of everything listed and of the base materials, ahead of the rest of the queue.
         foreach (var id in _cartById.Values.Select(n => n.Check.ItemId).Concat(_cartBase.Select(b => b.ItemId)).Distinct())
@@ -741,6 +789,16 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     /// <summary>Opens or closes a craftable row of the totals.</summary>
     private void ToggleCartIngredient(IngredientRow row)
     {
+        // By source: a group title folds or opens its group; a material has nothing to open.
+        if (InSourceMode)
+        {
+            if (!_sourceHeaders.TryGetValue(row.NodeId, out var key)) return;
+            if (!_sourceCollapsed.Remove(key))
+                _sourceCollapsed.Add(key);
+            RebuildCartList(keepScroll: true);
+            return;
+        }
+
         if (!_cartById.TryGetValue(row.NodeId, out var node) || !node.Craftable) return;
 
         if (!_cartExpanded.Remove(node.Path))
@@ -766,8 +824,10 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
                     Add(child);
         }
 
-        foreach (var root in _cartRoots)
-            Add(root);
+        if (InSourceMode) AddSourceRows(rows, uni, deduct);
+        else
+            foreach (var root in _cartRoots)
+                Add(root);
 
         _cartList.AutoResetScroll = !keepScroll;
         _cartList.OptionsList     = rows;
@@ -784,6 +844,101 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         }
 
         RequestCollisionRebuild();
+    }
+
+    /// <summary>Forgets the groups of the totals "By source" (which of them are folded is kept).</summary>
+    private void ClearSourceView()
+    {
+        _sourceGroups.Clear();
+        _sourceCrafts = [];
+        _sourceHeaders.Clear();
+    }
+
+    /// <summary>
+    /// The rows of the totals "By source": a title row per group (each zone, then vendor, other, crafts to do first,
+    /// crystals and what you already have), then its materials unless the group is folded.
+    /// </summary>
+    private void AddSourceRows(List<IngredientRow> rows, UniversalisService uni, bool deduct)
+    {
+        _sourceHeaders.Clear();
+        var craftsAdded = false;
+
+        // A title row is no item (ItemId 0: no item tooltip, no item menu); its NodeId, negative, says which group it folds.
+        bool AddHeader(string key, string title, string? right)
+        {
+            var id = -(_sourceHeaders.Count + 1);
+            _sourceHeaders[id] = key;
+            var open = !_sourceCollapsed.Contains(key);
+            rows.Add(new IngredientRow(new IngredientCheck(0, title, 0, 0, 0, 0), string.Empty, [], 0, false, open, id,
+                Header: title, HeaderRight: right));
+            return open;
+        }
+
+        // The intermediates to craft first, deepest first: how many crafts of each, no price (the column stays, empty,
+        // so the other columns line up), nothing in the place column.
+        void AddCrafts()
+        {
+            craftsAdded = true;
+            if (_sourceCrafts.Count == 0) return;
+            if (!AddHeader(CraftsGroupKey, CraftLoc.Get("src.crafts"), CraftLoc.Fmt("src.recipes", _sourceCrafts.Count))) return;
+            foreach (var craft in _sourceCrafts)
+                rows.Add(new IngredientRow(new IngredientCheck(craft.ItemId, craft.Name, craft.IconId, 1, 0, 0), string.Empty, [],
+                    0, false, false, 0, string.Empty, null, QtyText: CraftLoc.Fmt("src.crafts.qty", craft.Crafts), Place: string.Empty));
+        }
+
+        foreach (var (group, nodes) in _sourceGroups)
+        {
+            if (!craftsAdded && group.Kind is SourceKind.Crystals or SourceKind.Done) AddCrafts();
+
+            var missing = group.Missing;
+            if (!AddHeader(group.Key, SourceGroupTitle(group), missing > 0 ? CraftLoc.Fmt("src.missing", missing) : null))
+                continue;
+
+            for (var i = 0; i < group.Lines.Count && i < nodes.Count; i++)
+            {
+                var line = group.Lines[i];
+                var n    = nodes[i];
+                var (price, tip) = CartPrice(n.Check, uni, deduct);
+                // Missing and owned nowhere: the place it is gathered at instead of "Not found" (if the data has it).
+                var place = line.Spot is { PlaceName.Length: > 0 } spot ? spot.PlaceName : null;
+                rows.Add(new IngredientRow(n.Check, n.PrimaryLocation, n.AllLocations, 0, false, false, n.Id, price, tip,
+                    Place: place, ExtraTip: SourceTip(line)));
+            }
+        }
+        if (!craftsAdded) AddCrafts();
+    }
+
+    /// <summary>"Zone · Miner, Botanist", or the name of a group that is no zone.</summary>
+    private static string SourceGroupTitle(SourceGroup group) => group.Kind switch
+    {
+        SourceKind.Zone when group.Classes.Count == 0 => group.ZoneName,
+        SourceKind.Zone     => CraftLoc.Fmt("src.zone", group.ZoneName, string.Join(", ", group.Classes.Select(GatherClassName))),
+        SourceKind.Vendor   => CraftLoc.Get("src.vendor"),
+        SourceKind.Crystals => CraftLoc.Get("src.crystals"),
+        SourceKind.Done     => CraftLoc.Get("src.done"),
+        _                   => CraftLoc.Get("src.other"),
+    };
+
+    private static string GatherClassName(GatherClass c) => c switch
+    {
+        GatherClass.Miner    => CraftLoc.Get("class.miner"),
+        GatherClass.Botanist => CraftLoc.Get("class.botanist"),
+        _                    => CraftLoc.Get("class.fisher"),
+    };
+
+    /// <summary>The tooltip lines of a material "By source": where and how it is gathered, other zones, a vendor.</summary>
+    private static string? SourceTip(SourceLine line)
+    {
+        var parts = new List<string>(4);
+        if (line.Spot is { } spot)
+        {
+            var where = string.IsNullOrEmpty(spot.PlaceName) ? spot.ZoneName : spot.PlaceName;
+            parts.Add(CraftLoc.Fmt("src.tip.gather", where, GatherClassName(spot.Class), spot.Level));
+            if (spot.Timed) parts.Add(CraftLoc.Get("src.tip.timed"));
+        }
+        if (line.AlsoIn.Count > 0) parts.Add(CraftLoc.Fmt("src.tip.also", string.Join(", ", line.AlsoIn)));
+        if (line.AlsoVendor)       parts.Add(CraftLoc.Get("src.tip.vendor"));
+        return parts.Count > 0 ? string.Join("\n", parts) : null;
     }
 
     /// <summary>
@@ -1451,6 +1606,13 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             _sortDropdown.Options        = SortModes;
             _sortDropdown.SelectedOption = _sortMode;
         }
+
+        // Same for the Tree / By source selector of My List.
+        if (_cartModeDropdown is not null)
+        {
+            _cartModeDropdown.Options        = CartModes;
+            _cartModeDropdown.SelectedOption = CartModeOption;
+        }
     }
 
     // ── Bottom status bar ─────────────────────────────────────────────────────────
@@ -1747,6 +1909,29 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             RebuildCart(keepScroll: true);
         };
         _cartDeductCheck.AttachNode(this);
+
+        // Tree or By source, between the deduct box and "Clear list".
+        _cartModeDropdown = new StringDropDownNode
+        {
+            Position         = new Vector2(pos.X + 236f, y - 2f),
+            Size             = new Vector2(130f, 24f),
+            MaxListOptions   = 2,
+            GetLabelFunction = key => CraftLoc.Get("cart.view." + key),
+            IsVisible        = false,
+        };
+        _cartModeDropdown.OnOptionSelected = mode =>
+        {
+            if (Tweak is null || Tweak.Current.CartMode == mode) return;
+            Tweak.Current.CartMode = mode;
+            Tweak.SaveFilters();
+            RebuildCart(keepScroll: false);
+        };
+        _cartModeDropdown.AttachNode(this);
+
+        // Its options are set again when the language changes, so they are set only once it is attached: option buttons
+        // built before attaching are left behind in the window's node list when replaced, and closing the window then crashes.
+        _cartModeDropdown.Options        = CartModes;
+        _cartModeDropdown.SelectedOption = CartModeOption;
 
         // Right of the deduct box, not under the recipe list: resizing that list would dispose its rows (and a counter
         // being typed in) while the window stays open.

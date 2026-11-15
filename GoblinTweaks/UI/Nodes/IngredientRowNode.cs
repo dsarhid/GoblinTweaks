@@ -12,11 +12,15 @@ namespace GoblinTweaks.UI.Nodes;
 /// identifies the tree node so the addon can toggle it).
 /// </summary>
 /// <see cref="Price"/> (My List totals only) adds a price column; <see cref="PriceTip"/> is added to the location tooltip.
+/// My List "By source" only: <see cref="Header"/> makes the row a group title (<see cref="HeaderRight"/> on its right,
+/// open or folded by <see cref="Expanded"/>); <see cref="QtyText"/> replaces "have/need"; <see cref="Place"/> is shown
+/// instead of "Not found" when the item is missing and owned nowhere; <see cref="ExtraTip"/> is added to the tooltip.
 internal readonly record struct IngredientRow(
     IngredientCheck Check, string PrimaryLocation,
     IReadOnlyList<(string Location, int Total, int Hq, DateTime Seen)> AllLocations,
     int Depth, bool Craftable, bool Expanded, int NodeId,
-    string? Price = null, string? PriceTip = null);
+    string? Price = null, string? PriceTip = null,
+    string? Header = null, string? HeaderRight = null, string? QtyText = null, string? Place = null, string? ExtraTip = null);
 
 /// <summary>
 /// One row in the ingredient detail list: indent + expand caret + game icon + name
@@ -53,12 +57,15 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
     private readonly TextNode      _qty;
     private readonly TextNode      _location;
     private readonly TextNode      _price;
+    private readonly TextNode      _headerRight;
 
     // Current row depth and whether it has a price. Stored separately because the list calls SetNodeData *before*
     // updating ItemData, so reading ItemData during layout would use the stale value.
     private int  _depth;
     private bool _hasPrice;
     private bool _craftable;
+    // A group title of My List "By source": caret, gold name and the text on its right; no icon, qty, place or price.
+    private bool _isHeader;
 
     public unsafe IngredientRowNode()
     {
@@ -81,20 +88,28 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
         _price = new TextNode { FontSize = 11, TextColor = ColorPrice, AlignmentType = AlignmentType.Right, IsVisible = false };
         _price.AttachNode(this);
 
-        // MouseDown (not MouseClick) reliably fires for the right button here.
+        _headerRight = new TextNode { FontSize = 11, TextColor = ColorSubtitle, AlignmentType = AlignmentType.Right, IsVisible = false };
+        _headerRight.AttachNode(this);
+
+        // MouseDown (not MouseClick) reliably fires for the right button here. A group title is no item: no menu.
         AddEvent(AtkEventType.MouseDown, (_, _, _, _, eventData) =>
         {
-            if (eventData is not null && eventData->MouseData.ButtonId == 1 && ItemData.Check is not null)
-                OnItemRightClick?.Invoke(ItemData.Check.ItemId);
+            if (eventData is not null && eventData->MouseData.ButtonId == 1 && ItemData.Check is { ItemId: not 0 } check)
+                OnItemRightClick?.Invoke(check.ItemId);
         });
     }
 
-    // The list calls this every frame for the rows it shows: only a craftable ingredient has a caret.
+    // The list calls this every frame for the rows it shows: only a craftable ingredient (or a group title) has a caret.
     public override void Update()
     {
         base.Update();
-        if (_caret.IsVisible != _craftable) _caret.IsVisible = _craftable;
-        if (_price.IsVisible != _hasPrice)  _price.IsVisible = _hasPrice;
+        var caret = _craftable || _isHeader;
+        if (_caret.IsVisible != caret)           _caret.IsVisible       = caret;
+        if (_price.IsVisible != _hasPrice)       _price.IsVisible       = _hasPrice;
+        if (_icon.IsVisible == _isHeader)        _icon.IsVisible        = !_isHeader;
+        if (_qty.IsVisible == _isHeader)         _qty.IsVisible         = !_isHeader;
+        if (_location.IsVisible == _isHeader)    _location.IsVisible    = !_isHeader;
+        if (_headerRight.IsVisible != _isHeader) _headerRight.IsVisible = _isHeader;
     }
 
     protected override void OnSizeChanged()
@@ -108,7 +123,8 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
         var indent = _depth * IndentW;
         var caretX = 4f + indent;
         var iconX  = caretX + CaretW + 2f;
-        var nameX  = iconX + IconSz + Gap;
+        // A group title has no icon: its name starts where the icon would be.
+        var nameX  = _isHeader ? iconX : iconX + IconSz + Gap;
 
         var iconY  = Math.Max(0f, (Height - IconSz) / 2f);
         var textY  = Math.Max(0f, (Height - 14f) / 2f);
@@ -131,6 +147,9 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
 
         _price.Position = new Vector2(nameX + nameW + QtyW + LocW, textY + 1f);
         _price.Size     = new Vector2(PriceW, 13f);
+
+        _headerRight.Position = new Vector2(nameX + nameW, textY + 1f);
+        _headerRight.Size     = new Vector2(QtyW + LocW, 13f);
     }
 
     protected override void SetNodeData(IngredientRow data)
@@ -139,14 +158,35 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
 
         _depth     = data.Depth;
         _craftable = data.Craftable;
+        _isHeader  = data.Header is not null;
         // Text first, then visibility: the first time a row is filled, its caret showed "+" on every ingredient,
         // crystals included (Update puts it right if anything shows it again).
         _caret.String    = data.Expanded ? "-" : "+";
-        _caret.IsVisible = data.Craftable;
+        _caret.IsVisible = data.Craftable || _isHeader;
+
+        _icon.IsVisible        = !_isHeader;
+        _qty.IsVisible         = !_isHeader;
+        _location.IsVisible    = !_isHeader;
+        _headerRight.IsVisible = _isHeader;
+
+        if (_isHeader)
+        {
+            // A group title: gold name, what is left to get on its right, no tooltip and no price.
+            _name.String        = data.Header!;
+            _name.TextColor     = ColorCaret;
+            _headerRight.String = data.HeaderRight ?? string.Empty;
+            TextTooltip         = string.Empty;
+            ItemTooltip         = 0;
+            _hasPrice           = false;
+            _price.String       = string.Empty;
+            _price.IsVisible    = false;
+            Layout();
+            return;
+        }
 
         _icon.IconId = ing.IconId;
         _name.String = ing.Name;
-        _qty.String  = $"{ing.Available}/{ing.Required}";
+        _qty.String  = data.QtyText ?? $"{ing.Available}/{ing.Required}";
 
         Vector4 statusColor;
         string  locText;
@@ -154,7 +194,7 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
         if (ing.Missing > 0)
         {
             statusColor = ColorMissing;
-            locText     = string.IsNullOrEmpty(data.PrimaryLocation) ? CraftLoc.Get("loc.notfound") : data.PrimaryLocation;
+            locText     = string.IsNullOrEmpty(data.PrimaryLocation) ? data.Place ?? CraftLoc.Get("loc.notfound") : data.PrimaryLocation;
             TextTooltip = string.Empty;
             ItemTooltip = ing.ItemId;
         }
@@ -209,7 +249,15 @@ internal sealed class IngredientRowNode : ListItemNode<IngredientRow>, IListItem
         _hasPrice        = data.Price is not null;
         _price.String    = data.Price ?? string.Empty;
         _price.IsVisible = _hasPrice;
-        if (!string.IsNullOrEmpty(data.PriceTip) && ItemTooltip == 0)
+        if (!string.IsNullOrEmpty(data.ExtraTip))
+        {
+            // By source: where it is gathered, and so on, under the locations and over the unit price.
+            var lines = data.AllLocations.Select(FormatLocation).Append(data.ExtraTip);
+            if (!string.IsNullOrEmpty(data.PriceTip)) lines = lines.Append(data.PriceTip);
+            TextTooltip = string.Join("\n", lines);
+            ItemTooltip = 0;
+        }
+        else if (!string.IsNullOrEmpty(data.PriceTip) && ItemTooltip == 0)
             TextTooltip = string.Join("\n", data.AllLocations.Select(FormatLocation)) + "\n" + data.PriceTip;
 
         // Re-run layout since the indent depends on the row's data.

@@ -301,6 +301,8 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         public List<CartItem> Cart            { get; set; } = [];
         /// <summary>The totals of My List count only what is missing (what you own is deducted).</summary>
         public bool           CartDeductOwned { get; set; } = true;
+        /// <summary>How the totals of My List are shown: "tree" (each material inside what it is made for) or "source" (by where it comes from).</summary>
+        public string         CartMode        { get; set; } = "tree";
     }
 
     public const int MaxNearCompleteMissing = 10;
@@ -769,7 +771,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         {
             InternalName = "GtkCraftMatHelp",
             Title        = CraftLoc.Get("help.title"),
-            Size         = new System.Numerics.Vector2(780f, 620f),
+            Size         = new System.Numerics.Vector2(780f, 700f),
         };
         _helpAddon.Toggle();
     }
