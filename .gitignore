@@ -11,3 +11,6 @@ GoblinTweaks/img/
 
 # Brainstorming mockups and plan workspaces
 .superpowers/
+
+# Isolated git worktrees
+.claude/worktrees/
