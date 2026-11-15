@@ -185,10 +185,16 @@ public class SourcePlanTests
         Assert.Equal(["Bean", "Mango", "Zinc"], ZoneGroup(groups, 1).Lines.Select(l => l.Need.Name).ToArray());
         Assert.Equal(SourceKind.Done, groups[^1].Kind);
 
-        // Within one group, missing lines come before owned-or-partial ones: Zed (1 of 2) is still missing.
+        // Plain name order inside a group where every line is missing.
         var vendor = Build([N(1, "Zed", 2), N(2, "Amy", 2), N(3, "Bob", 2)],
                            new() { [1] = Vendor, [2] = Vendor, [3] = Vendor }, new() { [1] = 1 });
         Assert.Equal(["Amy", "Bob", "Zed"], vendor.Single(g => g.Kind == SourceKind.Vendor).Lines.Select(l => l.Need.Name).ToArray());
+
+        // Crystals is the only group that mixes owned and missing lines: the missing one comes first.
+        var shards = Build([N(1, "Air Shard", 2), N(2, "Wind Shard", 2)],
+                           new() { [1] = Crystal, [2] = Crystal }, new() { [1] = 2 });
+        Assert.Equal(["Wind Shard", "Air Shard"],
+                     shards.Single(g => g.Kind == SourceKind.Crystals).Lines.Select(l => l.Need.Name).ToArray());
     }
 
     [Fact]
