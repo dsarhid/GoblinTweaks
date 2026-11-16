@@ -28,6 +28,22 @@ public class TravelMathTests
         Assert.Equal(41f * 690f / 2048f + 1f, TravelMath.WorldToMapCoord(world, 100, 0), 3);
     }
 
+    [Theory]
+    [InlineData(0u, 1, 1u)]   // mineral deposit (Granite)
+    [InlineData(2u, 1, 3u)]   // mature tree (Spruce Log)
+    [InlineData(3u, 1, 4u)]   // lush vegetation patch (Rainbow Cotton Boll)
+    [InlineData(1u, 2, 6u)]   // unspoiled rocky outcrop
+    [InlineData(3u, 3, 12u)]  // ephemeral lush vegetation patch
+    [InlineData(2u, 4, 15u)]  // legendary mature tree
+    [InlineData(0u, 5, 17u)]  // concealed mineral deposit
+    [InlineData(3u, 7, 26u)]  // clouded lush vegetation patch
+    [InlineData(5u, 1, 21u)]  // teeming waters
+    [InlineData(5u, 6, 22u)]  // swimming shadows
+    [InlineData(0u, 6, 0u)]
+    [InlineData(9u, 1, 0u)]
+    public void PointNameRowCombinesTypeAndKind(uint gatheringType, byte pointType, uint expected)
+        => Assert.Equal(expected, TravelMath.PointNameRow(gatheringType, pointType));
+
     [Fact]
     public void PickGearsetTakesTheHighestItemLevelOfTheClass()
     {

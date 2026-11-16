@@ -11,6 +11,12 @@ public enum SourceKind { Zone, Vendor, Other, Crystals, Done }
 /// <summary>One place an item can be gathered: the zone, the spot inside it, and what it takes to harvest it.</summary>
 public sealed record GatherSpot(uint ZoneId, string ZoneName, string PlaceName, GatherClass Class, int Level, bool Timed);
 
+/// <summary>
+/// A gathering area as the map draws it: centre and radius in world units (yalms) on map <see cref="MapId"/>, the map
+/// icon and the label ("Lv. 35 Mineral Deposit").
+/// </summary>
+public sealed record GatherArea(uint ZoneId, uint MapId, GatherClass Class, float X, float Y, float Radius, uint IconId, string Label);
+
 /// <summary>Everything known about where one item comes from.</summary>
 public sealed record ItemSources(IReadOnlyList<GatherSpot> Spots, bool Vendor, bool Crystal)
 {

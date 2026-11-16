@@ -17,6 +17,22 @@ public static class TravelMath
     public static float PixelToWorld(float pixel, ushort sizeFactor, short offset)
         => (pixel - 1024f) / (sizeFactor / 100f) - offset;
 
+    /// <summary>
+    /// The GatheringPointName row ("mineral deposit", "unspoiled mature tree", "teeming waters"...) of a point from its
+    /// GatheringType (0 mining, 1 quarrying, 2 logging, 3 harvesting, 4-5 spearfishing) and the GatheringPointType of
+    /// ExportedGatheringPoint (1 normal, 2 unspoiled, 3 ephemeral, 4 legendary, 5 concealed, 6 swimming shadows, 7-8 clouded).
+    /// 0 when the pair is unknown.
+    /// </summary>
+    public static uint PointNameRow(uint gatheringType, byte pointType)
+    {
+        if (gatheringType is 4 or 5)
+            return pointType switch { 1 => 21, 6 => 22, _ => 0 };
+        if (gatheringType > 3) return 0;
+
+        uint? first = pointType switch { 1 => 1, 2 => 5, 3 => 9, 4 => 13, 5 => 17, 7 or 8 => 23, _ => null };
+        return first is { } f ? f + gatheringType : 0;
+    }
+
     /// <summary>The gearset of <paramref name="classJob"/> with the highest item level (the lowest number on a tie); null if there is none.</summary>
     public static int? PickGearset(IEnumerable<(int Id, uint ClassJob, int ItemLevel)> sets, uint classJob)
     {
