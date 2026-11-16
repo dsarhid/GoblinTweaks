@@ -13,6 +13,7 @@ using GoblinTweaks.Core;
 using GoblinTweaks.Crafting;
 using GoblinTweaks.Services;
 using GoblinTweaks.UI;
+using GoblinTweaks.UI.Nodes;
 using GoblinTweaks.Localization;
 using LuminaItem = Lumina.Excel.Sheets.Item;
 using LuminaRecipe = Lumina.Excel.Sheets.Recipe;
@@ -311,6 +312,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     private CraftingSettingsAddon?      _settingsAddon;
     private CraftingHelpAddon?          _helpAddon;
     private UniversalisService?         _universalis;
+    private GatherTravel?               _travel;
     private readonly FCChestHighlighter _fcHighlighter = new();
     private readonly InventoryHighlighter _bagHighlighter = new();
     private readonly ShopHighlighter _shopHighlighter = new();
@@ -327,6 +329,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         SanitizeCart();
 
         _universalis = new UniversalisService();
+        _travel      = new GatherTravel(Notify);
         CraftLoc.Lang = UiLanguage;
         _addon = NewAddon();
 
@@ -368,6 +371,9 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         _bagHighlighter.Source = null;
         _fcHighlighter.Stop();
         _fcHighlighter.Source = null;
+
+        _travel?.Dispose();
+        _travel = null;
 
         _helpAddon?.Dispose();
         _helpAddon = null;
@@ -762,6 +768,24 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
     {
         if (_settingsAddon is not { } window) return;
         if (window.IsOpen) window.Close(); else window.Open();
+    }
+
+    /// <summary>The map button of a "By source" material: the map of its zone with its gathering areas drawn.</summary>
+    internal void OpenGatherMap(GatherTravelTarget target)
+        => GatherTravel.OpenMap(GatheringSources.For(DataLanguage).Areas(target.ItemId, target.ZoneId, target.Class), target.Name);
+
+    /// <summary>The teleport button: the aetheryte nearest to the material's areas, then its gathering class once landed.</summary>
+    internal void GatherTeleport(GatherTravelTarget target)
+    {
+        if (_travel is null || !Svc.PlayerState.IsLoaded) return;
+        _travel.Teleport(GatheringSources.For(DataLanguage).Areas(target.ItemId, target.ZoneId, target.Class), target.Class, target.ZoneName);
+    }
+
+    /// <summary>A notice of the travel buttons, like Goblin Hunts: a toast and a line in the chat.</summary>
+    private void Notify(string message)
+    {
+        Svc.Toasts.ShowNormal(message);
+        Svc.Chat.Print(message, Name);
     }
 
     /// <summary>Opens the help of the window, or closes it if it is open. It belongs to the tweak, so it is closed with it.</summary>

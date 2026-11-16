@@ -205,6 +205,9 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
     private TextNode?     _cartColItem;
     private TextNode?     _cartColQty;
     private TextNode?     _cartColPrice;
+    // Where the "have/need" and price titles start in the tree; "By source" moves them left by the button column.
+    private float         _cartColQtyX;
+    private float         _cartColPriceX;
     private TextNode?     _cartTotal;
     private TextNode?     _cartEmpty;
     private ListNode<IngredientRow, IngredientRowNode>? _cartList;
@@ -252,6 +255,9 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         // the result is in your bags, otherwise the native Crafting Log for that recipe.
         RecipeRowNode.OnItemRightClick     = OnRecipeRightClick;
         IngredientRowNode.OnItemRightClick = id => OpenItemContextMenu(id);
+        IngredientRowNode.OnTravelMap      = target => Tweak?.OpenGatherMap(target);
+        IngredientRowNode.OnTravelTeleport = target => Tweak?.GatherTeleport(target);
+        IngredientRowNode.OnHitAreasChanged = RequestCollisionRebuild;
         RecipeRowNode.IsInCart             = id => CraftCart.Contains(Cart, id);
         RecipeRowNode.OnToggleCart         = ToggleCart;
         RecipeRowNode.CountOf              = id => Cart.Find(i => i.RecipeId == id)?.Count ?? CraftCart.MinCount;
@@ -425,6 +431,9 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
 
         RecipeRowNode.OnItemRightClick     = null;
         IngredientRowNode.OnItemRightClick = null;
+        IngredientRowNode.OnTravelMap      = null;
+        IngredientRowNode.OnTravelTeleport = null;
+        IngredientRowNode.OnHitAreasChanged = null;
         RecipeRowNode.IsInCart             = null;
         RecipeRowNode.OnToggleCart         = null;
         RecipeRowNode.CountOf              = null;
@@ -828,6 +837,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         else
             foreach (var root in _cartRoots)
                 Add(root);
+        PlaceCartColumnTitles();
 
         _cartList.AutoResetScroll = !keepScroll;
         _cartList.OptionsList     = rows;
@@ -844,6 +854,16 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         }
 
         RequestCollisionRebuild();
+    }
+
+    /// <summary>Lines the column titles up with the rows: "By source" keeps room for the map and teleport buttons on the right.</summary>
+    private void PlaceCartColumnTitles()
+    {
+        if (_cartColItem is null || _cartColQty is null || _cartColPrice is null) return;
+        var shift = InSourceMode ? IngredientRowNode.TravelW : 0f;
+        _cartColQty.X     = _cartColQtyX - shift;
+        _cartColPrice.X   = _cartColPriceX - shift;
+        _cartColItem.Width = Math.Max(0f, _cartColQty.X - _cartColItem.X);
     }
 
     /// <summary>Forgets the groups of the totals "By source" (which of them are folded is kept).</summary>
@@ -870,8 +890,17 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             _sourceHeaders[id] = key;
             var open = !_sourceCollapsed.Contains(key);
             rows.Add(new IngredientRow(new IngredientCheck(0, title, 0, 0, 0, 0), string.Empty, [], 0, false, open, id,
-                Header: title, HeaderRight: right));
+                Header: title, HeaderRight: right, TravelColumn: true));
             return open;
+        }
+
+        // The map and teleport buttons: a material of a zone group, gathered there by a class that has an area on the map.
+        var sources = GatheringSources.For(CraftingMaterials.DataLanguage);
+        GatherTravelTarget? Travel(SourceGroup group, SourceLine line, IngredientCheck check)
+        {
+            if (group.Kind != SourceKind.Zone || line.Spot is not { } spot || spot.ZoneId != group.ZoneId) return null;
+            if (sources.Areas(check.ItemId, group.ZoneId, spot.Class).Count == 0) return null;
+            return new GatherTravelTarget(check.ItemId, check.Name, group.ZoneId, group.ZoneName, spot.Class);
         }
 
         // The intermediates to craft first, each after the crafted ingredients it needs: how many crafts of each, no
@@ -885,7 +914,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
             foreach (var craft in _sourceCrafts)
                 rows.Add(new IngredientRow(new IngredientCheck(craft.ItemId, craft.Name, craft.IconId, 1, 0, 0), string.Empty, [],
                     0, false, false, 0, string.Empty, null, QtyText: craft.Crafts == 1 ? CraftLoc.Get("src.crafts.qty1") : CraftLoc.Fmt("src.crafts.qty", craft.Crafts),
-                    Place: string.Empty));
+                    Place: string.Empty, TravelColumn: true));
         }
 
         foreach (var (group, nodes) in _sourceGroups)
@@ -904,7 +933,7 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
                 // Missing and owned nowhere: the place it is gathered at instead of "Not found" (if the data has it).
                 var place = line.Spot is { PlaceName.Length: > 0 } spot ? spot.PlaceName : null;
                 rows.Add(new IngredientRow(n.Check, n.PrimaryLocation, n.AllLocations, 0, false, false, n.Id, price, tip,
-                    Place: place, ExtraTip: SourceTip(line)));
+                    Place: place, ExtraTip: SourceTip(line), TravelColumn: true, Travel: Travel(group, line, n.Check)));
             }
         }
         if (!craftsAdded) AddCrafts();
@@ -1959,6 +1988,8 @@ internal unsafe class CraftingMaterialsAddon : NativeAddon
         _cartColPrice = MakeLabel(priceX, y, IngredientRowNode.PriceW, CraftLoc.Get("cart.col.price"), SubtitleBrown, 11);
         _cartColPrice.AlignmentType = AlignmentType.Right;
         _cartColItem.IsVisible = _cartColQty.IsVisible = _cartColPrice.IsVisible = false;
+        _cartColQtyX   = qtyX;
+        _cartColPriceX = priceX;
         y += 20f;
 
         _cartList = new ListNode<IngredientRow, IngredientRowNode>
