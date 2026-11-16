@@ -34,6 +34,15 @@ internal static class Changelog
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.6.2", "2026-11-16",
+            "Crafting Materials: My List totals by source, with map and teleport buttons; Pinch passes over bait listings.",
+            [
+                "New: Crafting Materials — My List totals can be shown By source: every material once with its total, grouped by the zone where you gather it, then vendor, other, crafts to do first, crystals and what you already have; click a group title to fold it",
+                "New: Crafting Materials By source — each material of a zone has a map button, which draws its gathering areas like the Gathering Log, and a teleport button, which takes you to the nearest attuned aetheryte and, once you land, changes to its gathering class",
+                "Fix: Goblin Pinch — a seller asking far less than you (more than the max cut) no longer stops the pinch: that listing is passed over as bait and the price follows the next seller",
+                "Fix: the Ornaments recipes of Alchemist's Special Recipes › Others now count for the crafting log in Crafting Materials and the recipe list marks",
+                "Fix: Goblin Battle Text — the hits of the Machinist's turret and Automaton Queen wear the icon of the action that summons them, like the Dark Knight's shadow",
+            ]),
         new("1.6.1", "2026-11-13",
             "Goblin Hunts: teleport also flags the hunt on the map; the first line's teleport button works again.",
             [

@@ -396,6 +396,8 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
     private const uint PvPLimitBreakCategory = 15;  // ActionCategory row of the PvP Limit Breaks
     private const uint LivingShadowAction = 25801;   // the Dark Knight's shadow has no actions of its own to show
     private const uint DarkKnightJob = 32;
+    private const uint RookAutoturretAction = 2864;  // the Machinist's turret: its actions wear the icon of an auto-attack;
+    private const uint MachinistJob = 31;            // it turns into Automaton Queen from level 80, and its icon with it
     private const uint AttackAction = 7;            // the auto-attack of a melee job
     private const uint ShotAction   = 8;            // and that of a ranged one
     private const uint DamageTypeIconBase = 60010;  // + 1 physical, + 2 magical, + 3 unique: the icons of the game's own fly text
@@ -1445,10 +1447,17 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
                         && (label is null ? (actionId != 0 || tickId != 0) && (defendedKind == 0 || Settings.MergeDefended) : Settings.MergeMisses)
                         && (attacker is null || !auto) && verdict is null;
         var colors  = Settings.Colors;
-        // The hits of the shadow of a Dark Knight wear the icon of the action that summons it, whatever it does.
-        var shadowIcon = byPet && damage && Svc.PlayerState.ClassJob.RowId == DarkKnightJob
+        // The hits of the shadow of a Dark Knight, and of the turret or the Queen of a Machinist, wear the icon of the
+        // action that summons them, whatever they do.
+        var shadowIcon = byPet && damage
                          && from->SubKind is not ((byte)BattleNpcSubKind.Buddy or (byte)BattleNpcSubKind.RaceChocobo)
-            ? LookupAction(LivingShadowAction).IconId : 0u;
+            ? Svc.PlayerState.ClassJob.RowId switch
+            {
+                DarkKnightJob                            => LookupAction(LivingShadowAction).IconId,
+                MachinistJob when !Svc.ClientState.IsPvP => LookupAction(TurretAction()).IconId,
+                _                                        => 0u,
+            }
+            : 0u;
         var message = new BattleTextMessage
         {
             Amount     = amount,
@@ -2720,6 +2729,14 @@ public sealed unsafe class GoblinBattleText : Tweak<GoblinBattleText.Store>
 
         var adjusted = manager->GetAdjustedActionId(actionId);
         return adjusted != 0 ? adjusted : actionId;
+    }
+
+    /// <summary>The Machinist's summon as the hotbar has it now: Rook Autoturret, or Automaton Queen from level 80.</summary>
+    private static uint TurretAction()
+    {
+        var manager = ActionManager.Instance();
+        var adjusted = manager == null ? 0 : manager->GetAdjustedActionId(RookAutoturretAction);
+        return adjusted != 0 ? adjusted : RookAutoturretAction;
     }
 
     /// <summary>

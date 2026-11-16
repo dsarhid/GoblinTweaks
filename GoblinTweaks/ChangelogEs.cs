@@ -8,6 +8,15 @@ internal static class ChangelogEs
 {
     public static readonly Dictionary<string, (string Summary, string[] Changes)> Entries = new()
     {
+        ["1.6.2"] = (
+            "Crafting Materials: los totales de Mi lista por origen, con botones de mapa y teleport; Pinch saltea las publicaciones carnada.",
+            [
+                "New: Crafting Materials — los totales de Mi lista se pueden ver Por origen: cada material una vez con su total, agrupado por la zona donde lo recolectás, y después vendedor, otros, lo que hay que craftear antes, cristales y lo que ya tenés; click en el título de un grupo lo pliega",
+                "New: Crafting Materials Por origen — cada material de una zona tiene un botón de mapa, que dibuja sus áreas de recolección como el Gathering Log, y uno de teleport, que te lleva a la aetherita sintonizada más cercana y, al llegar, te cambia a su clase de recolección",
+                "Fix: Goblin Pinch — un vendedor que pide mucho menos que vos (más que el recorte máximo) ya no frena el pinch: esa publicación se saltea como carnada y el precio sigue al vendedor siguiente",
+                "Fix: las recetas de Ornaments de Special Recipes › Others de Alchemist ahora cuentan para el crafting log en Crafting Materials y en las marcas de la lista de recetas",
+                "Fix: Goblin Battle Text — los golpes de la torreta y de la Automaton Queen del Machinist muestran el ícono de la acción que las invoca, como la sombra del Dark Knight",
+            ]),
         ["1.6.1"] = (
             "Goblin Hunts: el teleport también marca el hunt en el mapa; el teleport de la primera fila vuelve a andar.",
             [
