@@ -22,6 +22,16 @@ public class HuntMathTests
         => Assert.Null(HuntMath.Nearest([], 10, 10));
 
     [Fact]
+    public void Nearest_ToAnyOfSeveralPoints()
+    {
+        // Two gathering areas: the aetheryte next to the second one wins, though it is far from the first.
+        AetheryteSpot[] spots = [new(1, 10, 10), new(2, 30, 30)];
+        Assert.Equal(2u, HuntMath.Nearest(spots, [(18f, 18f), (31f, 30f)]));
+        Assert.Equal(1u, HuntMath.Nearest(spots, [(11f, 10f), (25f, 25f)]));
+        Assert.Null(HuntMath.Nearest(spots, []));
+    }
+
+    [Fact]
     public void Nearest_AddsTheCostOfAnAwkwardAetheryte()
     {
         // The closer one is underwater (Tamamizu): 4 map units of cost make the other one win.

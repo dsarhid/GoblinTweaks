@@ -165,7 +165,12 @@ internal static class CraftLoc
             ["src.tip.timed"] = "Timed node",
             ["src.tip.also"] = "Also in: {0}",
             ["src.tip.vendor"] = "Also sold by a vendor",
-            ["help.tips.t10"] = "My List › Total materials: Tree shows each material inside what it is made for; By source lists every material once, grouped by the zone where you gather it, then vendor, other, crafts to do first, crystals and what you already have. Click a group title to fold it.",
+            ["travel.map"] = "Open the map with the gathering area",
+            ["travel.tp"] = "Teleport to the nearest aetheryte, mark the area and change to {0}",
+            ["travel.refused"] = "Could not teleport",
+            ["travel.noaetheryte"] = "No attuned aetheryte in {0}",
+            ["travel.nogearset"] = "You have no {0} gearset",
+            ["help.tips.t10"] = "My List › Total materials: Tree shows each material inside what it is made for; By source lists every material once, grouped by the zone where you gather it, then vendor, other, crafts to do first, crystals and what you already have. Click a group title to fold it. On a zone's materials, the map button shows where it is gathered and the teleport button takes you there and, once you land, changes to its gathering class.",
         },
 
         ["es"] = new()
@@ -302,7 +307,12 @@ internal static class CraftLoc
             ["src.tip.timed"] = "Punto con horario",
             ["src.tip.also"] = "También en: {0}",
             ["src.tip.vendor"] = "También se compra a vendedor",
-            ["help.tips.t10"] = "Mi lista › Total de materiales: Árbol muestra cada material dentro de lo que se fabrica con él; Por origen lista cada material una vez, agrupado por la zona donde lo recolectás, y después vendedor, otros, lo que hay que craftear antes, cristales y lo que ya tenés. Click en el título de un grupo lo pliega.",
+            ["travel.map"] = "Abrir el mapa con el área de recolección",
+            ["travel.tp"] = "Teletransportarse a la aetherita más cercana, marcar el área y cambiar a {0}",
+            ["travel.refused"] = "No se pudo teletransportar",
+            ["travel.noaetheryte"] = "No tenés ninguna aetherita sintonizada en {0}",
+            ["travel.nogearset"] = "No tenés un gearset de {0}",
+            ["help.tips.t10"] = "Mi lista › Total de materiales: Árbol muestra cada material dentro de lo que se fabrica con él; Por origen lista cada material una vez, agrupado por la zona donde lo recolectás, y después vendedor, otros, lo que hay que craftear antes, cristales y lo que ya tenés. Click en el título de un grupo lo pliega. En los materiales de una zona, el botón del mapa muestra dónde se recolecta y el de teleport te lleva y, al llegar, te cambia a su clase de recolección.",
         },
     };
 }

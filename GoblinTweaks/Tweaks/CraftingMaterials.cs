@@ -771,7 +771,7 @@ public sealed class CraftingMaterials : Tweak<CraftingMaterials.Options>
         {
             InternalName = "GtkCraftMatHelp",
             Title        = CraftLoc.Get("help.title"),
-            Size         = new System.Numerics.Vector2(780f, 700f),
+            Size         = new System.Numerics.Vector2(780f, 732f),
         };
         _helpAddon.Toggle();
     }

@@ -96,25 +96,29 @@ internal static unsafe class HuntTravel
             return telepo->Teleport(UldahAetheryte, 0) ? TravelResult.TeleportedOtherWorld : TravelResult.Refused;
         }
 
-        var attuned = Attuned(telepo);
-        uint? target = null;
-        if (e.ZoneId == Hinterlands)
-        {
-            foreach (var id in HinterlandsAetherytes)
-                if (attuned.Contains(id)) { target = id; break; }
-        }
-        else
-        {
-            target = HuntMath.Nearest(AetherytesOn(e.MapId, attuned), e.X, e.Y);
-        }
-
-        if (target is not { } aetheryte) return TravelResult.NoAttunedAetheryte;
+        if (NearestAttuned(telepo, e.ZoneId, e.MapId, [(e.X, e.Y)]) is not { } aetheryte) return TravelResult.NoAttunedAetheryte;
         if (!telepo->Teleport(aetheryte, 0)) return TravelResult.Refused;
 
         // An instanced hunt: unless you are already in its instance, say which one to change to.
         return e.InstanceId != 0 && (e.ZoneId != currentZoneId || e.InstanceId != currentInstance)
             ? TravelResult.TeleportedOtherInstance
             : TravelResult.Teleported;
+    }
+
+    /// <summary>
+    /// The attuned aetheryte nearest to any of <paramref name="points"/> (map coordinates of <paramref name="mapId"/>),
+    /// counting the awkward ones as farther; the Dravanian Hinterlands, which has none, uses Idyllshire or Anyx Trine.
+    /// </summary>
+    internal static uint? NearestAttuned(Telepo* telepo, uint zoneId, uint mapId, IReadOnlyList<(float X, float Y)> points)
+    {
+        var attuned = Attuned(telepo);
+        if (zoneId == Hinterlands)
+        {
+            foreach (var id in HinterlandsAetherytes)
+                if (attuned.Contains(id)) return id;
+            return null;
+        }
+        return HuntMath.Nearest(AetherytesOn(mapId, attuned), points);
     }
 
     private static HashSet<uint> Attuned(Telepo* telepo)

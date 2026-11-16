@@ -13,17 +13,21 @@ public static class HuntMath
     public static float YalmsToMapUnits(float yalms, ushort sizeFactor) => yalms * 41f * (sizeFactor / 100f) / 2048f;
 
     /// <summary>The aetheryte closest to (x, y) counting its cost, or null when there is none.</summary>
-    public static uint? Nearest(IReadOnlyList<AetheryteSpot> spots, float x, float y)
+    public static uint? Nearest(IReadOnlyList<AetheryteSpot> spots, float x, float y) => Nearest(spots, [(x, y)]);
+
+    /// <summary>The aetheryte closest to any of <paramref name="points"/> counting its cost, or null when there is none (or no point).</summary>
+    public static uint? Nearest(IReadOnlyList<AetheryteSpot> spots, IReadOnlyList<(float X, float Y)> points)
     {
         uint? best = null;
         var bestDist = float.MaxValue;
         foreach (var s in spots)
-        {
-            var dx = s.X - x;
-            var dy = s.Y - y;
-            var d = MathF.Sqrt(dx * dx + dy * dy) + s.Cost;
-            if (d < bestDist) { bestDist = d; best = s.Id; }
-        }
+            foreach (var (x, y) in points)
+            {
+                var dx = s.X - x;
+                var dy = s.Y - y;
+                var d = MathF.Sqrt(dx * dx + dy * dy) + s.Cost;
+                if (d < bestDist) { bestDist = d; best = s.Id; }
+            }
         return best;
     }
 }
